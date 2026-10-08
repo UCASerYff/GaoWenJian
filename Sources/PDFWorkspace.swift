@@ -1,0 +1,630 @@
+import AppKit
+import SwiftUI
+import PDFKit
+import UniformTypeIdentifiers
+
+final class GaoPDFView: PDFView {
+    var placement: ((PDFPage, NSPoint) -> Void)?
+    var onFormInteraction: (() -> Void)?
+    var formsEditable = true
+    var onInitialLayout: ((CGFloat) -> Void)?
+    private var completedInitialLayout = false
+    private var initialLayoutScheduled = false
+
+    override func layout() {
+        super.layout()
+        scheduleInitialFit()
+    }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        scheduleInitialFit()
+    }
+
+    private func scheduleInitialFit() {
+        guard !completedInitialLayout, !initialLayoutScheduled, window != nil,
+              bounds.width > 100, bounds.height > 100, document?.pageCount ?? 0 > 0 else { return }
+        initialLayoutScheduled = true
+        // PDFKit first receives a zero-sized representable. Wait until AppKit has
+        // finished assigning the workspace bounds before computing the initial fit.
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.initialLayoutScheduled = false
+            guard !self.completedInitialLayout, self.window != nil,
+                  self.bounds.width > 100, self.bounds.height > 100,
+                  let firstPage = self.document?.page(at: 0) else { return }
+            self.completedInitialLayout = true
+            if self.autoScales {
+                self.layoutDocumentView()
+                let fit = self.scaleFactorForSizeToFit
+                if fit.isFinite && fit > 0 {
+                    self.scaleFactor = min(self.maxScaleFactor, max(self.minScaleFactor, fit))
+                }
+                self.autoScales = true
+            }
+            self.go(to: firstPage)
+            self.onInitialLayout?(self.scaleFactor)
+        }
+    }
+    override func mouseDown(with event: NSEvent) {
+        let point = convert(event.locationInWindow, from: nil)
+        if let placement, let page = page(for: point, nearest: false) {
+            placement(page, convert(point, to: page))
+            return
+        }
+        if let page = page(for: point, nearest: false),
+           page.annotation(at: convert(point, to: page))?.type == "Widget" {
+            guard formsEditable else { return }
+            onFormInteraction?()
+        }
+        super.mouseDown(with: event)
+    }
+}
+
+struct PDFCanvas: NSViewRepresentable {
+    @ObservedObject var model: PDFWorkspaceModel
+    let twoUp: Bool
+    let placement: ((PDFPage, NSPoint) -> Void)?
+    func makeCoordinator() -> Coordinator { Coordinator(model: model) }
+    func makeNSView(context: Context) -> GaoPDFView {
+        let view = GaoPDFView()
+        view.document = model.document
+        view.backgroundColor = NSColor.windowBackgroundColor
+        view.displayDirection = .vertical
+        view.displayMode = twoUp ? .twoUpContinuous : .singlePageContinuous
+        view.displaysPageBreaks = true
+        view.minScaleFactor = 0.15
+        view.maxScaleFactor = 5
+        // Setting either scale limit disables PDFKit's autoScales.
+        view.autoScales = true
+        view.enableDataDetectors = false
+        model.pdfView = view
+        view.placement = placement
+        view.onFormInteraction = { [weak model] in model?.formMayHaveChanged() }
+        view.formsEditable = model.permitsForms
+        view.onInitialLayout = { [weak model] scale in
+            model?.zoom = scale
+            model?.currentPage = 1
+        }
+        context.coordinator.observe(view)
+        return view
+    }
+    func updateNSView(_ view: GaoPDFView, context: Context) {
+        if view.document !== model.document { view.document = model.document }
+        let desired: PDFDisplayMode = twoUp ? .twoUpContinuous : .singlePageContinuous
+        if view.displayMode != desired {
+            let wasAutomatic = view.autoScales
+            let previousScale = view.scaleFactor
+            view.displayMode = desired
+            view.autoScales = wasAutomatic
+            if !wasAutomatic { view.scaleFactor = previousScale }
+        }
+        view.placement = placement
+        view.onFormInteraction = { [weak model] in model?.formMayHaveChanged() }
+        view.formsEditable = model.permitsForms
+        model.pdfView = view
+    }
+    static func dismantleNSView(_ view: GaoPDFView, coordinator: Coordinator) {
+        coordinator.stopObserving()
+        view.placement = nil
+        view.onFormInteraction = nil
+        view.onInitialLayout = nil
+    }
+    @MainActor final class Coordinator {
+        let model: PDFWorkspaceModel
+        var tokens: [NSObjectProtocol] = []
+        init(model: PDFWorkspaceModel) { self.model = model }
+        func observe(_ view: PDFView) {
+            tokens.append(NotificationCenter.default.addObserver(forName: .PDFViewPageChanged, object: view, queue: .main) { [weak self, weak view] _ in
+                Task { @MainActor in
+                    guard let self, let page = view?.currentPage, let document = self.model.document else { return }
+                    self.model.currentPage = document.index(for: page) + 1
+                }
+            })
+            tokens.append(NotificationCenter.default.addObserver(forName: .PDFViewScaleChanged, object: view, queue: .main) { [weak self, weak view] _ in
+                Task { @MainActor in guard let view else { return }; self?.model.zoom = view.scaleFactor }
+            })
+            tokens.append(NotificationCenter.default.addObserver(forName: .PDFViewSelectionChanged, object: view, queue: .main) { [weak self, weak view] _ in
+                Task { @MainActor in self?.model.hasSelection = !(view?.currentSelection?.string ?? "").isEmpty }
+            })
+        }
+        func stopObserving() { for token in tokens { NotificationCenter.default.removeObserver(token) }; tokens.removeAll() }
+    }
+}
+
+struct PDFThumbnails: NSViewRepresentable {
+    @ObservedObject var model: PDFWorkspaceModel
+    func makeNSView(context: Context) -> PDFThumbnailView {
+        let view = PDFThumbnailView()
+        view.thumbnailSize = NSSize(width: 110, height: 146)
+        view.backgroundColor = .controlBackgroundColor
+        view.pdfView = model.pdfView
+        return view
+    }
+    func updateNSView(_ view: PDFThumbnailView, context: Context) {
+        if view.pdfView !== model.pdfView { view.pdfView = model.pdfView }
+        view.needsDisplay = true
+    }
+}
+
+struct PDFWorkspace: View {
+    let url: URL
+    let onSaved: () -> Void
+    let onError: (String) -> Void
+    @StateObject private var model: PDFWorkspaceModel
+    @State private var showThumbnails = true
+    @State private var showInspector = false
+    @State private var inspectorTab = 0
+    @State private var twoUp = false
+    @State private var search = ""
+    @State private var pageInput = "1"
+    @State private var password = ""
+    @State private var textToAdd = ""
+    @State private var textFontSize: Double = 14
+    @State private var noteMode = true
+    @State private var showTextSheet = false
+    @State private var placementText: String?
+    @State private var pendingNote = true
+    @State private var showExtractSheet = false
+    @State private var showCropSheet = false
+    @State private var cropTop = "0"
+    @State private var cropLeft = "0"
+    @State private var cropBottom = "0"
+    @State private var cropRight = "0"
+    @State private var pageRange = ""
+    @State private var showDeleteConfirmation = false
+    @State private var editingAnnotation: PDFAnnotationEntry?
+    @State private var annotationText = ""
+    @State private var showAnnotationSheet = false
+    @State private var showSignatureConfirmation = false
+
+    static let saveRequested = Notification.Name("GaoWenJian.saveActive")
+
+    init(url: URL, onSaved: @escaping () -> Void, onError: @escaping (String) -> Void) {
+        self.url = url
+        self.onSaved = onSaved
+        self.onError = onError
+        _model = StateObject(wrappedValue: PDFWorkspaceModel(url: url))
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            if let error = model.loadError {
+                ContentUnavailableView("无法打开 PDF", systemImage: "exclamationmark.document", description: Text(error))
+            } else if model.document?.isLocked == true {
+                lockedView
+            } else {
+                readingToolbar
+                Divider()
+                editingToolbar
+                Divider()
+                HSplitView {
+                    if showThumbnails {
+                        VStack(spacing: 0) {
+                            Text("页面").font(.caption.weight(.medium)).foregroundStyle(.secondary).padding(8)
+                            PDFThumbnails(model: model)
+                        }.frame(minWidth: 100, idealWidth: 140, maxWidth: 220)
+                    }
+                    PDFCanvas(model: model, twoUp: twoUp, placement: placementHandler)
+                        .frame(minWidth: 280, maxWidth: .infinity, maxHeight: .infinity)
+                    if showInspector { inspector.frame(minWidth: 230, idealWidth: 270, maxWidth: 350) }
+                }.frame(maxWidth: .infinity, maxHeight: .infinity).layoutPriority(1)
+                Divider()
+                statusBar
+            }
+        }.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        .onChange(of: model.currentPage) { _, page in pageInput = String(page) }
+        .onReceive(NotificationCenter.default.publisher(for: Self.saveRequested)) { notification in
+            if notification.object as? String == url.path { requestSave(asNew: false) }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: Notification.Name("GaoWenJian.discardDraft"))) { notification in
+            if notification.object as? String == url.path { model.discardDraft() }
+        }
+        .onAppear { model.publishDirty() }
+        .sheet(isPresented: $showTextSheet) { addTextSheet }
+        .sheet(isPresented: $showExtractSheet) { extractSheet }
+        .sheet(isPresented: $showCropSheet) { cropSheet }
+        .sheet(isPresented: $showAnnotationSheet) { annotationSheet }
+        .confirmationDialog("删除第 \(model.currentPage) 页？", isPresented: $showDeleteConfirmation, titleVisibility: .visible) {
+            Button("删除页面", role: .destructive) { perform { try model.deleteCurrentPage() } }
+            Button("取消", role: .cancel) { }
+        } message: { Text("可通过 PDF 工具栏撤销。保存时会先保留原文件快照。") }
+        .alert("修改将影响已有数字签名", isPresented: $showSignatureConfirmation) {
+            Button("另存副本") { performSave(asNew: true) }
+            Button("取消", role: .cancel) { }
+        } message: { Text("此 PDF 含签名字段。编辑后已有数字签名可能失效，请另存副本保留原件。") }
+    }
+
+    private var lockedView: some View {
+        VStack(spacing: 16) {
+            Image(systemName: "lock.doc").font(.system(size: 40)).foregroundStyle(.secondary)
+            Text("输入 PDF 密码").font(.title2.weight(.semibold))
+            SecureField("密码", text: $password).textFieldStyle(.roundedBorder).frame(width: 260)
+                .onSubmit { perform { try model.unlock(password: password) }; password = "" }
+            Button("解锁阅读") { perform { try model.unlock(password: password) }; password = "" }.buttonStyle(.borderedProminent)
+            Text("加密文件在此版本中只读，以保留原有加密设置。").font(.caption).foregroundStyle(.secondary)
+        }.frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private var readingToolbar: some View {
+        HStack(spacing: 10) {
+            Button { showThumbnails.toggle() } label: { Image(systemName: "sidebar.left") }.help("显示或隐藏缩略图")
+            Button { model.go(to: model.currentPage - 1) } label: { Image(systemName: "chevron.left") }.disabled(model.currentPage <= 1)
+            HStack(spacing: 3) {
+                TextField("页", text: $pageInput).textFieldStyle(.roundedBorder).frame(width: 44)
+                    .multilineTextAlignment(.center).onSubmit {
+                        if let page = Int(pageInput), page >= 1, page <= model.pageCount { model.go(to: page) }
+                        else { pageInput = String(model.currentPage) }
+                    }
+                Text("/ \(model.pageCount)").foregroundStyle(.secondary).monospacedDigit()
+            }
+            Button { model.go(to: model.currentPage + 1) } label: { Image(systemName: "chevron.right") }.disabled(model.currentPage >= model.pageCount)
+            Divider().frame(height: 18)
+            Button { changeZoom(by: 1 / 1.2) } label: { Image(systemName: "minus.magnifyingglass") }.help("缩小")
+            Text("\(Int(model.zoom * 100))%").font(.caption).monospacedDigit().frame(width: 42)
+            Button { changeZoom(by: 1.2) } label: { Image(systemName: "plus.magnifyingglass") }.help("放大")
+            Button("适合") { model.pdfView?.autoScales = true }.help("适合窗口")
+            Toggle(isOn: $twoUp) { Image(systemName: "book.pages") }.toggleStyle(.button).help("双页阅读")
+            Spacer(minLength: 4)
+            HStack(spacing: 4) {
+                Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
+                TextField("搜索 PDF 文字", text: $search).textFieldStyle(.plain).onSubmit { model.find(search) }
+                if !search.isEmpty { Button { search = ""; model.find("") } label: { Image(systemName: "xmark.circle.fill") }.buttonStyle(.plain).foregroundStyle(.secondary) }
+            }.padding(6).background(.quaternary, in: RoundedRectangle(cornerRadius: 6)).frame(minWidth: 130, idealWidth: 190, maxWidth: 240)
+            if !model.searchResults.isEmpty {
+                Button { model.showSearchResult(model.searchResultIndex - 1) } label: { Image(systemName: "chevron.up") }.help("上一个搜索结果")
+                Button { model.showSearchResult(model.searchResultIndex + 1) } label: { Image(systemName: "chevron.down") }.help("下一个搜索结果")
+            }
+            Button { showInspector.toggle() } label: { Image(systemName: "sidebar.right") }.help("批注、表单与目录")
+        }.buttonStyle(.borderless).padding(.horizontal, 12).padding(.vertical, 9)
+    }
+
+    private var editingToolbar: some View {
+        HStack(spacing: 12) {
+            Menu {
+                Button("高亮选中文字") { perform { try model.markupSelection(type: .highlight) } }.disabled(!model.hasSelection)
+                Button("下划线") { perform { try model.markupSelection(type: .underline) } }.disabled(!model.hasSelection)
+                Button("删除线") { perform { try model.markupSelection(type: .strikeOut) } }.disabled(!model.hasSelection)
+                Divider()
+                Button("添加便签…") { openTextSheet(note: true) }
+                Button("添加文字…") { openTextSheet(note: false) }
+                Button("查看批注") { showInspector = true; inspectorTab = 0 }
+            } label: { Label("批注", systemImage: "highlighter") }.disabled(!model.permitsAnnotations)
+            Menu {
+                Button("顺时针旋转当前页") { perform { try model.rotateCurrentPage() } }
+                Button("裁剪当前页可见区域…") { cropTop = "0"; cropLeft = "0"; cropBottom = "0"; cropRight = "0"; showCropSheet = true }
+                Button("当前页前移") { perform { try model.moveCurrentPage(by: -1) } }.disabled(model.currentPage <= 1)
+                Button("当前页后移") { perform { try model.moveCurrentPage(by: 1) } }.disabled(model.currentPage >= model.pageCount)
+                Divider()
+                Button("删除当前页…", role: .destructive) { showDeleteConfirmation = true }.disabled(model.pageCount <= 1)
+                Button("追加 PDF 合并…") { merge() }
+                Divider()
+                Button("提取指定页面…") { pageRange = String(model.currentPage); showExtractSheet = true }
+                Button("每页拆分为独立 PDF…") { split() }
+            } label: { Label("页面", systemImage: "square.3.layers.3d") }.disabled(!model.permitsAssembly)
+            Button { perform { try model.undo() } } label: { Image(systemName: "arrow.uturn.backward") }.disabled(!model.canUndo).help("撤销 PDF 修改")
+            Button { perform { try model.redo() } } label: { Image(systemName: "arrow.uturn.forward") }.disabled(!model.canRedo).help("重做 PDF 修改")
+            if placementText != nil {
+                Text("点击页面放置\(pendingNote ? "便签" : "文字")").font(.caption).foregroundStyle(.orange)
+                Button("取消") { placementText = nil }
+            } else {
+                Text(model.document?.isEncrypted == true ? "加密 PDF · 只读" : "支持批注、表单和页面编辑").font(.caption).foregroundStyle(.secondary).lineLimit(1)
+            }
+            if model.recoveryConflict { Button("另存恢复副本…") { exportRecovery() } }
+            Spacer(minLength: 0)
+            Button("另存为…") { requestSave(asNew: true) }.disabled(model.document?.isEncrypted == true)
+            Button { requestSave(asNew: false) } label: { Label(model.dirty ? "保存 PDF •" : "保存 PDF", systemImage: "square.and.arrow.down") }
+                .disabled(model.document?.isEncrypted == true)
+        }.buttonStyle(.borderless).padding(.horizontal, 12).padding(.vertical, 8)
+    }
+
+    private var statusBar: some View {
+        HStack(spacing: 12) {
+            Circle().fill(model.dirty ? Color.orange : Color.green).frame(width: 6, height: 6)
+            Text(model.status).lineLimit(1)
+            Spacer()
+            Text("原文重排与扫描文字识别暂不提供").foregroundStyle(.secondary).lineLimit(1)
+        }.font(.caption).padding(.horizontal, 12).padding(.vertical, 6)
+    }
+
+    private var inspector: some View {
+        VStack(spacing: 0) {
+            Picker("信息", selection: $inspectorTab) {
+                Text("批注").tag(0)
+                Text("表单").tag(1)
+                Text("目录").tag(2)
+            }.pickerStyle(.segmented).padding(10)
+            Divider()
+            if inspectorTab == 0 { annotationList }
+            else if inspectorTab == 1 { formList }
+            else { outlineList }
+        }.background(Color(nsColor: .controlBackgroundColor))
+    }
+
+    private var annotationList: some View {
+        Group {
+            if model.annotationEntries.isEmpty {
+                ContentUnavailableView("暂无批注", systemImage: "highlighter", description: Text("选中文字后添加高亮，或添加便签。"))
+            } else {
+                List(model.annotationEntries) { entry in
+                    VStack(alignment: .leading, spacing: 6) {
+                        HStack {
+                            Text(entry.title).font(.caption.weight(.semibold))
+                            Spacer()
+                            Text("第 \(entry.pageIndex + 1) 页").font(.caption2).foregroundStyle(.secondary)
+                        }
+                        Text(entry.annotation.contents ?? "无文字内容").font(.caption).lineLimit(4).foregroundStyle(.secondary)
+                        HStack {
+                            Button("定位") { model.go(to: entry.pageIndex + 1) }
+                            if entry.annotation.type == "Text" || entry.annotation.type == "FreeText" {
+                                Button("编辑") { editingAnnotation = entry; annotationText = entry.annotation.contents ?? ""; showAnnotationSheet = true }.disabled(!model.permitsAnnotations)
+                            }
+                            Spacer()
+                            Button { perform { try model.removeAnnotation(entry) } } label: { Image(systemName: "trash") }.disabled(!model.permitsAnnotations)
+                        }.font(.caption).buttonStyle(.borderless)
+                    }.padding(.vertical, 5)
+                }.listStyle(.plain)
+            }
+        }
+    }
+
+    private var formList: some View {
+        Group {
+            if model.formEntries.isEmpty {
+                ContentUnavailableView("无交互表单", systemImage: "rectangle.and.pencil.and.ellipsis", description: Text("普通扫描表格可使用“添加文字”填写。"))
+            } else {
+                List(model.formEntries) { entry in
+                    PDFFormRow(entry: entry, model: model, onError: onError)
+                }.listStyle(.plain)
+            }
+        }
+    }
+
+    private var outlineList: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 0) {
+                if let root = model.document?.outlineRoot, root.numberOfChildren > 0 {
+                    ForEach(0..<root.numberOfChildren, id: \.self) { index in
+                        if let child = root.child(at: index) { PDFOutlineRow(outline: child, model: model, depth: 0) }
+                    }
+                } else {
+                    ContentUnavailableView("没有目录", systemImage: "list.bullet.indent", description: Text("此 PDF 未包含目录书签。"))
+                }
+            }.frame(maxWidth: .infinity, alignment: .leading).padding(8)
+        }
+    }
+
+    private var addTextSheet: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text(noteMode ? "添加便签" : "添加文字批注").font(.title3.weight(.semibold))
+            Text("输入内容后，点击 PDF 页面选择位置。").font(.caption).foregroundStyle(.secondary)
+            TextEditor(text: $textToAdd).font(.system(size: 14)).frame(width: 400, height: 140).border(Color.secondary.opacity(0.25))
+            if !noteMode {
+                HStack {
+                    Text("字号")
+                    Slider(value: $textFontSize, in: 8...36, step: 1)
+                    Text("\(Int(textFontSize)) pt").monospacedDigit().frame(width: 48)
+                }
+            }
+            HStack {
+                Button("取消") { showTextSheet = false }.keyboardShortcut(.cancelAction)
+                Spacer()
+                Button("选择位置") {
+                    placementText = textToAdd
+                    pendingNote = noteMode
+                    showTextSheet = false
+                }.keyboardShortcut(.defaultAction).disabled(textToAdd.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }
+        }.padding(22)
+    }
+
+    private var extractSheet: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("提取页面").font(.title3.weight(.semibold))
+            Text("填写页码或范围，例如 1,3-5。共 \(model.pageCount) 页。").font(.caption).foregroundStyle(.secondary)
+            TextField("页码", text: $pageRange).textFieldStyle(.roundedBorder).frame(width: 340)
+            HStack {
+                Button("取消") { showExtractSheet = false }.keyboardShortcut(.cancelAction)
+                Spacer()
+                Button("导出 PDF…") {
+                    perform {
+                        let pages = try PDFWorkspaceModel.parsePages(pageRange, count: model.pageCount)
+                        let output = try model.extractedDocument(pages: pages)
+                        showExtractSheet = false
+                        if let target = saveURL(name: "\(url.deletingPathExtension().lastPathComponent)-提取.pdf") {
+                            if target.standardizedFileURL == url.standardizedFileURL { throw PDFWorkspaceError.message("提取结果请另存到新文件，避免覆盖正在编辑的原件。") }
+                            try model.export(output, to: target)
+                            onSaved()
+                        }
+                    }
+                }.keyboardShortcut(.defaultAction)
+            }
+        }.padding(22)
+    }
+
+    private var annotationSheet: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("编辑批注").font(.title3.weight(.semibold))
+            TextEditor(text: $annotationText).frame(width: 400, height: 140).border(Color.secondary.opacity(0.25))
+            HStack {
+                Button("取消") { showAnnotationSheet = false }.keyboardShortcut(.cancelAction)
+                Spacer()
+                Button("应用") {
+                    if let entry = editingAnnotation { perform { try model.updateAnnotation(entry, contents: annotationText) } }
+                    showAnnotationSheet = false
+                }.keyboardShortcut(.defaultAction)
+            }
+        }.padding(22)
+    }
+
+    private var cropSheet: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("裁剪第 \(model.currentPage) 页").font(.title3.weight(.semibold))
+            Text("输入各边缩进距离，单位为点（1 点 = 1/72 英寸）。").font(.caption).foregroundStyle(.secondary)
+            Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 10) {
+                GridRow { Text("上"); TextField("0", text: $cropTop); Text("下"); TextField("0", text: $cropBottom) }
+                GridRow { Text("左"); TextField("0", text: $cropLeft); Text("右"); TextField("0", text: $cropRight) }
+            }.textFieldStyle(.roundedBorder).frame(width: 340)
+            Text("裁剪只改变可见区域，页面区域外的原内容仍保留。此操作不用于删除敏感内容。").font(.caption).foregroundStyle(.secondary).frame(width: 340, alignment: .leading)
+            HStack {
+                Button("取消") { showCropSheet = false }.keyboardShortcut(.cancelAction)
+                Spacer()
+                Button("应用裁剪") {
+                    perform {
+                        guard let top = Double(cropTop), let left = Double(cropLeft), let bottom = Double(cropBottom), let right = Double(cropRight),
+                              top.isFinite, left.isFinite, bottom.isFinite, right.isFinite else {
+                            throw PDFWorkspaceError.message("请填写有效的裁剪距离。")
+                        }
+                        try model.cropCurrentPage(top: top, left: left, bottom: bottom, right: right)
+                        showCropSheet = false
+                    }
+                }.keyboardShortcut(.defaultAction)
+            }
+        }.padding(22)
+    }
+
+    private var placementHandler: ((PDFPage, NSPoint) -> Void)? {
+        guard let text = placementText else { return nil }
+        return { page, point in
+            perform { try model.addText(text, note: pendingNote, page: page, at: point, fontSize: CGFloat(textFontSize)) }
+            placementText = nil
+        }
+    }
+
+    private func openTextSheet(note: Bool) { noteMode = note; textToAdd = ""; showTextSheet = true }
+    private func changeZoom(by factor: CGFloat) {
+        guard let view = model.pdfView else { return }
+        view.autoScales = false
+        view.scaleFactor = min(view.maxScaleFactor, max(view.minScaleFactor, view.scaleFactor * factor))
+    }
+    private func perform(_ action: () throws -> Void) {
+        do { try action() } catch { onError(error.localizedDescription) }
+    }
+    private func requestSave(asNew: Bool) {
+        if model.containsSignatures { showSignatureConfirmation = true }
+        else { performSave(asNew: asNew) }
+    }
+    private func performSave(asNew: Bool) {
+        perform {
+            if asNew {
+                guard let target = saveURL(name: "\(url.deletingPathExtension().lastPathComponent)-副本.pdf") else { return }
+                _ = try model.save(to: target)
+            } else { _ = try model.save() }
+            onSaved()
+        }
+    }
+    private func saveURL(name: String) -> URL? {
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [.pdf]
+        panel.nameFieldStringValue = name
+        panel.directoryURL = url.deletingLastPathComponent()
+        panel.canCreateDirectories = true
+        return panel.runModal() == .OK ? panel.url : nil
+    }
+    private func merge() {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.pdf]
+        panel.allowsMultipleSelection = true
+        panel.canChooseDirectories = false
+        panel.message = "所选 PDF 的页面将追加到当前文档末尾。原有书签保留在各自原件中。"
+        if panel.runModal() == .OK { perform { try model.appendPDFs(panel.urls) } }
+    }
+    private func exportRecovery() {
+        perform {
+            let recovered = try model.recoveredDocumentForExport()
+            guard let target = saveURL(name: "\(url.deletingPathExtension().lastPathComponent)-恢复副本.pdf") else { return }
+            guard target.standardizedFileURL != url.standardizedFileURL else {
+                throw PDFWorkspaceError.message("恢复副本请另存新文件，以保留原文件的外部修改。")
+            }
+            try model.export(recovered, to: target)
+            onSaved()
+        }
+    }
+    private func split() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.canCreateDirectories = true
+        panel.message = "选择拆分文件的保存位置。会新建独立文件夹保留现有文件。"
+        guard panel.runModal() == .OK, let folder = panel.url else { return }
+        perform {
+            let formatter = DateFormatter(); formatter.dateFormat = "yyyyMMdd-HHmmss"
+            let outputFolder = folder.appendingPathComponent("\(url.deletingPathExtension().lastPathComponent)-拆分-\(formatter.string(from: Date()))-\(UUID().uuidString.prefix(4))", isDirectory: true)
+            try FileManager.default.createDirectory(at: outputFolder, withIntermediateDirectories: false)
+            for index in 0..<model.pageCount {
+                let single = try model.extractedDocument(pages: [index])
+                try model.export(single, to: outputFolder.appendingPathComponent(String(format: "第%03d页.pdf", index + 1)))
+            }
+            model.status = "已拆分 \(model.pageCount) 页到 \(outputFolder.lastPathComponent)"
+            NSWorkspace.shared.activateFileViewerSelecting([outputFolder])
+            onSaved()
+        }
+    }
+}
+
+private struct PDFFormRow: View {
+    let entry: PDFFormEntry
+    @ObservedObject var model: PDFWorkspaceModel
+    let onError: (String) -> Void
+    @State private var value = ""
+    @State private var checked = false
+    var body: some View {
+        VStack(alignment: .leading, spacing: 7) {
+            HStack {
+                Text(entry.title).font(.caption.weight(.semibold)).lineLimit(2)
+                Spacer()
+                Button("定位") { model.go(to: entry.pageIndex + 1) }.font(.caption).buttonStyle(.borderless)
+            }
+            if entry.isSignature {
+                Text("数字签名字段 · 只读").font(.caption).foregroundStyle(.secondary)
+            } else if entry.isButton {
+                if entry.annotation.widgetControlType == .pushButtonControl {
+                    Text("PDF 操作按钮").font(.caption).foregroundStyle(.secondary)
+                } else {
+                    Toggle("选中", isOn: $checked).font(.caption).onChange(of: checked) { _, state in
+                        if state != (entry.annotation.buttonWidgetState == .onState) {
+                            do { try model.setForm(entry, checked: state) } catch { onError(error.localizedDescription) }
+                        }
+                    }
+                }
+            } else {
+                TextField("填写内容", text: $value).textFieldStyle(.roundedBorder).font(.caption)
+                HStack {
+                    if entry.annotation.widgetFieldType == .choice { Text("选项：\((entry.annotation.choices ?? []).joined(separator: " / "))").font(.caption2).foregroundStyle(.secondary).lineLimit(2) }
+                    Spacer()
+                    Button("应用") {
+                        do { try model.setForm(entry, text: value) } catch { onError(error.localizedDescription) }
+                    }.font(.caption).buttonStyle(.borderless)
+                }
+            }
+        }.padding(.vertical, 4)
+        .disabled(!model.permitsForms || entry.annotation.isReadOnly)
+        .onAppear { value = entry.annotation.widgetStringValue ?? ""; checked = entry.annotation.buttonWidgetState == .onState }
+    }
+}
+
+private struct PDFOutlineRow: View {
+    let outline: PDFOutline
+    @ObservedObject var model: PDFWorkspaceModel
+    let depth: Int
+    @State private var expanded = true
+    var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            HStack(spacing: 4) {
+                if outline.numberOfChildren > 0 {
+                    Button { expanded.toggle() } label: { Image(systemName: expanded ? "chevron.down" : "chevron.right").font(.caption2) }.buttonStyle(.plain).frame(width: 14)
+                } else { Color.clear.frame(width: 14, height: 1) }
+                Button(outline.label ?? "未命名书签") {
+                    if let destination = outline.destination { model.pdfView?.go(to: destination) }
+                    else if let action = outline.action as? PDFActionGoTo { model.pdfView?.go(to: action.destination) }
+                }.buttonStyle(.plain).font(.caption).lineLimit(2)
+                Spacer(minLength: 0)
+            }.padding(.vertical, 5).padding(.leading, CGFloat(depth) * 12)
+            if expanded && depth < 20 {
+                ForEach(0..<outline.numberOfChildren, id: \.self) { index in
+                    if let child = outline.child(at: index) { AnyView(PDFOutlineRow(outline: child, model: model, depth: depth + 1)) }
+                }
+            }
+        }
+    }
+}

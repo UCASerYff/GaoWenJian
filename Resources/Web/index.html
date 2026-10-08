@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src gaomd: 'unsafe-eval'; style-src gaomd: 'unsafe-inline'; img-src gaomd: data:; font-src gaomd: data:; connect-src gaomd:; base-uri 'none'; form-action 'none'">
+  <title>搞文件 Markdown</title>
+  <link rel="stylesheet" href="vendor/katex.min.css">
+  <link rel="stylesheet" href="markdown.css">
+  <script defer src="vendor/marked.js"></script>
+  <script defer src="vendor/purify.min.js"></script>
+  <script defer src="vendor/katex.min.js"></script>
+  <script defer src="vendor/highlight.min.js"></script>
+  <script defer src="vendor/mermaid.min.js"></script>
+  <script defer src="markdown-core.js"></script>
+  <script defer src="markdown-editor.js"></script>
+</head>
+<body>
+  <aside id="outline" aria-label="文档大纲"><div class="outline-title">文档大纲</div><nav id="outline-items"></nav></aside>
+  <main id="workspace" class="mode-live">
+    <section id="source-pane"><textarea id="source" aria-label="Markdown 源码" spellcheck="false" autocapitalize="off" autocomplete="off" autocorrect="off" wrap="off"></textarea></section>
+    <section id="preview-pane" aria-label="Markdown 即时编辑"><article id="document" class="markdown-body"></article></section>
+  </main>
+  <footer><span id="status">正在准备编辑器…</span><span id="mode-hint">点击段落编辑 · Esc 完成编辑</span></footer>
+</body>
+</html>
