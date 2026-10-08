@@ -24,6 +24,7 @@ extension StickyNoteColor {
 struct StickyNotesWorkspace:View {
     @ObservedObject var store:StickyNotesStore
     var windows:StickyNotesWindowManager?
+    var onGoHome:()->Void = {}
     var onOpenMarkdown:(String)->Void = {_ in}
     @State private var selected:UUID?
     @State private var search=""
@@ -65,6 +66,7 @@ struct StickyNotesWorkspace:View {
     }
     private var header:some View {
         HStack(spacing:12) {
+            Button(action:onGoHome){Label("返回首页",systemImage:"chevron.left")}
             Label("便笺",systemImage:"note.text").font(.headline)
             Text("随手记下，留在桌面").font(.caption).foregroundStyle(.secondary)
             Spacer()

@@ -105,6 +105,7 @@ private struct RecoveryItem:Codable { var id:UUID;var path:String?;var kind:Stri
         catch{self.error=error.localizedDescription}
     }
     func select(_ session:FileSession){NSApp.keyWindow?.makeFirstResponder(nil);showingNotes=false;selection=session.id}
+    func showHome(){NSApp.keyWindow?.makeFirstResponder(nil);showingNotes=false;selection=nil}
     func openPanel(){let panel=NSOpenPanel();panel.canChooseDirectories=false;panel.allowsMultipleSelection=true;panel.title="打开文件";if panel.runModal() == .OK {panel.urls.forEach(open)}}
     func openFolderPanel(){let panel=NSOpenPanel();panel.canChooseFiles=false;panel.canChooseDirectories=true;panel.title="打开工作文件夹";if panel.runModal() == .OK, let url=panel.url {folder=url;refreshFolder();persistState()}}
     func open(_ url:URL) {

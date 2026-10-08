@@ -19,7 +19,7 @@ struct RootWorkspace:View {
                     Divider()
                 }
                 ZStack {
-                    if store.active != nil {
+                    if !store.tabs.isEmpty {
                         ForEach(store.tabs) { session in
                             TabWorkspace(session:session,store:store)
                                 .opacity(!store.showingNotes && store.selection == session.id ? 1 : 0)
@@ -28,7 +28,7 @@ struct RootWorkspace:View {
                         }
                     }
                     if store.showingNotes {
-                        StickyNotesWorkspace(store:stickyNotes,windows:stickyWindows,onOpenMarkdown:{text in store.newText(.markdown,text:text)})
+                        StickyNotesWorkspace(store:stickyNotes,windows:stickyWindows,onGoHome:store.showHome,onOpenMarkdown:{text in store.newText(.markdown,text:text)})
                     } else if store.active == nil {welcome}
                 }.frame(maxWidth:.infinity,maxHeight:.infinity)
                 Divider()

@@ -1,6 +1,6 @@
-# 搞文件 V1.01
+# 搞文件 V1.02
 
-macOS 本地文件编辑工作台，适用于 Apple Silicon、macOS 14 及以上。当前版本 **1.01 / build 2**，初始版本为 1.00。账户、联网同步和 AI 功能暂不开发。
+macOS 本地文件编辑工作台，适用于 Apple Silicon、macOS 14 及以上。当前版本 **1.02 / build 3**，初始版本为 1.00。账户、联网同步和 AI 功能暂不开发。
 
 | 文件 | 当前可用能力 |
 | --- | --- |
@@ -14,6 +14,8 @@ macOS 本地文件编辑工作台，适用于 Apple Silicon、macOS 14 及以上
 
 采用原生窗口、标签页、文件夹浏览、最近文件与独立设置窗口。用户文档保留原路径，覆盖前留存并校验原件快照；外部修改或删除会阻止覆盖。文本、PDF、Office、RTF 有本地恢复机制；损坏草稿保留并报错。
 
+V1.02 在便笺中心顶部加入“返回首页”按钮。返回首页会保留已经打开的文件标签和未保存编辑，点击原标签即可继续。
+
 V1.01 新增便笺中心与桌面便条，参考本机 macOS 便笺的使用方式，并补充集中搜索、分组、回收站和保存冲突保护。正文和附件保存在内部 `StickyNotes` 目录；关闭浮窗仅隐藏，删除移入回收站，不永久清空。支持将文字送入 Markdown 编辑器，原便笺继续保留；附件和完整富文本请导出 RTFD。不会自动读取或迁移系统便笺私人资料；需要迁移时先从系统便笺导出，再手动导入。详见 [便笺说明](Docs/StickyNotes.md)。
 
 首版的 Office 为基础编辑，复杂对象保留在原文件但不完整渲染。PDF 不提供原文重排、OCR 或安全涂黑。LaTeX 尚未完整对齐 Overleaf：可视化排版、双向定位、完整 TeX Live 宏包管理、项目级搜索、文献管理、版本差异等仍需要后续迭代；涉及账户或联网的协作与同步暂不包含。不要把现有基础能力理解为完整 Microsoft Office、Typora 或 Overleaf 的等价替代。
@@ -22,7 +24,7 @@ V1.01 新增便笺中心与桌面便条，参考本机 macOS 便笺的使用方�
 
 ## 安装与运行
 
-安装包在 `Release/GaoWenJian-1.01.dmg`，也可从 [GitHub Releases](https://github.com/UCASerYff/GaoWenJian/releases) 下载。打开后将“搞文件”拖入 Applications。当前版本采用本地签名，未公证。默认安装位置 `/Applications/搞文件.app`。
+安装包在 `Release/GaoWenJian-1.02.dmg`，也可从 [GitHub Releases](https://github.com/UCASerYff/GaoWenJian/releases) 下载。打开后将“搞文件”拖入 Applications。当前版本采用本地签名，未公证。默认安装位置 `/Applications/搞文件.app`。
 
 快捷键：⌘O 打开、⌘N 新 Markdown、⇧⌘N 新桌面便笺、⌘2 便笺中心、⌘S 保存、⇧⌘S 文本另存 UTF-8、⌘F 文本查找、⌘B 当前 LaTeX 编译、⌘W 关闭当前标签或浮窗、⌘, 设置。
 
