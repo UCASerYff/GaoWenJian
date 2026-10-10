@@ -8,6 +8,7 @@ import Foundation
         try CoreTests.run()
         try runOfficeRoundTripTests()
         try PDFModuleTests.run(in:FileSafety.root.appendingPathComponent("PDFTests"))
+        try LaTeXTests.run()
         try runStickyNotesTests()
         try runStickyNotesUITests()
         print("PASS: isolated native regression suite")
