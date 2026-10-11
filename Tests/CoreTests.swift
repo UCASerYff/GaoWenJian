@@ -48,6 +48,29 @@ import Foundation
             try require(store.tabs[0].dirty,"empty restored draft still needs saving")
         }
         try FileManager.default.removeItem(at:recovery)
+        do {
+            let store=WorkspaceStore()
+            store.newText(.markdown,text:"保留未保存文字")
+            let writing=store.active!
+            let pdf=FileSession(url:root.appendingPathComponent("navigation.pdf"),kind:.pdf)
+            pdf.moduleDirty=true;store.tabs.append(pdf);store.select(pdf)
+            store.showingNotes=true;store.showHome()
+            try require(store.active == nil && !store.showingNotes && store.tabs.count==2,"home exits notes without closing tabs")
+            try require(writing.dirty && writing.text=="保留未保存文字" && pdf.moduleDirty,"home preserves text and PDF unsaved edits")
+            store.select(pdf)
+            try require(store.active === pdf && pdf.moduleDirty,"hidden PDF session resumes unchanged")
+            for extensionName in FileKind.word.extensions + FileKind.spreadsheet.extensions + FileKind.presentation.extensions {
+                let url=root.appendingPathComponent("view-only."+extensionName)
+                let bytes=Data("viewer must not write".utf8);try bytes.write(to:url)
+                let kind=FileKind(url:url)
+                try require(kind.isOfficeViewer && !kind.canSave,"Office extension routes to read-only viewer")
+                let session=FileSession(url:url,kind:kind)
+                _=store.save(session)
+                let after=try Data(contentsOf:url)
+                try require(after==bytes,"generic save leaves Office original unchanged")
+            }
+            store.tabs=[];store.checkpoint()
+        }
         print("Core: PASS (CSV/TSV, exact history, external mutation/deletion, corrupt-state preservation, empty-draft recovery)")
     }
 }

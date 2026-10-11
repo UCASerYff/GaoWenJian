@@ -7,6 +7,7 @@ import Foundation
         _ = NSApplication.shared
         try CoreTests.run()
         try runOfficeRoundTripTests()
+        try runOfficeViewerTests()
         try PDFModuleTests.run(in:FileSafety.root.appendingPathComponent("PDFTests"))
         try LaTeXTests.run()
         try runStickyNotesTests()

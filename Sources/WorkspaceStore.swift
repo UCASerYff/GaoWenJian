@@ -9,9 +9,9 @@ enum FileKind: String, CaseIterable {
         case "md", "markdown": self = .markdown
         case "tex", "bib", "sty", "cls": self = .latex
         case "pdf": self = .pdf
-        case "docx": self = .word
-        case "xlsx": self = .spreadsheet
-        case "pptx": self = .presentation
+        case "doc", "docx", "docm", "dotx", "dotm", "odt": self = .word
+        case "xls", "xlsx", "xlsm", "xltx", "xltm", "ods": self = .spreadsheet
+        case "ppt", "pptx", "pptm", "potx", "potm", "pps", "ppsx", "odp": self = .presentation
         case "csv", "tsv": self = .csv
         case "rtf": self = .richText
         case "txt", "json", "xml", "yaml", "yml", "html", "css", "js", "swift", "py", "r", "log", "sh": self = .text
@@ -30,6 +30,17 @@ enum FileKind: String, CaseIterable {
         case .text:return "curlybraces";case .image:return "photo";case .other:return "doc"
     }}
     var isText:Bool { [.markdown,.latex,.csv,.text].contains(self) }
+    var isOfficeViewer:Bool { [.word,.spreadsheet,.presentation].contains(self) }
+    var canSave:Bool { isText || self == .pdf || self == .richText }
+    var extensions:[String] { switch self {
+        case .latex:return ["tex","bib","sty","cls"]
+        case .markdown:return ["md","markdown"]
+        case .pdf:return ["pdf"]
+        case .word:return ["doc","docx","docm","dotx","dotm","odt"]
+        case .spreadsheet:return ["xls","xlsx","xlsm","xltx","xltm","ods"]
+        case .presentation:return ["ppt","pptx","pptm","potx","potm","pps","ppsx","odp"]
+        default:return []
+    }}
 }
 
 @MainActor final class FileSession:ObservableObject,Identifiable {
@@ -107,6 +118,13 @@ private struct RecoveryItem:Codable { var id:UUID;var path:String?;var kind:Stri
     func select(_ session:FileSession){NSApp.keyWindow?.makeFirstResponder(nil);showingNotes=false;selection=session.id}
     func showHome(){NSApp.keyWindow?.makeFirstResponder(nil);showingNotes=false;selection=nil}
     func openPanel(){let panel=NSOpenPanel();panel.canChooseDirectories=false;panel.allowsMultipleSelection=true;panel.title="打开文件";if panel.runModal() == .OK {panel.urls.forEach(open)}}
+    func openPanel(for kinds:[FileKind]) {
+        let panel=NSOpenPanel();panel.canChooseDirectories=false;panel.allowsMultipleSelection=true
+        panel.title="打开 " + kinds.map(\.title).joined(separator:" / ")
+        panel.allowedContentTypes=kinds.flatMap(\.extensions).compactMap{UTType(filenameExtension:$0)}
+        panel.allowsOtherFileTypes=false
+        if panel.runModal() == .OK {panel.urls.forEach(open)}
+    }
     func openFolderPanel(){let panel=NSOpenPanel();panel.canChooseFiles=false;panel.canChooseDirectories=true;panel.title="打开工作文件夹";if panel.runModal() == .OK, let url=panel.url {folder=url;refreshFolder();persistState()}}
     func open(_ url:URL) {
         var directory:ObjCBool=false
@@ -130,11 +148,8 @@ private struct RecoveryItem:Codable { var id:UUID;var path:String?;var kind:Stri
         } catch {self.error="无法打开文件：\(error.localizedDescription)"}
     }
     func newText(_ kind:FileKind,text:String="") {NSApp.keyWindow?.makeFirstResponder(nil);showingNotes=false;let tab=FileSession(text:text,kind:kind,dirty:!text.isEmpty);tab.savedText="";tabs.append(tab);selection=tab.id;checkpoint()}
-    func createOffice(_ kind:String) {
-        let panel=NSSavePanel();panel.title="新建 \(kind.uppercased()) 文件";panel.nameFieldStringValue="未命名."+kind
-        if panel.runModal() == .OK,let url=panel.url {do {try OfficeFactory.create(kind:kind,to:url);open(url)}catch{self.error=error.localizedDescription}}
-    }
     @discardableResult func save(_ session:FileSession,asCopy:Bool=false) -> Bool {
+        guard session.kind.canSave else {return true}
         if !session.kind.isText {
             if let url=session.url {NotificationCenter.default.post(name:Notification.Name("GaoWenJian.saveActive"),object:url.path)}
             return !session.moduleDirty

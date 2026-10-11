@@ -38,13 +38,12 @@ import UniformTypeIdentifiers
         }.defaultSize(width:1440,height:900)
         .commands{
             CommandGroup(replacing:.newItem){
+                Button("新建 LaTeX"){store.newText(.latex,text:Templates.latex)}
                 Button("新建 Markdown"){store.newText(.markdown)}.keyboardShortcut("n")
-                Button("新建便笺",action:newStickyNote).keyboardShortcut("n",modifiers:[.command,.shift])
+                Divider()
                 Button("打开文件…",action:store.openPanel).keyboardShortcut("o")
                 Button("打开文件夹…",action:store.openFolderPanel).keyboardShortcut("o",modifiers:[.command,.shift])
                 Menu("新建其他格式"){
-                    Button("LaTeX 文档"){store.newText(.latex,text:Templates.latex)}
-                    Button("Word 文档"){store.createOffice("docx")};Button("Excel 表格"){store.createOffice("xlsx")};Button("PPT 演示"){store.createOffice("pptx")}
                     Button("CSV 表格"){store.newText(.csv,text:"名称,数值,备注\n项目,0,\n")};Button("纯文本"){store.newText(.text)}
                 }
             }
@@ -52,11 +51,13 @@ import UniformTypeIdentifiers
                 Button("保存"){
                     if store.showingNotes || AppHub.isStickyWindow {_=AppHub.saveStickyNotes()}
                     else if let active=store.active{store.save(active)}
-                }.keyboardShortcut("s").disabled(store.active==nil && !store.showingNotes && !AppHub.isStickyWindow)
+                }.keyboardShortcut("s").disabled(store.active?.kind.canSave != true && !store.showingNotes && !AppHub.isStickyWindow)
                 Button("另存为…"){guard !store.showingNotes && !AppHub.isStickyWindow else{return};if let active=store.active{store.save(active,asCopy:true)}}.keyboardShortcut("s",modifiers:[.command,.shift]).disabled(store.active?.kind.isText != true || store.showingNotes || AppHub.isStickyWindow)
             }
             CommandGroup(after:.pasteboard){Button("查找…"){NSApp.sendAction(#selector(NSTextView.performFindPanelAction(_:)),to:nil,from:FindSender())}.keyboardShortcut("f")}
             CommandMenu("工作区"){
+                Button("返回首页"){store.showHome();openWindow(id:"main");NSApp.activate(ignoringOtherApps:true)}.keyboardShortcut("1")
+                Divider()
                 Button("编译当前 LaTeX"){guard !store.showingNotes && !AppHub.isStickyWindow else{return};if let active=store.active,store.save(active),let url=active.url{NotificationCenter.default.post(name:Notification.Name("GaoWenJian.compileActive"),object:url.path)}}.keyboardShortcut("b").disabled(store.active?.kind != .latex || store.showingNotes || AppHub.isStickyWindow)
                 Button("关闭当前标签或便笺"){
                     if AppHub.isStickyWindow{NSApp.keyWindow?.performClose(nil)}
@@ -70,7 +71,7 @@ import UniformTypeIdentifiers
             }
             CommandMenu("便笺"){
                 Button("显示便笺中心"){showStickyNotes()}.keyboardShortcut("2")
-                Button("新建便笺",action:newStickyNote)
+                Button("新建便笺",action:newStickyNote).keyboardShortcut("n",modifiers:[.command,.shift])
                 Divider()
                 Button("恢复桌面便笺"){AppHub.stickyWindows?.restoreDesktopWindows()}
                 Button("排列桌面便笺"){AppHub.stickyWindows?.arrangeDesktopWindows()}

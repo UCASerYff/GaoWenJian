@@ -6,6 +6,7 @@ import UniformTypeIdentifiers
 final class GaoPDFView: PDFView {
     var placement: ((PDFPage, NSPoint) -> Void)?
     var onFormInteraction: (() -> Void)?
+    var onAnnotationDoubleClick: ((PDFAnnotation) -> Void)?
     var formsEditable = true
     var onInitialLayout: ((CGFloat) -> Void)?
     private var completedInitialLayout = false
@@ -52,6 +53,12 @@ final class GaoPDFView: PDFView {
             placement(page, convert(point, to: page))
             return
         }
+        if event.clickCount == 2, let page = page(for: point, nearest: false),
+           let annotation = page.annotation(at: convert(point, to: page)),
+           annotation.type == "FreeText" || annotation.type == "Text" || PDFAnnotationEntry(annotation: annotation, pageIndex: 0).isImage {
+            onAnnotationDoubleClick?(annotation)
+            return
+        }
         if let page = page(for: point, nearest: false),
            page.annotation(at: convert(point, to: page))?.type == "Widget" {
             guard formsEditable else { return }
@@ -65,6 +72,7 @@ struct PDFCanvas: NSViewRepresentable {
     @ObservedObject var model: PDFWorkspaceModel
     let twoUp: Bool
     let placement: ((PDFPage, NSPoint) -> Void)?
+    let onAnnotationDoubleClick: (PDFAnnotation) -> Void
     func makeCoordinator() -> Coordinator { Coordinator(model: model) }
     func makeNSView(context: Context) -> GaoPDFView {
         let view = GaoPDFView()
@@ -80,6 +88,7 @@ struct PDFCanvas: NSViewRepresentable {
         view.enableDataDetectors = false
         model.pdfView = view
         view.placement = placement
+        view.onAnnotationDoubleClick = onAnnotationDoubleClick
         view.onFormInteraction = { [weak model] in model?.formMayHaveChanged() }
         view.formsEditable = model.permitsForms
         view.onInitialLayout = { [weak model] scale in
@@ -100,6 +109,7 @@ struct PDFCanvas: NSViewRepresentable {
             if !wasAutomatic { view.scaleFactor = previousScale }
         }
         view.placement = placement
+        view.onAnnotationDoubleClick = onAnnotationDoubleClick
         view.onFormInteraction = { [weak model] in model?.formMayHaveChanged() }
         view.formsEditable = model.permitsForms
         model.pdfView = view
@@ -108,6 +118,7 @@ struct PDFCanvas: NSViewRepresentable {
         coordinator.stopObserving()
         view.placement = nil
         view.onFormInteraction = nil
+        view.onAnnotationDoubleClick = nil
         view.onInitialLayout = nil
     }
     @MainActor final class Coordinator {
@@ -159,12 +170,15 @@ struct PDFWorkspace: View {
     @State private var search = ""
     @State private var pageInput = "1"
     @State private var password = ""
-    @State private var textToAdd = ""
     @State private var textFontSize: Double = 14
-    @State private var noteMode = true
-    @State private var showTextSheet = false
+    @State private var textColor = Color.black
+    @State private var objectSheet: PDFObjectSheetDraft?
     @State private var placementText: String?
     @State private var pendingNote = true
+    @State private var imageToAdd: PDFImageAsset?
+    @State private var imageWidth: Double = 180
+    @State private var placingImage = false
+    @State private var movingAnnotation: PDFAnnotationEntry?
     @State private var showExtractSheet = false
     @State private var showCropSheet = false
     @State private var cropTop = "0"
@@ -173,9 +187,6 @@ struct PDFWorkspace: View {
     @State private var cropRight = "0"
     @State private var pageRange = ""
     @State private var showDeleteConfirmation = false
-    @State private var editingAnnotation: PDFAnnotationEntry?
-    @State private var annotationText = ""
-    @State private var showAnnotationSheet = false
     @State private var showSignatureConfirmation = false
 
     static let saveRequested = Notification.Name("GaoWenJian.saveActive")
@@ -205,7 +216,7 @@ struct PDFWorkspace: View {
                             PDFThumbnails(model: model)
                         }.frame(minWidth: 100, idealWidth: 140, maxWidth: 220)
                     }
-                    PDFCanvas(model: model, twoUp: twoUp, placement: placementHandler)
+                    PDFCanvas(model: model, twoUp: twoUp, placement: placementHandler, onAnnotationDoubleClick: editAnnotation)
                         .frame(minWidth: 280, maxWidth: .infinity, maxHeight: .infinity)
                     if showInspector { inspector.frame(minWidth: 230, idealWidth: 270, maxWidth: 350) }
                 }.frame(maxWidth: .infinity, maxHeight: .infinity).layoutPriority(1)
@@ -221,10 +232,12 @@ struct PDFWorkspace: View {
             if notification.object as? String == url.path { model.discardDraft() }
         }
         .onAppear { model.publishDirty() }
-        .sheet(isPresented: $showTextSheet) { addTextSheet }
+        .sheet(item: $objectSheet) { draft in
+            PDFObjectSheet(draft: draft, onCancel: { objectSheet = nil }, onApply: { applyObjectSheet(draft) })
+        }
         .sheet(isPresented: $showExtractSheet) { extractSheet }
         .sheet(isPresented: $showCropSheet) { cropSheet }
-        .sheet(isPresented: $showAnnotationSheet) { annotationSheet }
+        .onExitCommand { clearPlacement() }
         .confirmationDialog("删除第 \(model.currentPage) 页？", isPresented: $showDeleteConfirmation, titleVisibility: .visible) {
             Button("删除页面", role: .destructive) { perform { try model.deleteCurrentPage() } }
             Button("取消", role: .cancel) { }
@@ -281,14 +294,15 @@ struct PDFWorkspace: View {
 
     private var editingToolbar: some View {
         HStack(spacing: 12) {
+            Button { openTextSheet(note: false) } label: { Label("插入文字", systemImage: "textformat") }.disabled(!model.permitsAnnotations)
+            Button { chooseImage() } label: { Label("插入图片", systemImage: "photo.badge.plus") }.disabled(!model.permitsAnnotations)
             Menu {
                 Button("高亮选中文字") { perform { try model.markupSelection(type: .highlight) } }.disabled(!model.hasSelection)
                 Button("下划线") { perform { try model.markupSelection(type: .underline) } }.disabled(!model.hasSelection)
                 Button("删除线") { perform { try model.markupSelection(type: .strikeOut) } }.disabled(!model.hasSelection)
                 Divider()
                 Button("添加便签…") { openTextSheet(note: true) }
-                Button("添加文字…") { openTextSheet(note: false) }
-                Button("查看批注") { showInspector = true; inspectorTab = 0 }
+                Button("对象与批注") { showInspector = true; inspectorTab = 0 }
             } label: { Label("批注", systemImage: "highlighter") }.disabled(!model.permitsAnnotations)
             Menu {
                 Button("顺时针旋转当前页") { perform { try model.rotateCurrentPage() } }
@@ -302,13 +316,13 @@ struct PDFWorkspace: View {
                 Button("提取指定页面…") { pageRange = String(model.currentPage); showExtractSheet = true }
                 Button("每页拆分为独立 PDF…") { split() }
             } label: { Label("页面", systemImage: "square.3.layers.3d") }.disabled(!model.permitsAssembly)
-            Button { perform { try model.undo() } } label: { Image(systemName: "arrow.uturn.backward") }.disabled(!model.canUndo).help("撤销 PDF 修改")
-            Button { perform { try model.redo() } } label: { Image(systemName: "arrow.uturn.forward") }.disabled(!model.canRedo).help("重做 PDF 修改")
-            if placementText != nil {
-                Text("点击页面放置\(pendingNote ? "便签" : "文字")").font(.caption).foregroundStyle(.orange)
-                Button("取消") { placementText = nil }
+            Button { clearPlacement(); perform { try model.undo() } } label: { Image(systemName: "arrow.uturn.backward") }.disabled(!model.canUndo).help("撤销 PDF 修改")
+            Button { clearPlacement(); perform { try model.redo() } } label: { Image(systemName: "arrow.uturn.forward") }.disabled(!model.canRedo).help("重做 PDF 修改")
+            if placementText != nil || placingImage || movingAnnotation != nil {
+                Text(movingAnnotation != nil ? "点击本页新位置" : "点击页面放置\(placingImage ? "图片" : (pendingNote ? "便签" : "文字"))").font(.caption).foregroundStyle(.orange).lineLimit(1)
+                Button("取消") { clearPlacement() }
             } else {
-                Text(model.document?.isEncrypted == true ? "加密 PDF · 只读" : "支持批注、表单和页面编辑").font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                Text(model.document?.isEncrypted == true ? "加密 PDF · 只读" : "双击插入的文字或图片可编辑").font(.caption).foregroundStyle(.secondary).lineLimit(1)
             }
             if model.recoveryConflict { Button("另存恢复副本…") { exportRecovery() } }
             Spacer(minLength: 0)
@@ -330,7 +344,7 @@ struct PDFWorkspace: View {
     private var inspector: some View {
         VStack(spacing: 0) {
             Picker("信息", selection: $inspectorTab) {
-                Text("批注").tag(0)
+                Text("对象").tag(0)
                 Text("表单").tag(1)
                 Text("目录").tag(2)
             }.pickerStyle(.segmented).padding(10)
@@ -344,7 +358,7 @@ struct PDFWorkspace: View {
     private var annotationList: some View {
         Group {
             if model.annotationEntries.isEmpty {
-                ContentUnavailableView("暂无批注", systemImage: "highlighter", description: Text("选中文字后添加高亮，或添加便签。"))
+                ContentUnavailableView("暂无对象与批注", systemImage: "square.on.square", description: Text("插入文字、图片，或选中文字后添加高亮。"))
             } else {
                 List(model.annotationEntries) { entry in
                     VStack(alignment: .leading, spacing: 6) {
@@ -357,10 +371,14 @@ struct PDFWorkspace: View {
                         HStack {
                             Button("定位") { model.go(to: entry.pageIndex + 1) }
                             if entry.annotation.type == "Text" || entry.annotation.type == "FreeText" {
-                                Button("编辑") { editingAnnotation = entry; annotationText = entry.annotation.contents ?? ""; showAnnotationSheet = true }.disabled(!model.permitsAnnotations)
+                                Button("编辑") { editAnnotation(entry.annotation) }.disabled(!model.permitsAnnotations)
+                            }
+                            if entry.canPosition {
+                                Button("移动") { clearPlacement(); movingAnnotation = entry; model.go(to: entry.pageIndex + 1) }.disabled(!model.permitsAnnotations)
+                                Button("尺寸") { openGeometry(entry) }.disabled(!model.permitsAnnotations)
                             }
                             Spacer()
-                            Button { perform { try model.removeAnnotation(entry) } } label: { Image(systemName: "trash") }.disabled(!model.permitsAnnotations)
+                            Button { clearPlacement(); perform { try model.removeAnnotation(entry) } } label: { Image(systemName: "trash") }.disabled(!model.permitsAnnotations).help("删除对象或批注")
                         }.font(.caption).buttonStyle(.borderless)
                     }.padding(.vertical, 5)
                 }.listStyle(.plain)
@@ -394,30 +412,6 @@ struct PDFWorkspace: View {
         }
     }
 
-    private var addTextSheet: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            Text(noteMode ? "添加便签" : "添加文字批注").font(.title3.weight(.semibold))
-            Text("输入内容后，点击 PDF 页面选择位置。").font(.caption).foregroundStyle(.secondary)
-            TextEditor(text: $textToAdd).font(.system(size: 14)).frame(width: 400, height: 140).border(Color.secondary.opacity(0.25))
-            if !noteMode {
-                HStack {
-                    Text("字号")
-                    Slider(value: $textFontSize, in: 8...36, step: 1)
-                    Text("\(Int(textFontSize)) pt").monospacedDigit().frame(width: 48)
-                }
-            }
-            HStack {
-                Button("取消") { showTextSheet = false }.keyboardShortcut(.cancelAction)
-                Spacer()
-                Button("选择位置") {
-                    placementText = textToAdd
-                    pendingNote = noteMode
-                    showTextSheet = false
-                }.keyboardShortcut(.defaultAction).disabled(textToAdd.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-            }
-        }.padding(22)
-    }
-
     private var extractSheet: some View {
         VStack(alignment: .leading, spacing: 14) {
             Text("提取页面").font(.title3.weight(.semibold))
@@ -437,21 +431,6 @@ struct PDFWorkspace: View {
                             onSaved()
                         }
                     }
-                }.keyboardShortcut(.defaultAction)
-            }
-        }.padding(22)
-    }
-
-    private var annotationSheet: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            Text("编辑批注").font(.title3.weight(.semibold))
-            TextEditor(text: $annotationText).frame(width: 400, height: 140).border(Color.secondary.opacity(0.25))
-            HStack {
-                Button("取消") { showAnnotationSheet = false }.keyboardShortcut(.cancelAction)
-                Spacer()
-                Button("应用") {
-                    if let entry = editingAnnotation { perform { try model.updateAnnotation(entry, contents: annotationText) } }
-                    showAnnotationSheet = false
                 }.keyboardShortcut(.defaultAction)
             }
         }.padding(22)
@@ -484,14 +463,79 @@ struct PDFWorkspace: View {
     }
 
     private var placementHandler: ((PDFPage, NSPoint) -> Void)? {
-        guard let text = placementText else { return nil }
-        return { page, point in
-            perform { try model.addText(text, note: pendingNote, page: page, at: point, fontSize: CGFloat(textFontSize)) }
-            placementText = nil
+        if let entry = movingAnnotation {
+            return { page, point in perform { try model.repositionAnnotation(entry, page: page, at: point); clearPlacement() } }
         }
+        if placingImage, let asset = imageToAdd {
+            return { page, point in
+                perform { try model.addImage(asset, page: page, at: point, width: imageWidth); clearPlacement(); showInspector = true; inspectorTab = 0 }
+            }
+        }
+        if let text = placementText {
+            return { page, point in
+                perform { try model.addText(text, note: pendingNote, page: page, at: point, fontSize: CGFloat(textFontSize), color: NSColor(textColor)); clearPlacement() }
+            }
+        }
+        return nil
     }
 
-    private func openTextSheet(note: Bool) { noteMode = note; textToAdd = ""; showTextSheet = true }
+    private func clearPlacement() { placementText = nil; placingImage = false; imageToAdd = nil; movingAnnotation = nil }
+    private func openTextSheet(note: Bool) {
+        clearPlacement()
+        objectSheet = PDFObjectSheetDraft(kind: .text, note: note, fontSize: textFontSize, color: textColor)
+    }
+    private func chooseImage() {
+        clearPlacement()
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.png, .jpeg, .heic, .tiff]
+        panel.allowsMultipleSelection = false
+        panel.canChooseDirectories = false
+        panel.message = "选择要嵌入当前 PDF 的图片。"
+        if panel.runModal() == .OK, let selected = panel.url {
+            perform {
+                let asset = try PDFImageAsset(url: selected)
+                objectSheet = PDFObjectSheetDraft(kind: .image, asset: asset)
+            }
+        }
+    }
+    private func editAnnotation(_ annotation: PDFAnnotation) {
+        guard model.permitsAnnotations, let entry = model.annotationEntries.first(where: { $0.annotation === annotation }) else { return }
+        clearPlacement()
+        if entry.isImage { openGeometry(entry); return }
+        objectSheet = PDFObjectSheetDraft(kind: .annotation, entry: entry,
+            fontSize: Double(annotation.font?.pointSize ?? 14), color: Color(nsColor: annotation.fontColor ?? .black))
+    }
+    private func openGeometry(_ entry: PDFAnnotationEntry) {
+        guard entry.annotation.page != nil else { return }
+        clearPlacement()
+        objectSheet = PDFObjectSheetDraft(kind: .geometry, entry: entry)
+    }
+    private func applyObjectSheet(_ draft: PDFObjectSheetDraft) {
+        perform {
+            switch draft.kind {
+            case .text:
+                placementText = draft.text
+                pendingNote = draft.note
+                textFontSize = draft.fontSize
+                textColor = draft.color
+            case .image:
+                guard let asset = draft.asset else { throw PDFWorkspaceError.message("图片未载入，请重新选择。") }
+                imageToAdd = asset
+                imageWidth = draft.imageWidth
+                placingImage = true
+            case .annotation:
+                guard let entry = draft.entry else { return }
+                try model.updateAnnotation(entry, contents: draft.text, fontSize: draft.fontSize, color: NSColor(draft.color))
+            case .geometry:
+                guard let entry = draft.entry, let width = Double(draft.width),
+                      let height = entry.isImage ? Double(draft.width).map({ $0 * draft.aspect }) : Double(draft.height) else {
+                    throw PDFWorkspaceError.message("请输入有效的宽度和高度。")
+                }
+                try model.resizeAnnotation(entry, displayWidth: width, displayHeight: height)
+            }
+            objectSheet = nil
+        }
+    }
     private func changeZoom(by factor: CGFloat) {
         guard let view = model.pdfView else { return }
         view.autoScales = false
@@ -558,6 +602,134 @@ struct PDFWorkspace: View {
             model.status = "已拆分 \(model.pageCount) 页到 \(outputFolder.lastPathComponent)"
             NSWorkspace.shared.activateFileViewerSelecting([outputFolder])
             onSaved()
+        }
+    }
+}
+
+/// The sheet item carries both its purpose and initial data. Keeping editable
+/// fields in an observed draft avoids capturing a previous parent-view value on
+/// the first presentation (for example nil image or the previous note mode).
+@MainActor private final class PDFObjectSheetDraft: ObservableObject, Identifiable {
+    enum Kind { case text, image, annotation, geometry }
+    let id = UUID()
+    let kind: Kind
+    let note: Bool
+    let asset: PDFImageAsset?
+    let entry: PDFAnnotationEntry?
+    let aspect: Double
+    @Published var text: String
+    @Published var fontSize: Double
+    @Published var color: Color
+    @Published var imageWidth: Double
+    @Published var width: String
+    @Published var height: String
+
+    init(kind: Kind, note: Bool = false, asset: PDFImageAsset? = nil, entry: PDFAnnotationEntry? = nil,
+         fontSize: Double = 14, color: Color = .black) {
+        self.kind = kind; self.note = note; self.asset = asset; self.entry = entry
+        self.fontSize = fontSize; self.color = color
+        text = entry?.annotation.contents ?? ""
+        imageWidth = min(240, asset?.image.size.width ?? 180)
+        let size: NSSize
+        if let entry, let page = entry.annotation.page {
+            size = PDFWorkspaceModel.displaySize(of: entry.annotation.bounds, on: page)
+        } else { size = .zero }
+        width = String(format: "%.1f", size.width)
+        height = String(format: "%.1f", size.height)
+        aspect = size.height / max(1, size.width)
+    }
+
+    var title: String {
+        switch kind {
+        case .text: return note ? "添加便签" : "插入文字"
+        case .image: return "插入图片"
+        case .annotation: return "编辑批注"
+        case .geometry: return "调整对象尺寸"
+        }
+    }
+    var canApply: Bool {
+        let validFont = fontSize.isFinite && fontSize >= 6 && fontSize <= 144
+        switch kind {
+        case .text: return !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && (note || validFont)
+        case .image: return asset != nil && imageWidth.isFinite && imageWidth >= 4 && imageWidth <= 10_000
+        case .annotation: return entry != nil && (entry?.annotation.type != "FreeText" || validFont)
+        case .geometry: return entry != nil
+        }
+    }
+}
+
+@MainActor private struct PDFObjectSheet: View {
+    @ObservedObject var draft: PDFObjectSheetDraft
+    let onCancel: () -> Void
+    let onApply: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text(draft.title).font(.title3.weight(.semibold))
+            switch draft.kind {
+            case .text, .annotation: textFields
+            case .image: imageFields
+            case .geometry: geometryFields
+            }
+            HStack {
+                Button("取消", action: onCancel).keyboardShortcut(.cancelAction)
+                Spacer()
+                Button(draft.kind == .text || draft.kind == .image ? "选择位置" : "应用", action: onApply)
+                    .keyboardShortcut(.defaultAction).disabled(!draft.canApply)
+            }
+        }.padding(22)
+    }
+
+    private var textFields: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            if draft.kind == .text {
+                Text("输入内容后，点击 PDF 页面选择位置。").font(.caption).foregroundStyle(.secondary)
+            }
+            TextEditor(text: $draft.text).font(.system(size: 14)).frame(width: 400, height: 140).border(Color.secondary.opacity(0.25))
+            if (draft.kind == .text && !draft.note) || draft.entry?.annotation.type == "FreeText" {
+                HStack {
+                    Text("字号")
+                    if draft.kind == .text { Slider(value: $draft.fontSize, in: 8...36, step: 1) }
+                    TextField("点", value: $draft.fontSize, format: .number).textFieldStyle(.roundedBorder).frame(width: 60)
+                    Text("pt")
+                }
+                ColorPicker("文字颜色", selection: $draft.color, supportsOpacity: false)
+                if draft.kind == .annotation {
+                    Text("较长内容可通过对象列表的“尺寸”加大文字框。").font(.caption).foregroundStyle(.secondary)
+                }
+            }
+        }
+    }
+
+    private var imageFields: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            if let asset = draft.asset {
+                Image(nsImage: asset.image).resizable().scaledToFit().frame(width: 400, height: 190)
+                    .background(Color.secondary.opacity(0.06), in: RoundedRectangle(cornerRadius: 8))
+                Text(asset.name).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                HStack {
+                    Text("宽度")
+                    TextField("点", value: $draft.imageWidth, format: .number.precision(.fractionLength(0...1)))
+                        .textFieldStyle(.roundedBorder).frame(width: 90)
+                    Text("点 · 高 \(String(format: "%.1f", draft.imageWidth * asset.aspectRatio)) 点（等比）").font(.caption).foregroundStyle(.secondary)
+                }
+                Text("下一步点击页面放置。图片会嵌入 PDF，可在右侧对象列表中移动、调整尺寸或删除。超出页面的图片会等比缩小。").font(.caption).foregroundStyle(.secondary).frame(width: 400, alignment: .leading)
+            }
+        }
+    }
+
+    private var geometryFields: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("以当前页面显示方向为准，单位为点（1 点 = 1/72 英寸）。").font(.caption).foregroundStyle(.secondary)
+            HStack {
+                Text("宽")
+                TextField("宽度", text: $draft.width).textFieldStyle(.roundedBorder)
+                Text("高")
+                if draft.entry?.isImage == true {
+                    Text(String(format: "%.1f", (Double(draft.width) ?? 0) * draft.aspect)).frame(width: 90, alignment: .leading)
+                } else { TextField("高度", text: $draft.height).textFieldStyle(.roundedBorder) }
+            }.frame(width: 360)
+            if draft.entry?.isImage == true { Text("图片保持原有宽高比例。").font(.caption).foregroundStyle(.secondary) }
         }
     }
 }

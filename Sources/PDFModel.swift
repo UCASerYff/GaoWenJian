@@ -2,6 +2,8 @@ import AppKit
 import PDFKit
 import SwiftUI
 import CryptoKit
+import ImageIO
+import CoreText
 
 enum PDFWorkspaceError: LocalizedError {
     case message(String)
@@ -14,7 +16,10 @@ struct PDFAnnotationEntry: Identifiable {
     let annotation: PDFAnnotation
     let pageIndex: Int
     var id: ObjectIdentifier { ObjectIdentifier(annotation) }
+    var isImage: Bool { annotation.type == "Stamp" && annotation.value(forAnnotationKey: GaoPDFImageAnnotation.imageKey) as? String == "1" }
+    var canPosition: Bool { isImage || annotation.type == "FreeText" || annotation.type == "Text" }
     var title: String {
+        if isImage { return "插入图片" }
         switch annotation.type {
         case "Highlight": return "高亮"
         case "Underline": return "下划线"
@@ -26,6 +31,177 @@ struct PDFAnnotationEntry: Identifiable {
         case "Circle": return "圆形"
         default: return annotation.type ?? "批注"
         }
+    }
+}
+
+/// PDFKit serializes this drawing into the stamp's standard PDF appearance stream.
+/// The image therefore remains visible in other readers and after undo/recovery reloads.
+final class GaoPDFImageAnnotation: PDFAnnotation {
+    static let imageKey = PDFAnnotationKey(rawValue: "/GaoWenJianImage")
+    private var insertedImage: NSImage?
+    private var imageRotation = 0
+
+    init(image: NSImage, bounds: NSRect, rotation: Int, name: String) {
+        insertedImage = image
+        imageRotation = (rotation % 360 + 360) % 360
+        super.init(bounds: bounds, forType: .stamp, withProperties: nil)
+        setValue("1", forAnnotationKey: Self.imageKey)
+        contents = name
+        color = .clear
+        shouldPrint = true
+        modificationDate = Date()
+    }
+
+    required init?(coder: NSCoder) { super.init(coder: coder) }
+
+    override func draw(with box: PDFDisplayBox, in context: CGContext) {
+        guard let insertedImage else { super.draw(with: box, in: context); return }
+        guard let cgImage = insertedImage.cgImage(forProposedRect: nil, context: nil, hints: nil) else { return }
+        context.saveGState()
+        context.translateBy(x: bounds.minX, y: bounds.minY)
+        let quarterTurn = imageRotation == 90 || imageRotation == 270
+        switch imageRotation {
+        case 90: context.translateBy(x: bounds.width, y: 0)
+        case 180: context.translateBy(x: bounds.width, y: bounds.height)
+        case 270: context.translateBy(x: 0, y: bounds.height)
+        default: break
+        }
+        context.rotate(by: CGFloat(imageRotation) * .pi / 180)
+        context.interpolationQuality = .high
+        context.draw(cgImage, in: NSRect(x: 0, y: 0,
+                                     width: quarterTurn ? bounds.height : bounds.width,
+                                     height: quarterTurn ? bounds.width : bounds.height))
+        context.restoreGState()
+    }
+}
+
+/// FreeText stays a standard editable text annotation, with a generated appearance
+/// that keeps newly inserted text upright on rotated pages.
+final class GaoPDFTextAnnotation: PDFAnnotation {
+    static let rotationKey = PDFAnnotationKey(rawValue: "/GaoWenJianTextRotation")
+    init(bounds: NSRect, contents: String, font: NSFont, color: NSColor, rotation: Int) {
+        super.init(bounds: bounds, forType: .freeText, withProperties: nil)
+        self.contents = contents
+        self.font = font
+        fontColor = color
+        self.color = .clear
+        shouldPrint = true
+        let border = PDFBorder(); border.lineWidth = 0; self.border = border
+        setValue(NSNumber(value: rotation), forAnnotationKey: Self.rotationKey)
+        updateDefaultAppearance()
+        modificationDate = Date()
+    }
+    required init?(coder: NSCoder) { super.init(coder: coder) }
+    func updateDefaultAppearance() {
+        guard let font, let rgb = fontColor?.usingColorSpace(.deviceRGB) else { return }
+        // A leading space keeps PDFKit from serializing this PDF command string
+        // as a /Name instead of a string when the source document was loaded.
+        let appearance = String(format: " /%@ %.3f Tf %.6f %.6f %.6f rg", font.fontName, font.pointSize,
+                                rgb.redComponent, rgb.greenComponent, rgb.blueComponent)
+        setValue(appearance, forAnnotationKey: .defaultAppearance)
+    }
+    override func draw(with box: PDFDisplayBox, in context: CGContext) {
+        let rotation = (value(forAnnotationKey: Self.rotationKey) as? NSNumber)?.intValue ?? 0
+        context.saveGState()
+        context.translateBy(x: bounds.minX, y: bounds.minY)
+        switch rotation {
+        case 90: context.translateBy(x: bounds.width, y: 0)
+        case 180: context.translateBy(x: bounds.width, y: bounds.height)
+        case 270: context.translateBy(x: 0, y: bounds.height)
+        default: break
+        }
+        context.rotate(by: CGFloat(rotation) * .pi / 180)
+        let quarterTurn = rotation == 90 || rotation == 270
+        let rect = NSRect(x: 0, y: 0, width: quarterTurn ? bounds.height : bounds.width,
+                          height: quarterTurn ? bounds.width : bounds.height).insetBy(dx: 4, dy: 4)
+        let paragraph = NSMutableParagraphStyle(); paragraph.alignment = alignment
+        let text = NSAttributedString(string: contents ?? "", attributes: [.font: font ?? .systemFont(ofSize: 14),
+            .foregroundColor: fontColor ?? .black, .paragraphStyle: paragraph])
+        Self.drawTextOutlines(text, in: rect, context: context, color: fontColor ?? .black)
+        context.restoreGState()
+    }
+
+    private static func drawTextOutlines(_ text: NSAttributedString, in rect: CGRect, context: CGContext, color: NSColor) {
+        guard rect.width > 0, rect.height > 0 else { return }
+        let frame = CTFramesetterCreateFrame(CTFramesetterCreateWithAttributedString(text), CFRange(location: 0, length: 0),
+            CGPath(rect: CGRect(origin: .zero, size: rect.size), transform: nil), nil)
+        let lines = CTFrameGetLines(frame) as! [CTLine]
+        var origins = [CGPoint](repeating: .zero, count: lines.count)
+        CTFrameGetLineOrigins(frame, CFRange(location: 0, length: 0), &origins)
+        let outlines = CGMutablePath()
+        var needsColorGlyphRendering = false
+        for (lineIndex, line) in lines.enumerated() {
+            for run in CTLineGetGlyphRuns(line) as! [CTRun] {
+                let attributes = CTRunGetAttributes(run) as NSDictionary
+                guard let runFont = attributes[kCTFontAttributeName] else { continue }
+                let ctFont = runFont as! CTFont
+                let count = CTRunGetGlyphCount(run)
+                var glyphs = [CGGlyph](repeating: 0, count: count)
+                var positions = [CGPoint](repeating: .zero, count: count)
+                CTRunGetGlyphs(run, CFRange(location: 0, length: 0), &glyphs)
+                CTRunGetPositions(run, CFRange(location: 0, length: 0), &positions)
+                for index in 0..<count {
+                    if let path = CTFontCreatePathForGlyph(ctFont, glyphs[index], nil) {
+                        let offset = CGAffineTransform(translationX: origins[lineIndex].x + positions[index].x,
+                                                       y: origins[lineIndex].y + positions[index].y)
+                        outlines.addPath(path, transform: offset)
+                    } else {
+                        var glyph = glyphs[index]
+                        let box = CTFontGetBoundingRectsForGlyphs(ctFont, .default, &glyph, nil, 1)
+                        if box.width > 0 && box.height > 0 { needsColorGlyphRendering = true }
+                    }
+                }
+            }
+        }
+        context.saveGState()
+        context.translateBy(x: rect.minX, y: rect.minY)
+        context.clip(to: CGRect(origin: .zero, size: rect.size))
+        if needsColorGlyphRendering {
+            // Color emoji have bitmap glyphs rather than vector outlines. Render
+            // only this annotation to an image; the original PDF stays vector.
+            let scale = min(2, 8192 / max(rect.width, rect.height))
+            if let bitmap = CGContext(data: nil, width: max(1, Int(ceil(rect.width * scale))),
+                                      height: max(1, Int(ceil(rect.height * scale))), bitsPerComponent: 8, bytesPerRow: 0,
+                                      space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) {
+                bitmap.scaleBy(x: scale, y: scale)
+                bitmap.textMatrix = .identity
+                CTFrameDraw(frame, bitmap)
+                if let image = bitmap.makeImage() { context.draw(image, in: CGRect(origin: .zero, size: rect.size)) }
+            }
+        } else {
+            // PDFKit can remap subset-font glyph indexes when saving an existing
+            // page repeatedly. Standard vector paths avoid that remapping while
+            // the annotation retains its Unicode contents and editable styling.
+            context.setFillColor(color.cgColor)
+            context.addPath(outlines)
+            context.fillPath()
+        }
+        context.restoreGState()
+    }
+}
+
+struct PDFImageAsset {
+    let image: NSImage
+    let name: String
+    var aspectRatio: CGFloat { image.size.height / image.size.width }
+
+    init(url: URL) throws {
+        let data = try Data(contentsOf: url, options: .mappedIfSafe)
+        guard data.count <= 64 * 1024 * 1024, let source = CGImageSourceCreateWithData(data as CFData, nil),
+              let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
+              let width = properties[kCGImagePropertyPixelWidth] as? NSNumber,
+              let height = properties[kCGImagePropertyPixelHeight] as? NSNumber,
+              width.doubleValue > 0, height.doubleValue > 0,
+              width.doubleValue * height.doubleValue <= 80_000_000,
+              let cgImage = CGImageSourceCreateThumbnailAtIndex(source, 0, [
+                kCGImageSourceCreateThumbnailFromImageAlways: true,
+                kCGImageSourceCreateThumbnailWithTransform: true,
+                kCGImageSourceThumbnailMaxPixelSize: max(width.intValue, height.intValue)
+              ] as CFDictionary) else {
+            throw PDFWorkspaceError.message("无法读取图片。请选择不超过 64 MB、8000 万像素的 PNG、JPEG、HEIC 或 TIFF 图片。")
+        }
+        image = NSImage(cgImage: cgImage, size: NSSize(width: cgImage.width, height: cgImage.height))
+        name = url.lastPathComponent
     }
 }
 
@@ -134,6 +310,7 @@ final class PDFWorkspaceModel: ObservableObject {
     }
 
     private func remember() throws {
+        pdfView?.window?.makeFirstResponder(nil)
         guard let data = document?.dataRepresentation() else {
             throw PDFWorkspaceError.message("无法保留修改前的版本，本次操作已取消。")
         }
@@ -240,34 +417,127 @@ final class PDFWorkspaceModel: ObservableObject {
         noteMutation("文字批注已添加 · 待保存")
     }
 
-    func addText(_ text: String, note: Bool, page: PDFPage, at point: NSPoint, fontSize: CGFloat = 14) throws {
-        guard permitsAnnotations else { throw PDFWorkspaceError.message("此 PDF 不允许批注编辑。") }
+    func addText(_ text: String, note: Bool, page: PDFPage, at point: NSPoint, fontSize: CGFloat = 14, color: NSColor = .black) throws {
+        guard permitsAnnotations, page.document === document else { throw PDFWorkspaceError.message("此 PDF 不允许批注编辑。") }
         guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
-        try remember()
+        guard fontSize.isFinite, fontSize >= 6, fontSize <= 144 else { throw PDFWorkspaceError.message("文字字号需要在 6–144 点之间。") }
         let pageBounds = page.bounds(for: .cropBox)
-        let width: CGFloat = note ? 26 : min(300, max(80, pageBounds.width - 40))
-        let height: CGFloat = note ? 26 : max(52, min(180, CGFloat(text.components(separatedBy: "\n").count) * (fontSize + 5) + 16))
-        let x = max(pageBounds.minX + 8, min(point.x, pageBounds.maxX - width - 8))
-        let y = max(pageBounds.minY + 8, min(point.y - height, pageBounds.maxY - height - 8))
-        let annotation = PDFAnnotation(bounds: NSRect(x: x, y: y, width: width, height: height),
-                                       forType: note ? .text : .freeText, withProperties: nil)
+        let visible = Self.displaySize(of: pageBounds, on: page)
+        let width: CGFloat = note ? min(26, visible.width) : min(300, max(1, visible.width - 16))
+        let font = Self.textFont(for: text, size: fontSize)
+        let measured = (text as NSString).boundingRect(with: NSSize(width: max(1, width - 12), height: 10_000),
+                                                       options: [.usesLineFragmentOrigin, .usesFontLeading], attributes: [.font: font]).height
+        let height: CGFloat = note ? min(26, visible.height) : min(max(1, visible.height - 16), max(fontSize + 14, ceil(measured) + 16))
+        let bounds = try Self.placementBounds(on: page, at: point, displaySize: NSSize(width: width, height: height))
+        try remember()
+        let annotation = note ? PDFAnnotation(bounds: bounds, forType: .text, withProperties: nil)
+            : GaoPDFTextAnnotation(bounds: bounds, contents: text, font: font, color: color, rotation: (page.rotation % 360 + 360) % 360)
         annotation.contents = text
         annotation.modificationDate = Date()
         annotation.shouldPrint = true
         annotation.color = note ? .systemYellow : .clear
         if !note {
-            let hasCJK = text.unicodeScalars.contains { scalar in
-                (0x3400...0x9fff).contains(scalar.value) || (0x3000...0x30ff).contains(scalar.value)
-            }
-            annotation.font = NSFont(name: hasCJK ? "PingFangSC-Regular" : "Helvetica", size: fontSize) ?? .systemFont(ofSize: fontSize)
-            annotation.fontColor = .black
             let border = PDFBorder()
             border.lineWidth = 0
             annotation.border = border
+            (annotation as? GaoPDFTextAnnotation)?.updateDefaultAppearance()
         }
         page.addAnnotation(annotation)
         pdfView?.annotationsChanged(on: page)
+        if !note { try materializeCustomAppearance() }
         noteMutation(note ? "便签已添加 · 待保存" : "文字批注已添加 · 待保存")
+    }
+
+    private static func textFont(for text: String, size: CGFloat) -> NSFont {
+        let hasCJK = text.unicodeScalars.contains { (0x3400...0x9fff).contains($0.value) || (0x3000...0x30ff).contains($0.value) }
+        return NSFont(name: hasCJK ? "PingFangSC-Regular" : "Helvetica", size: size) ?? .systemFont(ofSize: size)
+    }
+
+    static func displaySize(of bounds: NSRect, on page: PDFPage) -> NSSize {
+        abs(page.rotation % 180) == 90 ? NSSize(width: bounds.height, height: bounds.width) : bounds.size
+    }
+
+    /// The pointer is the visible top-left corner. PDFView has already converted it
+    /// to unrotated page coordinates; account for rotation before crop-box clamping.
+    static func placementBounds(on page: PDFPage, at point: NSPoint, displaySize: NSSize) throws -> NSRect {
+        guard point.x.isFinite, point.y.isFinite, displaySize.width.isFinite, displaySize.height.isFinite,
+              displaySize.width > 0, displaySize.height > 0 else { throw PDFWorkspaceError.message("对象尺寸或位置无效。") }
+        let crop = page.bounds(for: .cropBox)
+        guard crop.width > 0, crop.height > 0 else { throw PDFWorkspaceError.message("此页面没有可用的可见区域。") }
+        let visible = Self.displaySize(of: crop, on: page)
+        let scale = min(1, visible.width / displaySize.width, visible.height / displaySize.height)
+        let w = displaySize.width * scale, h = displaySize.height * scale
+        let raw: NSRect
+        switch (page.rotation % 360 + 360) % 360 {
+        case 90: raw = NSRect(x: point.x, y: point.y, width: h, height: w)
+        case 180: raw = NSRect(x: point.x - w, y: point.y, width: w, height: h)
+        case 270: raw = NSRect(x: point.x - h, y: point.y - w, width: h, height: w)
+        default: raw = NSRect(x: point.x, y: point.y - h, width: w, height: h)
+        }
+        return NSRect(x: min(max(raw.minX, crop.minX), crop.maxX - raw.width),
+                      y: min(max(raw.minY, crop.minY), crop.maxY - raw.height), width: raw.width, height: raw.height)
+    }
+
+    func addImage(_ asset: PDFImageAsset, page: PDFPage, at point: NSPoint, width: CGFloat) throws {
+        guard permitsAnnotations, page.document === document else { throw PDFWorkspaceError.message("此 PDF 不允许插入图片。") }
+        let bounds = try Self.placementBounds(on: page, at: point, displaySize: NSSize(width: width, height: width * asset.aspectRatio))
+        try remember()
+        page.addAnnotation(GaoPDFImageAnnotation(image: asset.image, bounds: bounds, rotation: page.rotation, name: asset.name))
+        pdfView?.annotationsChanged(on: page)
+        try materializeCustomAppearance()
+        noteMutation("图片已插入 · 可在对象侧栏调整位置与尺寸 · 待保存")
+    }
+
+    func repositionAnnotation(_ entry: PDFAnnotationEntry, page: PDFPage, at point: NSPoint) throws {
+        guard permitsAnnotations, entry.canPosition, let originalPage = entry.annotation.page,
+              originalPage === page else { throw PDFWorkspaceError.message("请在该对象所在页面点击新位置。") }
+        let size = Self.displaySize(of: entry.annotation.bounds, on: page)
+        let bounds = try Self.placementBounds(on: page, at: point, displaySize: size)
+        try remember()
+        let annotation = editableTextReplacement(entry.annotation, bounds: bounds) ?? entry.annotation
+        annotation.bounds = bounds
+        entry.annotation.modificationDate = Date()
+        pdfView?.annotationsChanged(on: page)
+        if annotation is GaoPDFTextAnnotation { try materializeCustomAppearance() }
+        noteMutation("对象位置已调整 · 待保存")
+    }
+
+    func resizeAnnotation(_ entry: PDFAnnotationEntry, displayWidth: CGFloat, displayHeight: CGFloat) throws {
+        guard permitsAnnotations, entry.canPosition, let page = entry.annotation.page,
+              displayWidth.isFinite, displayHeight.isFinite, displayWidth >= 4, displayHeight >= 4 else {
+            throw PDFWorkspaceError.message("对象尺寸至少为 4 点。")
+        }
+        let crop = page.bounds(for: .cropBox)
+        let available = Self.displaySize(of: crop, on: page)
+        guard displayWidth <= available.width, displayHeight <= available.height else {
+            throw PDFWorkspaceError.message("对象尺寸不能超过当前页可见区域。")
+        }
+        let quarterTurn = abs(page.rotation % 180) == 90
+        let size = NSSize(width: quarterTurn ? displayHeight : displayWidth, height: quarterTurn ? displayWidth : displayHeight)
+        let old = entry.annotation.bounds
+        let bounds = NSRect(x: min(max(old.minX, crop.minX), crop.maxX - size.width),
+                            y: min(max(old.minY, crop.minY), crop.maxY - size.height), width: size.width, height: size.height)
+        try remember()
+        // Preserve appearance streams: a saved image is a normal PDF stamp, not an in-memory image view.
+        let annotation = editableTextReplacement(entry.annotation, bounds: bounds) ?? entry.annotation
+        annotation.bounds = bounds
+        if annotation.type == "FreeText" { annotation.removeValue(forAnnotationKey: .appearanceDictionary) }
+        entry.annotation.modificationDate = Date()
+        pdfView?.annotationsChanged(on: page)
+        if annotation is GaoPDFTextAnnotation { try materializeCustomAppearance() }
+        noteMutation("对象尺寸已调整 · 待保存")
+    }
+
+    private func editableTextReplacement(_ annotation: PDFAnnotation, bounds: NSRect) -> PDFAnnotation? {
+        guard annotation.type == "FreeText", let page = annotation.page,
+              let rotation = annotation.value(forAnnotationKey: GaoPDFTextAnnotation.rotationKey) as? NSNumber else { return nil }
+        let replacement = GaoPDFTextAnnotation(bounds: bounds, contents: annotation.contents ?? "",
+            font: annotation.font ?? .systemFont(ofSize: 14), color: annotation.fontColor ?? .black, rotation: rotation.intValue)
+        replacement.userName = annotation.userName
+        replacement.alignment = annotation.alignment
+        page.removeAnnotation(annotation)
+        page.addAnnotation(replacement)
+        return replacement
     }
 
     func removeAnnotation(_ entry: PDFAnnotationEntry) throws {
@@ -279,14 +549,35 @@ final class PDFWorkspaceModel: ObservableObject {
         noteMutation("批注已删除 · 待保存")
     }
 
-    func updateAnnotation(_ entry: PDFAnnotationEntry, contents: String) throws {
-        guard permitsAnnotations else { throw PDFWorkspaceError.message("此 PDF 不允许修改批注。") }
+    func updateAnnotation(_ entry: PDFAnnotationEntry, contents: String, fontSize: CGFloat? = nil, color: NSColor? = nil) throws {
+        guard permitsAnnotations, entry.annotation.type == "FreeText" || entry.annotation.type == "Text" else { throw PDFWorkspaceError.message("此对象不支持文字编辑。") }
+        if let fontSize, (!fontSize.isFinite || fontSize < 6 || fontSize > 144) { throw PDFWorkspaceError.message("文字字号需要在 6–144 点之间。") }
         try remember()
-        entry.annotation.removeValue(forAnnotationKey: .appearanceDictionary)
-        entry.annotation.contents = contents
-        entry.annotation.modificationDate = Date()
-        if let page = entry.annotation.page { pdfView?.annotationsChanged(on: page) }
+        let annotation = editableTextReplacement(entry.annotation, bounds: entry.annotation.bounds) ?? entry.annotation
+        annotation.removeValue(forAnnotationKey: .appearanceDictionary)
+        annotation.contents = contents
+        if annotation.type == "FreeText" {
+            annotation.font = Self.textFont(for: contents, size: fontSize ?? annotation.font?.pointSize ?? 14)
+            if let color { annotation.fontColor = color }
+        }
+        (annotation as? GaoPDFTextAnnotation)?.updateDefaultAppearance()
+        annotation.modificationDate = Date()
+        if let page = annotation.page { pdfView?.annotationsChanged(on: page) }
+        if annotation is GaoPDFTextAnnotation { try materializeCustomAppearance() }
         noteMutation("批注已修改 · 待保存")
+    }
+
+    private func materializeCustomAppearance() throws {
+        pdfView?.window?.makeFirstResponder(nil)
+        // Loaded macOS PDFKit pages can retain an empty AnnotationKit drawing cache.
+        // Reload the newly written standard appearance before presenting the object.
+        guard let data = document?.dataRepresentation(), let normalized = PDFDocument(data: data) else {
+            noteMutation("对象已修改，但外观暂未能生成，请及时另存")
+            throw PDFWorkspaceError.message("无法生成对象的 PDF 外观，修改仍保留在当前窗口。")
+        }
+        document = normalized
+        refreshViewDocument()
+        go(to: currentPage)
     }
 
     func setForm(_ entry: PDFFormEntry, text: String? = nil, checked: Bool? = nil) throws {
