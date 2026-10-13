@@ -34,8 +34,23 @@ for name, extension, identifier, description, mime in office_imports:
     identifiers = next(utis for type_name, _, utis in types if type_name == name)
     if identifier not in identifiers:
         identifiers.append(identifier)
+types.append(('搞系列交接动作包', ['gaoaction'], ['com.gaoseries.action-package']))
 info = dict(CFBundleIdentifier='com.gaoseries.GaoWenJian', CFBundleName='搞文件', CFBundleDisplayName='搞文件', CFBundleExecutable='GaoWenJian', CFBundlePackageType='APPL', CFBundleShortVersionString=version, CFBundleVersion=build, CFBundleIconFile='AppIcon', CFBundleDevelopmentRegion='zh_CN', CFBundleLocalizations=['zh-Hans'], LSMinimumSystemVersion='14.0', NSHighResolutionCapable=True, NSPrincipalClass='NSApplication', NSSupportsAutomaticTermination=False, NSHumanReadableCopyright='搞系列 · 搞文件')
-info['CFBundleDocumentTypes'] = [dict(CFBundleTypeName=name,CFBundleTypeRole='Viewer' if name in ('Word','Excel','PPT') else 'Editor',LSHandlerRank='Alternate',CFBundleTypeExtensions=extensions,LSItemContentTypes=utis) for name,extensions,utis in types]
+doc_types = []
+for name, extensions, utis in types:
+    entry = dict(CFBundleTypeName=name, CFBundleTypeRole='Viewer' if name in ('Word','Excel','PPT') else 'Editor', LSHandlerRank='Alternate', CFBundleTypeExtensions=extensions, LSItemContentTypes=utis)
+    if 'gaoaction' in extensions:
+        entry['LSTypeIsPackage'] = True
+    doc_types.append(entry)
+info['CFBundleDocumentTypes'] = doc_types
+info['UTExportedTypeDeclarations'] = [
+    dict(
+        UTTypeIdentifier='com.gaoseries.action-package',
+        UTTypeDescription='搞系列交接动作包',
+        UTTypeConformsTo=['com.apple.package', 'public.composite-content'],
+        UTTypeTagSpecification={'public.filename-extension': ['gaoaction']},
+    )
+]
 info['UTImportedTypeDeclarations'] = [dict(
     UTTypeIdentifier=identifier,
     UTTypeDescription=description,
@@ -43,3 +58,23 @@ info['UTImportedTypeDeclarations'] = [dict(
     UTTypeTagSpecification={'public.filename-extension': [extension], 'public.mime-type': [mime]},
 ) for name, extension, identifier, description, mime in office_imports]
 with open(destination,'wb') as f: plistlib.dump(info,f,sort_keys=False)
+
+import json, pathlib
+project_dir = pathlib.Path(__file__).resolve().parent.parent
+caps_file = project_dir / 'Resources' / 'GaoCapabilities.json'
+if caps_file.is_file():
+    try:
+        caps_data = json.loads(caps_file.read_text(encoding='utf-8'))
+        caps_data['appVersion'] = version
+        caps_file.write_text(json.dumps(caps_data, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
+    except Exception:
+        pass
+dest_caps = pathlib.Path(destination).parent / 'Resources' / 'GaoCapabilities.json'
+if dest_caps.is_file():
+    try:
+        caps_data = json.loads(dest_caps.read_text(encoding='utf-8'))
+        caps_data['appVersion'] = version
+        dest_caps.write_text(json.dumps(caps_data, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
+    except Exception:
+        pass
+

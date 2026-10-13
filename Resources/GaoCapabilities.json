@@ -1,0 +1,27 @@
+{
+  "schemaVersion": 1,
+  "bundleID": "com.gaoseries.GaoWenJian",
+  "appVersion": "1.05",
+  "actions": [
+    {
+      "action": "documents.open",
+      "parametersSchema": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      }
+    },
+    {
+      "action": "documents.newText",
+      "parametersSchema": {
+        "type": "object",
+        "properties": {
+          "suggestedTitle": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      }
+    }
+  ]
+}

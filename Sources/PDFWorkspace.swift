@@ -289,6 +289,7 @@ struct PDFWorkspace: View {
                 Button { model.showSearchResult(model.searchResultIndex + 1) } label: { Image(systemName: "chevron.down") }.help("下一个搜索结果")
             }
             Button { showInspector.toggle() } label: { Image(systemName: "sidebar.right") }.help("批注、表单与目录")
+            Button { if let s = AppHub.store { OCRHandoffDispatcher.startOCR(for: url, store: s) } } label: { Label("识别扫描件", systemImage: "doc.text.viewfinder") }.help("使用搞截图识别文档文字 (OCR)")
         }.buttonStyle(.borderless).padding(.horizontal, 12).padding(.vertical, 9)
     }
 

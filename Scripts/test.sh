@@ -11,7 +11,7 @@ p.write_text(p.read_text().replace('@main @MainActor struct', '@MainActor struct
 PY
 swiftc -swift-version 5 -Xfrontend -disable-sandbox -target arm64-apple-macos14.0 -module-cache-path "$STAGING/cache" \
   "$STAGING"/Sources/*.swift "$PROJECT_DIR/Tests/CoreTests.swift" "$PROJECT_DIR/Tests/OfficeRoundTripTests.swift" "$PROJECT_DIR/Tests/OfficeRecoveryTests.swift" "$PROJECT_DIR/Tests/OfficeViewerTests.swift" \
-  "$PROJECT_DIR/Tests/PDFTests.swift" "$PROJECT_DIR/Tests/LaTeXTests.swift" "$PROJECT_DIR/Tests/StickyNotesTests.swift" "$PROJECT_DIR/Tests/StickyNotesUITests.swift" "$PROJECT_DIR/Tests/TestMain.swift" -o "$STAGING/tests"
+  "$PROJECT_DIR/Tests/PDFTests.swift" "$PROJECT_DIR/Tests/PDFHandoffTests.swift" "$PROJECT_DIR/Tests/GaoActionFixtures.swift" "$PROJECT_DIR/Tests/GaoActionTests.swift" "$PROJECT_DIR/Tests/DocumentHandoffSafetyTests.swift" "$PROJECT_DIR/Tests/LaTeXTests.swift" "$PROJECT_DIR/Tests/StickyNotesTests.swift" "$PROJECT_DIR/Tests/StickyNotesUITests.swift" "$PROJECT_DIR/Tests/TestMain.swift" -o "$STAGING/tests"
 "$STAGING/tests" --data-dir "$STAGING/data"
 node "$PROJECT_DIR/Tests/MarkdownCoreTests.js"
 swiftc -swift-version 5 -Xfrontend -disable-sandbox -target arm64-apple-macos14.0 -module-cache-path "$STAGING/cache" \

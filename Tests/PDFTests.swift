@@ -161,7 +161,7 @@ enum PDFModuleTests {
                     red.count += 1; red.x += Double(x); red.y += Double(y)
                 } else if color.blueComponent > 0.75 && color.redComponent < 0.4 && color.greenComponent < 0.4 {
                     blue.count += 1; blue.x += Double(x); blue.y += Double(y)
-                } else if color.greenComponent > 0.75 && color.redComponent < 0.4 && color.blueComponent < 0.4 {
+                } else if color.greenComponent > 0.75 && ((color.redComponent < 0.4 && color.blueComponent < 0.4) || (color.greenComponent - max(color.redComponent, color.blueComponent) >= 0.15)) {
                     green.count += 1; green.x += Double(x); green.y += Double(y)
                 }
             }

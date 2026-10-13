@@ -43,6 +43,7 @@ struct RootWorkspace:View {
                 Button(action:store.showHome){Label("首页",systemImage:"house")}.help("返回首页 ⌘1")
                 Menu{Button("LaTeX"){store.newText(.latex,text:Templates.latex)};Button("Markdown"){store.newText(.markdown)};Divider();Button("文本"){store.newText(.text)}}label:{Label("新建",systemImage:"plus")}
                 Button(action:store.openPanel){Label("打开",systemImage:"folder")}
+                Button(action:{OCRHandoffDispatcher.startOCR(store:store)}){Label("识别文字",systemImage:"doc.text.viewfinder")}.help("识别扫描件或图片文字 (OCR)")
                 Button{if store.showingNotes{_=AppHub.saveStickyNotes()}else if let active=store.active{store.save(active)}}label:{Image(systemName:"square.and.arrow.down")}.help("保存 ⌘S").disabled(store.active?.kind.canSave != true && !store.showingNotes)
                 Button{history=true}label:{Image(systemName:"clock.arrow.circlepath")}.help("本地历史").disabled(store.showingNotes || store.active?.url==nil)
                 Button{openSettings()}label:{Image(systemName:"gearshape")}.help("设置")
@@ -121,6 +122,7 @@ struct RootWorkspace:View {
                     Image(systemName:"doc.richtext").font(.system(size:27)).foregroundStyle(.red).frame(width:50,height:50).background(Color.red.opacity(0.08),in:RoundedRectangle(cornerRadius:11))
                     VStack(alignment:.leading,spacing:5){Text("PDF 编辑器").font(.headline);Text("插入文字与图片、批注、填写表单，整理与合并页面。").font(.callout).foregroundStyle(.secondary)}
                     Spacer(minLength:8)
+                    Button("识别扫描件/图片…"){OCRHandoffDispatcher.startOCR(store:store)}.controlSize(.large)
                     Button("打开 PDF…"){store.openPanel(for:[.pdf])}.controlSize(.large)
                 }.padding(18).background(Color(nsColor:.controlBackgroundColor),in:RoundedRectangle(cornerRadius:12)).overlay(RoundedRectangle(cornerRadius:12).stroke(Color.primary.opacity(0.08)))
                 VStack(alignment:.leading,spacing:10){
@@ -201,7 +203,7 @@ struct TabWorkspace:View{
         }}.frame(maxWidth:.infinity,maxHeight:.infinity)
     }
 }
-struct ImageWorkspace:View{let url:URL;@State private var scale=1.0;var body:some View{VStack(spacing:0){HStack{Text(url.lastPathComponent).font(.subheadline);Spacer();Slider(value:$scale,in:0.1...3).frame(width:160);Text("\(Int(scale*100))%").font(.caption.monospacedDigit());Button("在 Finder 显示"){NSWorkspace.shared.activateFileViewerSelecting([url])}}.padding(12).background(.bar);ScrollView([.horizontal,.vertical]){if let image=NSImage(contentsOf:url){Image(nsImage:image).resizable().scaledToFit().frame(width:min(image.size.width,1200)*scale).padding(24)}else{Text("无法解码这张图片").padding()}}.frame(maxWidth:.infinity,maxHeight:.infinity)}}}
+struct ImageWorkspace:View{let url:URL;@State private var scale=1.0;var body:some View{VStack(spacing:0){HStack{Text(url.lastPathComponent).font(.subheadline);Spacer();Slider(value:$scale,in:0.1...3).frame(width:160);Text("\(Int(scale*100))%").font(.caption.monospacedDigit());Button("识别图片文字 (OCR)"){if let s=AppHub.store{OCRHandoffDispatcher.startOCR(for:url,store:s)}};Button("在 Finder 显示"){NSWorkspace.shared.activateFileViewerSelecting([url])}}.padding(12).background(.bar);ScrollView([.horizontal,.vertical]){if let image=NSImage(contentsOf:url){Image(nsImage:image).resizable().scaledToFit().frame(width:min(image.size.width,1200)*scale).padding(24)}else{Text("无法解码这张图片").padding()}}.frame(maxWidth:.infinity,maxHeight:.infinity)}}}
 struct UnsupportedWorkspace:View{let url:URL;@ObservedObject var store:WorkspaceStore
     var body:some View{VStack(spacing:16){Image(systemName:"doc").font(.system(size:48,weight:.light)).foregroundStyle(.secondary);Text(url.lastPathComponent).font(.title2);Text("此格式可通过本机其他应用打开。").font(.callout).foregroundStyle(.secondary);Button("使用系统应用打开"){NSWorkspace.shared.open(url)}}.frame(maxWidth:.infinity,maxHeight:.infinity)}
 }

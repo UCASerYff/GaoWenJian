@@ -54,7 +54,9 @@ enum FileKind: String, CaseIterable {
     var encoding:String.Encoding = .utf8
     var savedText:String
     var restoredDraft=false
-    var title:String { url?.lastPathComponent ?? "未命名." + suggestedExtension }
+    @Published var incoming:IncomingDocument?
+    var suggestedTitle:String?
+    var title:String { url?.lastPathComponent ?? suggestedTitle ?? "未命名." + suggestedExtension }
     var suggestedExtension:String { switch kind {case .markdown:return "md";case .latex:return "tex";case .csv:return "csv";default:return "txt"} }
     init(id:UUID=UUID(),url:URL?=nil,text:String="",kind:FileKind = .markdown,dirty:Bool=false) {
         self.id=id;self.url=url;self.text=text;self.kind=kind;self.dirty=dirty;self.savedText=text
@@ -63,7 +65,7 @@ enum FileKind: String, CaseIterable {
 }
 struct BrowserEntry:Identifiable { var url:URL;var directory:Bool;var depth:Int;var id:String {url.path} }
 private struct WorkspaceState:Codable { var recent:[String] = [];var folder:String? }
-private struct RecoveryItem:Codable { var id:UUID;var path:String?;var kind:String;var text:String;var digest:String?;var encoding:UInt }
+private struct RecoveryItem:Codable { var id:UUID;var path:String?;var kind:String;var text:String;var digest:String?;var encoding:UInt;var suggestedTitle:String?;var incoming:IncomingDocument? }
 
 @MainActor final class WorkspaceStore:ObservableObject {
     @Published var tabs:[FileSession] = []
@@ -95,7 +97,7 @@ private struct RecoveryItem:Codable { var id:UUID;var path:String?;var kind:Stri
                     let recovered=try JSONDecoder().decode([RecoveryItem].self,from:Data(contentsOf:recoveryURL))
                     for item in recovered {
                         let session=FileSession(id:item.id,url:item.path.map{URL(fileURLWithPath:$0)},text:item.text,kind:FileKind(rawValue:item.kind) ?? .text,dirty:true)
-                        session.originalDigest=item.digest;session.encoding=String.Encoding(rawValue:item.encoding);session.savedText="";session.restoredDraft=true;tabs.append(session)
+                        session.originalDigest=item.digest;session.encoding=String.Encoding(rawValue:item.encoding);session.savedText="";session.restoredDraft=true;session.suggestedTitle=item.suggestedTitle;session.incoming=item.incoming;tabs.append(session)
                     }
                     restoredCount=tabs.count;selection=tabs.first?.id
                 } catch {recoveryReadable=false;self.error="恢复草稿无法读取，已保留原文件：\(error.localizedDescription)"}
@@ -106,7 +108,7 @@ private struct RecoveryItem:Codable { var id:UUID;var path:String?;var kind:Stri
     func checkpoint() {
         guard recoveryReadable else {return}
         do {
-            let items=tabs.filter{$0.kind.isText && $0.dirty}.map{RecoveryItem(id:$0.id,path:$0.url?.path,kind:$0.kind.rawValue,text:$0.text,digest:$0.originalDigest,encoding:$0.encoding.rawValue)}
+            let items=tabs.filter{$0.kind.isText && $0.dirty}.map{RecoveryItem(id:$0.id,path:$0.url?.path,kind:$0.kind.rawValue,text:$0.text,digest:$0.originalDigest,encoding:$0.encoding.rawValue,suggestedTitle:$0.suggestedTitle,incoming:$0.incoming)}
             try JSONEncoder().encode(items).write(to:FileSafety.root.appendingPathComponent("recovery.json"),options:.atomic)
         } catch {self.error="草稿恢复文件保存失败：\(error.localizedDescription)"}
     }
@@ -127,6 +129,10 @@ private struct RecoveryItem:Codable { var id:UUID;var path:String?;var kind:Stri
     }
     func openFolderPanel(){let panel=NSOpenPanel();panel.canChooseFiles=false;panel.canChooseDirectories=true;panel.title="打开工作文件夹";if panel.runModal() == .OK, let url=panel.url {folder=url;refreshFolder();persistState()}}
     func open(_ url:URL) {
+        if url.pathExtension.lowercased() == "gaoaction" {
+            GaoHandoffService.handleIncoming(url: url, store: self)
+            return
+        }
         var directory:ObjCBool=false
         guard FileManager.default.fileExists(atPath:url.path,isDirectory:&directory) else {error="文件不存在：\(url.lastPathComponent)";return}
         if directory.boolValue {folder=url;refreshFolder();persistState();return}
@@ -135,6 +141,8 @@ private struct RecoveryItem:Codable { var id:UUID;var path:String?;var kind:Stri
         do {
             let kind=FileKind(url:url)
             let session=FileSession(url:url,kind:kind)
+            do { session.incoming=try DocumentOriginStorage.load(for:url) }
+            catch { self.error="文档来源记录无法读取，已保留原记录。" }
             if kind.isText {
                 let data=try Data(contentsOf:url)
                 guard data.count <= 20_000_000 else {throw FileIssue.message("文本超过 20 MB，请使用专用大文件工具打开。")}
@@ -148,6 +156,24 @@ private struct RecoveryItem:Codable { var id:UUID;var path:String?;var kind:Stri
         } catch {self.error="无法打开文件：\(error.localizedDescription)"}
     }
     func newText(_ kind:FileKind,text:String="") {NSApp.keyWindow?.makeFirstResponder(nil);showingNotes=false;let tab=FileSession(text:text,kind:kind,dirty:!text.isEmpty);tab.savedText="";tabs.append(tab);selection=tab.id;checkpoint()}
+    @discardableResult func newHandoffText(_ text:String,markdown:Bool,title:String?,incoming:IncomingDocument) throws -> FileSession {
+        guard recoveryReadable else { throw FileIssue.message("草稿恢复记录无法读取，交接文字尚未导入，请先处理现有恢复记录。") }
+        guard text.utf8.count <= DocumentHandoffSafety.maximumTextBytes, !text.contains("\0") else { throw FileIssue.message("交接正文超过限制或含无效字符，未改变当前文档。") }
+        newText(markdown ? .markdown:.text,text:text)
+        guard let tab=active else { throw FileIssue.message("无法建立交接文档。") }
+        tab.incoming=incoming; tab.suggestedTitle=HandoffNames.title(title,fallback:incoming.originalName)
+        tab.dirty=true;tab.savedText="";checkpoint()
+        status="已新建未保存的交接文字 · 当前原文档保留"
+        return tab
+    }
+    @discardableResult func openHandoffDocument(_ url:URL,incoming:IncomingDocument) throws -> FileSession {
+        try DocumentOriginStorage.save(incoming,for:url)
+        NSApp.keyWindow?.makeFirstResponder(nil)
+        open(url)
+        guard let tab=tabs.first(where:{$0.url?.standardizedFileURL==url.standardizedFileURL}) else { throw FileIssue.message("交接文档无法打开，原有标签保留。") }
+        tab.incoming=incoming
+        return tab
+    }
     @discardableResult func save(_ session:FileSession,asCopy:Bool=false) -> Bool {
         guard session.kind.canSave else {return true}
         if !session.kind.isText {
@@ -166,6 +192,7 @@ private struct RecoveryItem:Codable { var id:UUID;var path:String?;var kind:Stri
             guard let data=session.text.data(using:encoding) else {throw FileIssue.message("当前编码无法保存这些字符，请使用“另存为”生成 UTF-8 文件。")}
             try FileSafety.write(data,to:destination,expectedDigest:asCopy ? nil : session.originalDigest)
             session.url=destination;session.encoding=encoding;session.originalDigest=FileSafety.digest(data);session.savedText=session.text;session.restoredDraft=false;session.dirty=false
+            if let incoming=session.incoming { do { try DocumentOriginStorage.save(incoming,for:destination) } catch { self.error="文档已保存，但来源说明记录未能保存；已有来源记录保留。" } }
             recent.removeAll{$0 == destination};recent.insert(destination,at:0);persistState();checkpoint();refreshFolder();status="已保存 \(destination.lastPathComponent)"
             return true
         } catch {self.error=error.localizedDescription;return false}

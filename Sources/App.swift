@@ -43,6 +43,7 @@ import UniformTypeIdentifiers
                 Divider()
                 Button("打开文件…",action:store.openPanel).keyboardShortcut("o")
                 Button("打开文件夹…",action:store.openFolderPanel).keyboardShortcut("o",modifiers:[.command,.shift])
+                Button("识别扫描件/图片 (OCR)…"){OCRHandoffDispatcher.startOCR(store:store)}
                 Menu("新建其他格式"){
                     Button("CSV 表格"){store.newText(.csv,text:"名称,数值,备注\n项目,0,\n")};Button("纯文本"){store.newText(.text)}
                 }
@@ -90,11 +91,25 @@ final class FindSender:NSObject { @objc var tag:Int {Int(NSFindPanelAction.showF
     var reopen:(()->Void)?
     func applicationDidFinishLaunching(_ notification:Notification){
         let args=CommandLine.arguments
-        if let i=args.firstIndex(of:"--open"),args.count>i+1{(store ?? AppHub.store)?.open(URL(fileURLWithPath:args[i+1]))}
+        if let i=args.firstIndex(of:"--open"),args.count>i+1{
+            let url=URL(fileURLWithPath:args[i+1])
+            if let target=store ?? AppHub.store {
+                if !GaoHandoffService.handleIncoming(url:url,store:target){target.open(url)}
+            }
+        }
         AppHub.stickyWindows?.restoreDesktopWindows()
         if args.contains("--show-notes"){(store ?? AppHub.store)?.showingNotes=true}
     }
-    func application(_ sender:NSApplication,openFiles filenames:[String]){for path in filenames{(store ?? AppHub.store)?.open(URL(fileURLWithPath:path))};reopen?();sender.reply(toOpenOrPrint:.success)}
+    func application(_ sender:NSApplication,openFiles filenames:[String]){
+        for path in filenames{
+            let url=URL(fileURLWithPath:path)
+            if let target=store ?? AppHub.store {
+                if !GaoHandoffService.handleIncoming(url:url,store:target){target.open(url)}
+            }
+        }
+        reopen?()
+        sender.reply(toOpenOrPrint:.success)
+    }
     func applicationShouldTerminateAfterLastWindowClosed(_ sender:NSApplication)->Bool{false}
     func applicationShouldHandleReopen(_ sender:NSApplication,hasVisibleWindows flag:Bool)->Bool{reopen?();return true}
     func applicationShouldTerminate(_ sender:NSApplication)->NSApplication.TerminateReply{
