@@ -44,6 +44,9 @@ import UniformTypeIdentifiers
                 Button("打开文件…",action:store.openPanel).keyboardShortcut("o")
                 Button("打开文件夹…",action:store.openFolderPanel).keyboardShortcut("o",modifiers:[.command,.shift])
                 Button("识别扫描件/图片 (OCR)…"){OCRHandoffDispatcher.startOCR(store:store)}
+                Button("从搞整理选择文档…"){OCRHandoffDispatcher.chooseDocuments(store:store)}
+                Button("将当前文档副本交给搞研究…"){CurrentDocumentDispatcher.sendCurrent(store:store)}.disabled(store.active == nil || store.showingNotes)
+                Button("取消当前文档交接"){GaoHandoffService.cancelCurrent()}.disabled(!store.handoffBusy)
                 Menu("新建其他格式"){
                     Button("CSV 表格"){store.newText(.csv,text:"名称,数值,备注\n项目,0,\n")};Button("纯文本"){store.newText(.text)}
                 }
@@ -87,26 +90,30 @@ import UniformTypeIdentifiers
 }
 final class FindSender:NSObject { @objc var tag:Int {Int(NSFindPanelAction.showFindPanel.rawValue)} }
 @MainActor final class FileAppDelegate:NSObject,NSApplicationDelegate{
-    weak var store:WorkspaceStore?
+    weak var store:WorkspaceStore? {didSet{drainPendingFiles()}}
+    private var pendingFiles:[URL]=[]
     var reopen:(()->Void)?
+    func receiveFiles(_ urls:[URL]){
+        pendingFiles.append(contentsOf:urls)
+        drainPendingFiles()
+    }
+    private func drainPendingFiles(){
+        guard let target=store ?? AppHub.store else{return}
+        let files=pendingFiles;pendingFiles.removeAll()
+        for url in files {
+            if !GaoHandoffService.handleIncoming(url:url,store:target){target.open(url)}
+        }
+    }
     func applicationDidFinishLaunching(_ notification:Notification){
         let args=CommandLine.arguments
         if let i=args.firstIndex(of:"--open"),args.count>i+1{
-            let url=URL(fileURLWithPath:args[i+1])
-            if let target=store ?? AppHub.store {
-                if !GaoHandoffService.handleIncoming(url:url,store:target){target.open(url)}
-            }
+            receiveFiles([URL(fileURLWithPath:args[i+1])])
         }
         AppHub.stickyWindows?.restoreDesktopWindows()
         if args.contains("--show-notes"){(store ?? AppHub.store)?.showingNotes=true}
     }
     func application(_ sender:NSApplication,openFiles filenames:[String]){
-        for path in filenames{
-            let url=URL(fileURLWithPath:path)
-            if let target=store ?? AppHub.store {
-                if !GaoHandoffService.handleIncoming(url:url,store:target){target.open(url)}
-            }
-        }
+        receiveFiles(filenames.map{URL(fileURLWithPath:$0)})
         reopen?()
         sender.reply(toOpenOrPrint:.success)
     }

@@ -10,6 +10,7 @@ import json
 import os
 from pathlib import Path
 import plistlib
+import re
 import shutil
 import stat
 import subprocess
@@ -111,8 +112,25 @@ def verify_signature(path, simulate):
         run(["/usr/bin/codesign", "--verify", "--deep", "--strict", str(path)])
 
 
+def registered_paths(dump):
+    if "bundle id:" not in dump or "path:" not in dump:
+        fail("系统应用登记无法完整读取，禁止按空白登记继续清理。")
+    paths = set()
+    for block in re.split(r"(?m)(?=^bundle id:)", dump):
+        if not re.search(r"^identifier:\s+" + re.escape(BUNDLE) + r"\s*$", block, re.M):
+            continue
+        match = re.search(r"^path:\s+(.+?)\s+\(0x[0-9a-f]+\)\s*$", block, re.M)
+        if match:
+            paths.add(match.group(1))
+    return paths
+
+
 def register(path, simulate, remove=False):
     if not simulate:
+        if remove and str(path) not in registered_paths(run([LSREGISTER, "-dump"])):
+            # Hidden transaction copies need not have a LaunchServices record.
+            # Verify absence instead of treating an unregister error as success.
+            return
         run([LSREGISTER, "-u" if remove else "-f", str(path)])
 
 
@@ -307,7 +325,7 @@ def install(args):
             manifest["state"] = "installed_pending_verification"
             atomic_json(path, manifest)
             print("MANIFEST=" + str(path))
-            print("已安装搞文件 V" + version + "，等待 GUI 验收。旧程序、资料和设置备份均保留。")
+            print("已安装搞文件 V" + version + "，等待安装后验证。旧程序、资料和设置备份均保留。")
             print("验收后：Scripts/finalize-install.sh --manifest '" + str(path) + "' --verified")
             print("验收失败：Scripts/finalize-install.sh --manifest '" + str(path) + "' --rollback")
         except Exception as error:
@@ -341,6 +359,10 @@ def finalize(args):
             rollback(manifest, path)
             return
         verify_backup(manifest)
+        if args.require_unchanged_data:
+            for item in manifest["backups"].values():
+                if inventory(Path(item["original_path"])) != item["inventory"]:
+                    fail("资料或设置在安装后发生变化，未确认保留结果，禁止清理旧程序。")
         target = Path(manifest["target_app"])
         stage = Path(manifest["stage_dir"])
         verify_signature(target, manifest["simulate"])
@@ -356,11 +378,14 @@ def finalize(args):
                 fail("暂存目录包含未知文件，禁止自动清理。")
             for child in stage.iterdir():
                 app_info(child)
+                register(child, manifest["simulate"], remove=True)
             shutil.rmtree(str(stage))
         manifest["state"] = "verified"
         manifest["verified_at"] = datetime.datetime.now().astimezone().isoformat()
+        manifest["verification_note"] = args.verification_note
+        manifest["unchanged_data_verified"] = bool(args.require_unchanged_data)
         atomic_json(path, manifest)
-        print("GUI 验收已确认，旧程序和本次安装暂存已删除。用户资料与安全备份保留。")
+        print("安装后验证已记录，旧程序和本次安装暂存已删除。用户资料与安全备份保留。")
 
 
 def main():
@@ -372,10 +397,12 @@ def main():
     install_parser.add_argument("--data-root", default=str(DEFAULT_DATA))
     install_parser.add_argument("--preferences", default=str(DEFAULT_PREFS))
     install_parser.add_argument("--backup-root", default=str(PROJECT / "安全备份"))
-    install_parser.add_argument("--defer-cleanup", action="store_true", help="保留旧程序等待 GUI 验收；所有安装均要求显式 finalize")
+    install_parser.add_argument("--defer-cleanup", action="store_true", help="保留旧程序等待验证；所有安装均要求显式 finalize")
     install_parser.add_argument("--simulate", action="store_true", help="仅临时目录模拟，不调用签名或系统登记")
     final_parser = commands.add_parser("finalize")
     final_parser.add_argument("--manifest", required=True)
+    final_parser.add_argument("--verification-note", default="", help="如实记录本次采用的验证方式，不自动运行 GUI")
+    final_parser.add_argument("--require-unchanged-data", action="store_true", help="清理旧程序前再次核对资料和设置逐文件未变")
     actions = final_parser.add_mutually_exclusive_group(required=True)
     actions.add_argument("--verified", action="store_true")
     actions.add_argument("--rollback", action="store_true")

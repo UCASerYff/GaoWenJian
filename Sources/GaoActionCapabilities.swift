@@ -29,7 +29,20 @@ enum GaoCapabilityDiscovery {
         let json: [String:GaoJSONValue]
         do { json = try JSONDecoder().decode([String:GaoJSONValue].self,from:bytes) }
         catch { throw GaoActionContract.reject("invalidCapabilities","目标应用能力表损坏，不能发送动作。") }
-        guard json["schemaVersion"]?.numberValue == 1, json["bundleID"]?.stringValue == bundleID, json["appVersion"]?.stringValue == version, let actions = json["actions"]?.arrayValue else { throw GaoActionContract.reject("invalidCapabilities","目标应用能力表版本或身份不匹配。") }
+        guard json["schemaVersion"]?.numberValue == 1, json["bundleID"]?.stringValue == bundleID, json["appVersion"]?.stringValue == version else { throw GaoActionContract.reject("invalidCapabilities","目标应用能力表版本或身份不匹配。") }
+        let actions:[GaoJSONValue]
+        if let array=json["actions"]?.arrayValue {actions=array}
+        else if let dictionary=json["actions"]?.objectValue {
+            // Existing V1 providers use both an array and an action-keyed dictionary.
+            // A dictionary key is an action declaration, never an executable command.
+            actions=try dictionary.keys.sorted().map { name in
+                guard var entry=dictionary[name]?.objectValue,
+                      entry["action"] == nil || entry["action"]?.stringValue == name,
+                      entry["name"] == nil || entry["name"]?.stringValue == name else {throw GaoActionContract.reject("invalidCapabilities","目标应用动作声明冲突或无效。")}
+                entry["action"] = .string(name)
+                return .object(entry)
+            }
+        }else{throw GaoActionContract.reject("invalidCapabilities","目标应用能力列表无效。")}
         var found: GaoActionCapability?
         var seen = Set<String>()
         for entry in actions {

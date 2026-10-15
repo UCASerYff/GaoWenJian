@@ -157,8 +157,9 @@ enum GaoActionTransport {
             guard let object = try JSONSerialization.jsonObject(with:data) as? [String:Any] else { throw GaoActionContract.reject("invalidManifest","交接清单不是有效对象。") }
             let base: Set<String> = ["schemaVersion","kind","requestID","sourceBundleID","targetBundleID","action","createdAt","expiresAt","nonce","items","references","parameters"]
             let resultKeys: Set<String> = ["inReplyTo","status","errorCode","provenance"]
+            let requiredResultKeys: Set<String> = ["inReplyTo","status","provenance"]
             guard base.isSubset(of:Set(object.keys)), Set(object.keys).isSubset(of:base.union(resultKeys)) else { throw GaoActionContract.reject("invalidManifest","交接清单缺少必要字段或包含未知字段。") }
-            if object["kind"] as? String == "result", !resultKeys.isSubset(of:Set(object.keys)) { throw GaoActionContract.reject("invalidResult","交接结果缺少状态字段。") }
+            if object["kind"] as? String == "result", !requiredResultKeys.isSubset(of:Set(object.keys)) { throw GaoActionContract.reject("invalidResult","交接结果缺少状态字段。") }
             for key in ["items","references"] {
                 guard let entries = object[key] as? [[String:Any]] else { throw GaoActionContract.reject("invalidManifest","交接项目列表无效。") }
                 for entry in entries {
@@ -236,7 +237,8 @@ enum GaoActionWriter {
                 let filename = String(UUID().uuidString.prefix(8)) + "-" + GaoActionContract.safeFilename(file.url.lastPathComponent)
                 let copied = try GaoPrivateIO.copy(fd,to:payload,name:filename,maximum:GaoActionContract.maximumPayloadBytes-total)
                 total += copied.0
-                manifest.items.append(GaoActionItem(id:file.id,relativePath:"payload/" + filename,uti:file.uti,byteCount:copied.0,sha256:copied.1))
+                // V1 paths are relative to payload/. Readers retain legacy prefix compatibility.
+                manifest.items.append(GaoActionItem(id:file.id,relativePath:filename,uti:file.uti,byteCount:copied.0,sha256:copied.1))
             }
             try GaoActionContract.validate(manifest,expectedTargetBundleID:manifest.targetBundleID,now:now)
             let encoder = JSONEncoder(); encoder.outputFormatting = [.prettyPrinted,.sortedKeys,.withoutEscapingSlashes]

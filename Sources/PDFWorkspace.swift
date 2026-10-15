@@ -231,7 +231,11 @@ struct PDFWorkspace: View {
         .onReceive(NotificationCenter.default.publisher(for: Notification.Name("GaoWenJian.discardDraft"))) { notification in
             if notification.object as? String == url.path { model.discardDraft() }
         }
-        .onAppear { model.publishDirty() }
+        .onAppear {
+            CurrentDocumentHandoffRegistry.shared.register(model)
+            model.publishDirty()
+        }
+        .onDisappear { CurrentDocumentHandoffRegistry.shared.unregister(model) }
         .sheet(item: $objectSheet) { draft in
             PDFObjectSheet(draft: draft, onCancel: { objectSheet = nil }, onApply: { applyObjectSheet(draft) })
         }

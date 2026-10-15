@@ -15,7 +15,7 @@ enum FileKind: String, CaseIterable {
         case "csv", "tsv": self = .csv
         case "rtf": self = .richText
         case "txt", "json", "xml", "yaml", "yml", "html", "css", "js", "swift", "py", "r", "log", "sh": self = .text
-        case "png", "jpg", "jpeg", "gif", "webp", "heic", "tiff", "bmp", "svg": self = .image
+        case "png", "jpg", "jpeg", "gif", "webp", "heic", "tiff", "tif", "bmp", "svg": self = .image
         default: self = .other
         }
     }
@@ -77,6 +77,7 @@ private struct RecoveryItem:Codable { var id:UUID;var path:String?;var kind:Stri
     @Published var status = "文件仅保存在本机"
     @Published var restoredCount = 0
     @Published var showingNotes = false
+    @Published var handoffBusy = false
     private var stateReadable = true
     private var recoveryReadable = true
     private var timer:Timer?
@@ -107,18 +108,20 @@ private struct RecoveryItem:Codable { var id:UUID;var path:String?;var kind:Stri
     }
     func checkpoint() {
         guard recoveryReadable else {return}
-        do {
-            let items=tabs.filter{$0.kind.isText && $0.dirty}.map{RecoveryItem(id:$0.id,path:$0.url?.path,kind:$0.kind.rawValue,text:$0.text,digest:$0.originalDigest,encoding:$0.encoding.rawValue,suggestedTitle:$0.suggestedTitle,incoming:$0.incoming)}
-            try JSONEncoder().encode(items).write(to:FileSafety.root.appendingPathComponent("recovery.json"),options:.atomic)
-        } catch {self.error="草稿恢复文件保存失败：\(error.localizedDescription)"}
+        do { try writeCheckpoint() } catch {self.error="草稿恢复文件保存失败：\(error.localizedDescription)"}
+    }
+    private func writeCheckpoint() throws {
+        guard recoveryReadable else { throw FileIssue.message("恢复草稿不可读取，已保留原记录。") }
+        let items=tabs.filter{$0.kind.isText && $0.dirty}.map{RecoveryItem(id:$0.id,path:$0.url?.path,kind:$0.kind.rawValue,text:$0.text,digest:$0.originalDigest,encoding:$0.encoding.rawValue,suggestedTitle:$0.suggestedTitle,incoming:$0.incoming)}
+        try JSONEncoder().encode(items).write(to:FileSafety.root.appendingPathComponent("recovery.json"),options:.atomic)
     }
     private func persistState() {
         guard stateReadable else {return}
         do {try JSONEncoder().encode(WorkspaceState(recent:recent.map(\.path),folder:folder?.path)).write(to:FileSafety.root.appendingPathComponent("workspace.json"),options:.atomic)}
         catch{self.error=error.localizedDescription}
     }
-    func select(_ session:FileSession){NSApp.keyWindow?.makeFirstResponder(nil);showingNotes=false;selection=session.id}
-    func showHome(){NSApp.keyWindow?.makeFirstResponder(nil);showingNotes=false;selection=nil}
+    func select(_ session:FileSession){NSApp?.keyWindow?.makeFirstResponder(nil);showingNotes=false;selection=session.id}
+    func showHome(){NSApp?.keyWindow?.makeFirstResponder(nil);showingNotes=false;selection=nil}
     func openPanel(){let panel=NSOpenPanel();panel.canChooseDirectories=false;panel.allowsMultipleSelection=true;panel.title="打开文件";if panel.runModal() == .OK {panel.urls.forEach(open)}}
     func openPanel(for kinds:[FileKind]) {
         let panel=NSOpenPanel();panel.canChooseDirectories=false;panel.allowsMultipleSelection=true
@@ -155,22 +158,25 @@ private struct RecoveryItem:Codable { var id:UUID;var path:String?;var kind:Stri
             status="已打开 \(url.lastPathComponent)"
         } catch {self.error="无法打开文件：\(error.localizedDescription)"}
     }
-    func newText(_ kind:FileKind,text:String="") {NSApp.keyWindow?.makeFirstResponder(nil);showingNotes=false;let tab=FileSession(text:text,kind:kind,dirty:!text.isEmpty);tab.savedText="";tabs.append(tab);selection=tab.id;checkpoint()}
+    func newText(_ kind:FileKind,text:String="") {NSApp?.keyWindow?.makeFirstResponder(nil);showingNotes=false;let tab=FileSession(text:text,kind:kind,dirty:!text.isEmpty);tab.savedText="";tabs.append(tab);selection=tab.id;checkpoint()}
     @discardableResult func newHandoffText(_ text:String,markdown:Bool,title:String?,incoming:IncomingDocument) throws -> FileSession {
         guard recoveryReadable else { throw FileIssue.message("草稿恢复记录无法读取，交接文字尚未导入，请先处理现有恢复记录。") }
         guard text.utf8.count <= DocumentHandoffSafety.maximumTextBytes, !text.contains("\0") else { throw FileIssue.message("交接正文超过限制或含无效字符，未改变当前文档。") }
-        newText(markdown ? .markdown:.text,text:text)
-        guard let tab=active else { throw FileIssue.message("无法建立交接文档。") }
+        NSApp?.keyWindow?.makeFirstResponder(nil)
+        let previousSelection=selection, previousNotes=showingNotes
+        let tab=FileSession(text:text,kind:markdown ? .markdown:.text,dirty:true)
         tab.incoming=incoming; tab.suggestedTitle=HandoffNames.title(title,fallback:incoming.originalName)
-        tab.dirty=true;tab.savedText="";checkpoint()
+        tab.savedText="";tabs.append(tab);selection=tab.id;showingNotes=false
+        do { try writeCheckpoint() } catch {tabs.removeAll{$0.id==tab.id};selection=previousSelection;showingNotes=previousNotes;throw error}
         status="已新建未保存的交接文字 · 当前原文档保留"
         return tab
     }
     @discardableResult func openHandoffDocument(_ url:URL,incoming:IncomingDocument) throws -> FileSession {
         try DocumentOriginStorage.save(incoming,for:url)
-        NSApp.keyWindow?.makeFirstResponder(nil)
+        NSApp?.keyWindow?.makeFirstResponder(nil)
+        let previousSelection=selection, previousNotes=showingNotes
         open(url)
-        guard let tab=tabs.first(where:{$0.url?.standardizedFileURL==url.standardizedFileURL}) else { throw FileIssue.message("交接文档无法打开，原有标签保留。") }
+        guard let tab=tabs.first(where:{$0.url?.standardizedFileURL==url.standardizedFileURL}) else { selection=previousSelection;showingNotes=previousNotes;throw FileIssue.message("交接文档无法打开，原有标签保留。") }
         tab.incoming=incoming
         return tab
     }

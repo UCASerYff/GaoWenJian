@@ -53,7 +53,7 @@ enum DocumentHandoffSafety {
             let known: [String:Set<String>] = [
                 "pdf":["com.adobe.pdf","application/pdf"], "rtf":["public.rtf","text/rtf","application/rtf"],
                 "png":["public.png","image/png"], "jpg":["public.jpeg","image/jpeg"], "jpeg":["public.jpeg","image/jpeg"],
-                "tiff":["public.tiff","image/tiff"], "gif":["com.compuserve.gif","image/gif"],
+                "tiff":["public.tiff","image/tiff"], "tif":["public.tiff","image/tiff"], "gif":["com.compuserve.gif","image/gif"],
                 "heic":["public.heic","image/heic"], "webp":["org.webmproject.webp","public.webp","image/webp"],
                 "bmp":["com.microsoft.bmp","image/bmp"],
                 "doc":["com.microsoft.word.doc","application/msword"],

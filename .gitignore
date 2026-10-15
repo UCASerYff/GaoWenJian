@@ -2,6 +2,7 @@
 /Release/
 /build/
 /.build/
+/TestResults/
 /dist/
 /tmp/
 *.app/

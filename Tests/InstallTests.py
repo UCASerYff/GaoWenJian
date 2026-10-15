@@ -6,6 +6,8 @@ import plistlib
 import subprocess
 import tempfile
 import shutil
+import importlib.util
+from unittest import mock
 
 PROJECT = Path(__file__).resolve().parent.parent
 INSTALL = PROJECT / "Scripts/install.sh"
@@ -30,6 +32,24 @@ def fixture(path, version, payload, bundle=BUNDLE):
 
 
 def main():
+    spec = importlib.util.spec_from_file_location("install_safety", PROJECT / "Scripts/install_safety.py")
+    installer = importlib.util.module_from_spec(spec); spec.loader.exec_module(installer)
+    own = "bundle id: fixture\npath: /tmp/previous.app (0x123)\nidentifier: " + BUNDLE + "\n"
+    other = "bundle id: other\npath: /tmp/other.app (0x124)\nidentifier: com.example.Other\n"
+    assert installer.registered_paths(own + other) == {"/tmp/previous.app"}
+    with mock.patch.object(installer, "run", return_value=other) as command:
+        installer.register(Path("/tmp/previous.app"), False, remove=True)
+        assert command.call_count == 1  # Unregistered transaction copy: query only.
+    with mock.patch.object(installer, "run", side_effect=[own, ""]) as command:
+        installer.register(Path("/tmp/previous.app"), False, remove=True)
+        assert command.call_args_list[-1].args[0] == [installer.LSREGISTER, "-u", "/tmp/previous.app"]
+    with mock.patch.object(installer, "run", side_effect=[own, RuntimeError("cannot unregister")]):
+        try: installer.register(Path("/tmp/previous.app"), False, remove=True)
+        except RuntimeError: pass
+        else: raise AssertionError("A real registration failure must stop cleanup")
+    try: installer.registered_paths("")
+    except RuntimeError: pass
+    else: raise AssertionError("Unreadable registry must not become empty")
     root = Path(tempfile.mkdtemp(prefix="GaoFiles-InstallTests-")).resolve()
     try:
         source = root / "new/搞文件.app"
@@ -84,10 +104,16 @@ def main():
         assert (target / "Contents/MacOS/GaoWenJian").read_bytes() == b"initial candidate"
         assert preferences.read_bytes() == prefs and (data / "database.sqlite").exists()
 
-        # After GUI verification, only the obsolete program and staging are removed.
+        # Verification is explicit; a non-GUI update can require unchanged real data.
         manifest_path = install()
         manifest = json.loads(manifest_path.read_text())
-        invoke([FINALIZE, "--manifest", manifest_path, "--verified"])
+        (data / "database.sqlite").write_bytes(b"concurrent data change")
+        invoke([FINALIZE, "--manifest", manifest_path, "--verified", "--require-unchanged-data"], expected=1)
+        assert (Path(manifest["stage_dir"]) / "previous.app").exists()
+        (data / "database.sqlite").write_bytes(b"actual database\x00\x01")
+        invoke([FINALIZE, "--manifest", manifest_path, "--verified", "--require-unchanged-data", "--verification-note", "isolated tests and static install verification; no smoke test"])
+        checked = json.loads(manifest_path.read_text())
+        assert checked["unchanged_data_verified"] is True and "no smoke test" in checked["verification_note"]
         assert not Path(manifest["stage_dir"]).exists()
         assert Path(manifest["backups"]["data"]["backup_path"]).exists()
         assert (target / "Contents/MacOS/GaoWenJian").read_bytes() == b"updated candidate"

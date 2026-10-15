@@ -29,15 +29,22 @@ enum GaoRequestReceipt {
 /// Records are append/update metadata only. Invalid or newer files disable processing instead of erasing history.
 final class GaoProcessedRequestStore {
     private struct Envelope: Codable { var schemaVersion: Int; var records: [GaoProcessedRequest] }
+    private static let filename = "ProcessedRequests.json"
+    private static let marker = "ProcessedRequests.initialized"
+    private static let markerBytes = Data("GaoWenJian processed requests v1\n".utf8)
     private let directory: GaoFixedFD
     private let lock = NSLock()
     private var records: [String:GaoProcessedRequest]
     private var persistedDigest: String?
     init(root: URL) throws {
-        directory = try GaoPrivateIO.directory(root,create:true,requirePrivate:true)
-        let fd = openat(directory.value,"ProcessedRequests.json",O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC)
+        let opened = try GaoPrivateIO.directory(root,create:true,requirePrivate:true)
+        directory = opened
+        guard flock(opened.value,LOCK_EX) == 0 else { throw GaoActionContract.reject("recordConflict","交接历史暂时无法锁定，未覆盖旧记录。") }
+        defer { _ = flock(opened.value,LOCK_UN) }
+        let hadMarker = try Self.checkMarker(opened)
+        let fd = openat(opened.value,Self.filename,O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC)
         if fd < 0 {
-            guard errno == ENOENT else { throw GaoActionContract.reject("recordUnreadable","交接历史无法读取，已停止接收，未覆盖旧记录。") }
+            guard errno == ENOENT, !hadMarker else { throw GaoActionContract.reject("recordUnreadable","交接历史缺失或无法读取，已停止接收，未覆盖旧记录。") }
             records = [:]; persistedDigest = nil; return
         }
         do {
@@ -51,6 +58,9 @@ final class GaoProcessedRequestStore {
                 indexed[record.requestID] = record
             }
             records = indexed; persistedDigest = FileSafety.digest(bytes)
+            // V1 history without a marker remains readable. Create the marker only
+            // after all old records pass validation, without rewriting their bytes.
+            if !hadMarker { try GaoPrivateIO.atomicJSON(Self.markerBytes,directory:opened,name:Self.marker) }
         } catch let error as GaoActionIssue { throw error }
         catch { throw GaoActionContract.reject("recordCorrupt","交接历史损坏，已停止接收，未覆盖旧记录。") }
     }
@@ -93,7 +103,10 @@ final class GaoProcessedRequestStore {
         return record
     }
     private func persist(_ indexed: [String:GaoProcessedRequest]) throws {
-        let currentFD = openat(directory.value,"ProcessedRequests.json",O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC)
+        guard flock(directory.value,LOCK_EX) == 0 else { throw GaoActionContract.reject("recordConflict","交接历史暂时无法锁定，未覆盖旧记录。") }
+        defer { _ = flock(directory.value,LOCK_UN) }
+        _ = try Self.checkMarker(directory,required:persistedDigest != nil)
+        let currentFD = openat(directory.value,Self.filename,O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC)
         if currentFD >= 0 {
             let current = try GaoPrivateIO.read(GaoFixedFD(currentFD),maximum:16_777_216)
             guard persistedDigest == FileSafety.digest(current) else { throw GaoActionContract.reject("recordConflict","交接历史已被其他窗口或程序修改，请重新打开后处理。") }
@@ -103,8 +116,18 @@ final class GaoProcessedRequestStore {
         let encoder = JSONEncoder(); encoder.outputFormatting = [.prettyPrinted,.sortedKeys,.withoutEscapingSlashes]
         let data = try encoder.encode(Envelope(schemaVersion:1,records:indexed.values.sorted {$0.requestID < $1.requestID}))
         guard data.count <= 16_777_216 else { throw GaoActionContract.reject("recordLimit","交接历史超过安全大小，已停止修改。") }
-        try GaoPrivateIO.atomicJSON(data,directory:directory,name:"ProcessedRequests.json")
+        try GaoPrivateIO.atomicJSON(data,directory:directory,name:Self.filename)
         persistedDigest = FileSafety.digest(data)
+        if try !Self.checkMarker(directory) { try GaoPrivateIO.atomicJSON(Self.markerBytes,directory:directory,name:Self.marker) }
+    }
+    @discardableResult private static func checkMarker(_ directory: GaoFixedFD, required: Bool = false) throws -> Bool {
+        let fd = openat(directory.value,Self.marker,O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC)
+        if fd < 0 {
+            guard errno == ENOENT, !required else { throw GaoActionContract.reject("recordConflict","交接历史初始化记录缺失或无法读取，已停止接收。") }
+            return false
+        }
+        guard try GaoPrivateIO.read(GaoFixedFD(fd),maximum:128) == Self.markerBytes else { throw GaoActionContract.reject("recordCorrupt","交接历史初始化记录损坏或版本不支持，未覆盖旧记录。") }
+        return true
     }
     private static func safeResultName(_ value: String) -> Bool { value.hasSuffix(".gaoaction") && !value.contains("/") && !value.contains("\\") && !value.contains("\0") && value.utf8.count <= 128 }
 }
