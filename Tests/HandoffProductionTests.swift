@@ -50,11 +50,12 @@ import PDFKit
         let officeRecovery = FileSafety.root.appendingPathComponent("Recovery/Office")
         let oldOfficeDrafts = try files(officeRecovery)
 
-        var confirmations = 0, replies: [URL] = [], referenceSelections: [String] = []
+        var confirmations = 0, replies: [URL] = [], referenceSelections: [String] = [], reviewMessages:[String]=[]
         var allowReceive = true
         var allowedReferences: [String: URL] = [:]
         let interaction = GaoHandoffInteraction(confirm: { review in
             confirmations += 1
+            reviewMessages.append(review.message)
             return allowReceive
         }, selectReference: { reference in
             referenceSelections.append(reference.id)
@@ -67,6 +68,7 @@ import PDFKit
         let request = try GaoActionWriter.writeRequest(action: "documents.newText", items: [.init(url: text, uti: "net.daringfireball.markdown")], parameters: ["suggestedTitle": .string("交接 草稿")], sourceBundleID: "com.gaoseries.FixtureSender", targetBundleID: GaoActionContract.bundleID, exchangeRoot: foreignExchange, now: clock)
         let accepted = try GaoHandoffService.receive(url: request, store: store, interaction: interaction, now: clock)
         try check(accepted.status == "completed" && accepted.openedTabIDs.count == 1, "Actual newText dispatcher opens one tab")
+        try check(reviewMessages.last?.contains("新的未保存标签") == true,"New text confirmation explains its actual unsaved mode")
         let imported = store.tabs.first { $0.id == accepted.openedTabIDs[0] }!
         try check(imported.url == nil && imported.dirty && imported.kind == .markdown && imported.text == incomingText, "OCR text is a distinct unsaved Unicode Markdown tab")
         try check(existing.text == initialText && existing.dirty && store.tabs.contains { $0 === latex }, "Existing unsaved text and LaTeX remain")
@@ -82,6 +84,7 @@ import PDFKit
 
         let officeRequest = try GaoActionWriter.writeRequest(action: "documents.open", items: [.init(url: office, uti: "org.openxmlformats.wordprocessingml.document")], sourceBundleID: "com.gaoseries.FixtureSender", targetBundleID: GaoActionContract.bundleID, exchangeRoot: foreignExchange, now: clock)
         let openedOffice = try GaoHandoffService.receive(url: officeRequest, store: store, interaction: interaction, now: clock)
+        try check(reviewMessages.last?.contains("新的校验副本") == true && reviewMessages.last?.contains("新的未保存标签") == false,"Open confirmation explains a verified copy rather than pretending it is an unsaved text adapter")
         let officeTab = store.tabs.first { $0.id == openedOffice.openedTabIDs.first }!
         try check(officeTab.kind == .word && !officeTab.kind.canSave && officeTab.url != office, "Office enters existing read-only viewer using its verified copy")
         try check(store.save(officeTab) && (try Data(contentsOf: office)) == officeOriginal, "Office generic save cannot modify original")
@@ -93,6 +96,7 @@ import PDFKit
         let deniedCount = store.tabs.count
         let denied = try GaoHandoffService.receive(url: deniedRequest, store: store, interaction: interaction, now: clock)
         try check(denied.status == "cancelled" && store.tabs.count == deniedCount, "User decline leaves current documents intact")
+        try check(store.status.contains("已取消") && !store.status.contains("正在复制"), "Request decline leaves an explicit final cancellation status")
         allowReceive = true
         let cancelledRequest = try GaoActionWriter.writeRequest(action: "documents.newText", items: [.init(url: text, uti: "net.daringfireball.markdown")], sourceBundleID: "com.gaoseries.FixtureSender", targetBundleID: GaoActionContract.bundleID, exchangeRoot: foreignExchange, now: clock)
         let cancelToken = GaoHandoffCancellation(); cancelToken.cancel()
@@ -123,7 +127,8 @@ import PDFKit
         let sentCurrent = PDFDocument(url: sentCurrentURL)!
         try check(commits >= 1 && currentSource.binding.versionKind == "currentEdits", "Actual OCR prepare commits the registered current model and journals chosen version")
         try check(sentCurrent.page(at: 0)?.annotations.contains { $0.contents == "当前未保存批注" } == true && sentCurrent.page(at: 0)?.annotations.first { $0.fieldName == "Latest" }?.widgetStringValue == "IMMEDIATE LATEST FORM", "Production request contains immediate unsaved form and annotation")
-        try check(pdf.dirty && pdf.canUndo && (try files(pdfRecovery)) == recoveryBefore && (try Data(contentsOf: source)) == originalBytes, "Production OCR prepare preserves dirty/undo/recovery and source")
+        let recoveryAfterCommit = try files(pdfRecovery)
+        try check(pdf.dirty && pdf.canUndo && recoveryAfterCommit != recoveryBefore && (try Data(contentsOf: source)) == originalBytes && PDFDocument(url:pdfRecovery.appendingPathComponent("draft.pdf"))?.page(at:0)?.annotations.first(where:{$0.fieldName == "Latest"})?.widgetStringValue == "IMMEDIATE LATEST FORM", "Production OCR prepare preserves dirty/undo/source and updates retained recovery to the committed form value")
         try check(currentSource.item.sha256 == FileSafety.digest(try Data(contentsOf: sentCurrentURL)), "Journal source digest is the actual sent current version")
         try check(try currentSource.binding.originalReference.map { try GaoActionContract.localFileURL($0.fileURL).standardizedFileURL } == source.standardizedFileURL, "Current version keeps private original context for export protection")
         try rejects("Actual fallback export cannot overwrite original") {
@@ -206,7 +211,7 @@ import PDFKit
         let derived = store.tabs.first { $0.id == completed.openedTabIDs.first }!
         try check(derived.kind == .pdf && derived.url != source && derived.incoming?.pdfReport?.sourceDigestMatches == true && derived.incoming?.pdfReport?.pageChecks.count == 2, "Actual PDF receive executes original-digest/page validation branch")
         try check(derived.incoming?.pdfReport?.isVerifiedSearchable == true, "Real page text, original page geometry/order and full statuses produce basic searchable verification")
-        try check(try Data(contentsOf: source) == originalBytes && files(pdfRecovery) == recoveryBefore, "Receiving derived PDF never overwrites original or unsaved recovery")
+        try check(try Data(contentsOf: source) == originalBytes && files(pdfRecovery) == recoveryAfterCommit, "Receiving derived PDF never overwrites original or the latest committed unsaved recovery")
         let completedAgain = try GaoHandoffService.receive(url: complete, store: WorkspaceStore(), interaction: interaction, now: clock)
         try check(completedAgain.duplicate, "Cold consumer duplicate is journal-backed")
 

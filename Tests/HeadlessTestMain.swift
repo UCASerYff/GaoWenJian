@@ -29,8 +29,11 @@ import Darwin
         try suite("Office readonly") { try runOfficeViewerTests() }
         try suite("PDF model") { try PDFModuleTests.run(in: FileSafety.root.appendingPathComponent("PDFModelTests")) }
         try suite("PDF handoff") { try PDFHandoffTests.run(in: FileSafety.root.appendingPathComponent("PDFHandoffTests")) }
+        try suite("PDF form commit/recovery") { try PDFFormFocusTests.run(in: FileSafety.root.appendingPathComponent("PDFFormFocusTests")) }
         try suite("current PDF bridge") { try CurrentDocumentHandoffTests.run(in: FileSafety.root.appendingPathComponent("CurrentDocumentHandoffTests")) }
         try suite("OCR provenance") { try OCRResultProvenanceTests.run() }
+        try suite("OCR JSON body") { try OCRJSONPayloadVerifierTests.run() }
+        try suite("explicit edited export") { try EditedDocumentExportTests.run(in: FileSafety.root.appendingPathComponent("EditedExportTests")) }
         try suite("transport/ledger") { try GaoActionTests.run(in: parent.appendingPathComponent("TransportTests")) }
         try suite("outgoing journal") { try GaoOutgoingJournalTests.run(in: parent.appendingPathComponent("JournalTests")) }
         try suite("safe export") { try HandoffSafeExportTests.run(in: parent.appendingPathComponent("SafeExports")) }
@@ -41,6 +44,10 @@ import Darwin
         if let index = CommandLine.arguments.firstIndex(of: "--ocr-provider"), index + 1 < CommandLine.arguments.count {
             provider = URL(fileURLWithPath: CommandLine.arguments[index + 1])
         }
+        try suite("image OCR PDF verification") { _ = try PDFImageHandoffTests.run(in:parent.appendingPathComponent("ImageHandoffTests"),providerExecutable:provider) }
+        try suite("OCR dispatch options/JSON") { try OCRDispatchOptionsTests.run(in:parent.appendingPathComponent("OCRDispatchOptionsTests")) }
+        try suite("provider path compatibility") { _ = try GaoActionWriterCompatibilityTests.run(in:parent.appendingPathComponent("WriterCompatibilityTests")) }
+        try suite("reference selection") { try ReferenceSelectionTests.run(in:parent.appendingPathComponent("ReferenceSelectionTests")) }
         var productionChecks = 0
         try suite("production handoff dispatch") { productionChecks = try HandoffProductionTests.run(in: parent.appendingPathComponent("ProductionFixtures"), providerExecutable: provider) }
         print("PASS: \(suites) headless Swift regression suites; production dispatcher \(productionChecks) checks; NSApp remained nil. No smoke test, App/browser/simulator/test window or actual installed-app UI end-to-end was run.")

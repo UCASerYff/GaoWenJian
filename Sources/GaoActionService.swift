@@ -1,21 +1,25 @@
 import AppKit
 import Foundation
 import UniformTypeIdentifiers
+import PDFKit
+import Darwin
 
 struct GaoHandoffReview {
     let title: String
     let message: String
 }
+enum GaoReferenceOpenMode: Equatable { case copy, original, cancel }
 @MainActor struct GaoHandoffInteraction {
     var confirm: (GaoHandoffReview) -> Bool
     var selectReference: (GaoActionReference) -> URL?
     var offerResult: (GaoActionManifest, URL) -> Void
+    var referenceMode: (GaoActionReference) -> GaoReferenceOpenMode = { _ in .copy }
     static let application = GaoHandoffInteraction(confirm: { review in
         let alert=NSAlert();alert.messageText=review.title;alert.informativeText=review.message
         alert.addButton(withTitle:"确认接收");alert.addButton(withTitle:"取消")
         return alert.runModal() == .alertFirstButtonReturn
     },selectReference: { ref in
-        let panel=NSOpenPanel();panel.title="核对并授权所选原件";panel.message="请选择“\(HandoffNames.display(ref.displayName))”。引用声明不会传递读取权限；打开的是经校验的副本。"
+        let panel=NSOpenPanel();panel.title="核对并授权所选文件";panel.message="请选择“\(HandoffNames.display(ref.displayName))”。路径引用不会传递读取权限；请在本机重新选择并授权此文件。"
         panel.canChooseDirectories=false;panel.allowsMultipleSelection=false
         panel.directoryURL=(try? GaoActionContract.localFileURL(ref.fileURL))?.deletingLastPathComponent()
         return panel.runModal() == .OK ? panel.url:nil
@@ -27,6 +31,11 @@ struct GaoHandoffReview {
               Bundle(url:app)?.bundleIdentifier == request.sourceBundleID else { return }
         let configuration=NSWorkspace.OpenConfiguration();configuration.activates=true
         NSWorkspace.shared.open([url],withApplicationAt:app,configuration:configuration) { _,_ in }
+    },referenceMode: { ref in
+        let alert=NSAlert();alert.messageText="如何打开“\(HandoffNames.display(ref.displayName))”？"
+        alert.informativeText="默认打开校验副本，保留原件。选择原件后，保存修改会写入所选文件；若已有未保存标签，将保留并选择该标签。两种方式都需要在本机重新核对权限。"
+        alert.addButton(withTitle:"打开副本");alert.addButton(withTitle:"打开原件");alert.addButton(withTitle:"取消")
+        switch alert.runModal(){case .alertFirstButtonReturn:return .copy;case .alertSecondButtonReturn:return .original;default:return .cancel}
     })
 }
 struct GaoHandoffOutcome {
@@ -86,8 +95,11 @@ final class GaoHandoffCancellation: @unchecked Sendable {
         let manifest=package.manifest
         let inputs=package.stagedItems.map{"• \(HandoffNames.display(URL(fileURLWithPath:$0.item.relativePath).lastPathComponent))（\($0.item.byteCount) 字节）"}
             + manifest.references.map{"• \(HandoffNames.display($0.displayName))（需要本端核对读取权限）"}
+        let attachmentMode = manifest.action == "documents.newText" || manifest.action == "ocr.files"
+            ? "文字附件进入新的未保存标签，其他附件打开校验副本。"
+            : "附件打开新的校验副本，编辑后可另行导出；不会回写来源原件。"
         return GaoHandoffReview(title:manifest.kind=="result" ? "接收文档交接结果？":"接收交接文档？",message:
-            "来源声明：\(HandoffNames.display(manifest.sourceBundleID))（不是身份认证）\n动作：\(manifest.action)\n"+(status.map{"对方状态：\($0)\n"} ?? "")+inputs.joined(separator:"\n")+"\n\n文字进入新的未保存标签，其他文档打开校验副本；原件及当前未保存内容保留。OCR准确率需人工复核。")
+            "来源声明：\(HandoffNames.display(manifest.sourceBundleID))（不是身份认证）\n动作：\(manifest.action)\n"+(status.map{"对方状态：\($0)\n"} ?? "")+inputs.joined(separator:"\n")+"\n\n"+attachmentMode+"文件引用稍后由你选择原件或副本。当前未保存内容保留。"+(manifest.action == "ocr.files" ? "OCR准确率需人工复核。":""))
     }
     private static func processRequest(_ package:GaoValidatedPackage,store:WorkspaceStore,interaction:GaoHandoffInteraction,now:Date,cancellation:GaoHandoffCancellation) throws -> GaoHandoffOutcome {
         let m=package.manifest, ledger=try GaoProcessedRequestStore(root:exchangeRoot)
@@ -101,32 +113,37 @@ final class GaoHandoffCancellation: @unchecked Sendable {
             return try requestReply(m,status:"unsupported",tabs:[],itemIDs:[],messages:["搞文件仅提供文档打开与新建文字动作。"],ledger:ledger,interaction:interaction,now:now)
         }
         if !interaction.confirm(review(package)) || cancellation.isCancelled {
+            store.status="已取消接收文档；原件与现有未保存修改保留"
             return try requestReply(m,status:"cancelled",tabs:[],itemIDs:[],messages:[],ledger:ledger,interaction:interaction,now:now)
         }
         _ = try ledger.transition(requestID:m.requestID,to:.approved,now:now)
         _ = try ledger.transition(requestID:m.requestID,to:.executing,now:now)
-        var tabs:[UUID]=[],opened:[String]=[],messages:[String]=[]
+        var tabs:[UUID]=[],opened:[String]=[],messages:[String]=[],referenceCancellations=0
         for item in package.stagedItems {
             if cancellation.isCancelled {break}
-            do {try cancellation.check();let tab=try open(item,manifest:m,store:store,forceNewText:m.action=="documents.newText",now:now);tabs.append(tab.id);opened.append(item.id)}
+            do {try cancellation.check();let tab=try open(item,manifest:m,manifestSHA256:package.manifestSHA256,store:store,forceNewText:m.action=="documents.newText",now:now);tabs.append(tab.id);opened.append(item.id)}
             catch {messages.append(error.localizedDescription)}
         }
         for ref in m.references {
             if cancellation.isCancelled {break}
-            do {try cancellation.check();guard let selected=interaction.selectReference(ref) else {messages.append("用户取消了所选原件授权。");continue}
-                let item=try copyReference(ref,selected:selected,into:package.stagingURL)
-                let tab=try open(item,manifest:m,store:store,forceNewText:false,now:now);tabs.append(tab.id);opened.append(ref.id)
+            do {try cancellation.check()
+                let mode=interaction.referenceMode(ref)
+                guard mode != .cancel,let selected=interaction.selectReference(ref) else {referenceCancellations += 1;messages.append("用户取消了所选文件授权。");continue}
+                let tab=try openReference(ref,selected:selected,mode:mode,package:package,store:store,now:now);tabs.append(tab.id);opened.append(ref.id)
             } catch {messages.append(error.localizedDescription)}
         }
         if cancellation.isCancelled {messages.append("用户取消了后续交接，已打开的文档保留。")}
-        let status=cancellation.isCancelled ? (tabs.isEmpty ? "cancelled":"partial") : messages.isEmpty ? "completed":tabs.isEmpty ? "failed":"partial"
-        store.status=tabs.isEmpty ? "交接未打开新文档 · 现有内容保留":"已打开 \(tabs.count) 个交接文档 · 原件保留"
+        let onlyCancelled=tabs.isEmpty && package.stagedItems.isEmpty && !m.references.isEmpty && referenceCancellations==m.references.count
+        let status=cancellation.isCancelled || onlyCancelled ? (tabs.isEmpty ? "cancelled":"partial") : messages.isEmpty ? "completed":tabs.isEmpty ? "failed":"partial"
+        let total=package.stagedItems.count+m.references.count
+        let localSummary=status=="cancelled" ? "已取消文档交接" : status=="partial" ? "本机部分接收" : status=="failed" ? "本机接收失败":"本机已接收"
+        store.status="\(localSummary)；已打开 \(tabs.count)/\(total) 个文档；原件与现有编辑保留"
         return try requestReply(m,status:status,tabs:tabs,itemIDs:opened,messages:messages,ledger:ledger,interaction:interaction,now:now)
     }
     private static func requestReply(_ m:GaoActionManifest,status:String,tabs:[UUID],itemIDs:[String],messages:[String],ledger:GaoProcessedRequestStore,interaction:GaoHandoffInteraction,now:Date) throws -> GaoHandoffOutcome {
         let reply=try GaoActionWriter.writeResult(inReplyTo:m,status:status,errorCode:status=="failed" || status=="partial" ? "documentOpenFailed":nil,
             provenance:["workflowState":.string(status=="completed" ? "opened":status),"openedItemIDs":.array(itemIDs.map(GaoJSONValue.string)),"saved":.bool(false)],exchangeRoot:exchangeRoot,now:now)
-        _ = try ledger.transition(requestID:m.requestID,to:GaoRequestPhase(rawValue:status)!,resultPackageName:reply.lastPathComponent,errorCode:messages.isEmpty ? nil:"documentOpenFailed",now:now)
+        _ = try ledger.transition(requestID:m.requestID,to:GaoRequestPhase(rawValue:status)!,resultPackageName:reply.lastPathComponent,errorCode:status=="failed" || status=="partial" ? "documentOpenFailed":nil,now:now)
         interaction.offerResult(m,reply)
         return .init(requestID:m.requestID,status:status,openedTabIDs:tabs,resultPackageURL:reply,messages:messages)
     }
@@ -150,11 +167,12 @@ final class GaoHandoffCancellation: @unchecked Sendable {
         }
         guard interaction.confirm(review(package,status:status)) else {
             _ = try journal.cancelResult(requestID:m.requestID,now:now)
+            store.status="已取消接收结果；对方报告：\(status)；原件与现有未保存修改保留"
             return .init(requestID:m.requestID,status:"cancelled")
         }
         _ = try journal.approveResult(requestID:m.requestID,now:now)
         _ = try journal.startResult(requestID:m.requestID,now:now)
-        var tabs:[UUID]=[],opened:[String]=[],refs:[String]=[],messages:[String]=[]
+        var tabs:[UUID]=[],opened:[String]=[],refs:[String]=[],messages:[String]=[],referenceCancellations=0,localFailures=0
         for output in receipt.newOutputs {
             if cancellation.isCancelled {break}
             do {
@@ -165,38 +183,54 @@ final class GaoHandoffCancellation: @unchecked Sendable {
                     guard let sourceID=output.sourceItemID,let hash=output.sourceSHA256 else {throw GaoActionContract.reject("missingSource","识别结果缺少原件关联。")}
                     provenance=try OCRResultProvenance.normalize(manifest:m,resultItemID:item.id,sourceItemID:sourceID,sourceSHA256:hash)
                     let original=try journal.sourceURL(requestID:receipt.session.requestID,itemID:sourceID)
+                    if output.format == "json" {
+                        guard let checked=provenance,
+                              let record=m.provenance?["sources"]?.arrayValue?.compactMap(\.objectValue).first(where:{$0["sourceItemID"]?.stringValue==sourceID && $0["sourceSHA256"]?.stringValue==hash}),
+                              let providerID=record["sourceID"]?.stringValue,
+                              let source=receipt.session.sources.first(where:{$0.item.id==sourceID}) else {throw GaoActionContract.reject("missingJSONSource","OCR JSON 缺少可核对的输入关联。")}
+                        let sourceData=try GaoPrivateIO.read(GaoPrivateIO.regularURL(original),maximum:Int64(DocumentHandoffSafety.maximumDocumentBytes))
+                        _ = try OCRJSONPayloadVerifier.verify(data:GaoPrivateIO.read(GaoPrivateIO.regularURL(item.url),maximum:GaoActionContract.maximumTextBytes),provenance:checked,expectedSourceSHA256:hash,expectedProviderSourceID:providerID,expectedPageCount:PDFDocument(data:sourceData)?.pageCount ?? 1,expectedByteCount:source.item.byteCount)
+                    }
                     if item.url.pathExtension.lowercased()=="pdf" {
                         report=try PDFHandoffVerifier.inspect(resultData:GaoPrivateIO.read(GaoPrivateIO.regularURL(item.url),maximum:Int64(DocumentHandoffSafety.maximumDocumentBytes)),originalData:GaoPrivateIO.read(GaoPrivateIO.regularURL(original),maximum:Int64(DocumentHandoffSafety.maximumDocumentBytes)),provenance:provenance,expectedSourceItemID:sourceID)
                     }
                 }
                 let isOCRText=m.action=="ocr.files" && FileKind(url:item.url).isText
-                let tab=try open(item,manifest:m,store:store,forceNewText:isOCRText,provenance:provenance,report:report,now:now)
+                let sourceName=receipt.session.sources.first(where:{$0.item.id==output.sourceItemID})?.binding.originalReference?.displayName
+                let tab=try open(item,manifest:m,manifestSHA256:package.manifestSHA256,store:store,forceNewText:isOCRText,provenance:provenance,report:report,sourceDisplayName:sourceName,now:now)
                 tabs.append(tab.id);opened.append(item.id)
-            }catch {messages.append(error.localizedDescription)}
+            }catch {localFailures += 1;messages.append(error.localizedDescription)}
         }
         for ref in m.references where receipt.newReferenceIDs.contains(ref.id) {
             if cancellation.isCancelled {break}
-            do {try cancellation.check();guard let selected=interaction.selectReference(ref) else {messages.append("用户取消了原件授权。");continue}
-                let item=try copyReference(ref,selected:selected,into:package.stagingURL)
-                let tab=try open(item,manifest:m,store:store,forceNewText:false,now:now);tabs.append(tab.id);refs.append(ref.id)
-            }catch {messages.append(error.localizedDescription)}
+            do {try cancellation.check()
+                let mode=interaction.referenceMode(ref)
+                guard mode != .cancel,let selected=interaction.selectReference(ref) else {referenceCancellations += 1;messages.append("用户取消了所选文件授权。");continue}
+                let tab=try openReference(ref,selected:selected,mode:mode,package:package,store:store,now:now);tabs.append(tab.id);refs.append(ref.id)
+            }catch {localFailures += 1;messages.append(error.localizedDescription)}
         }
         if cancellation.isCancelled {messages.append("用户取消了后续结果接收，已打开的文档保留。")}
-        if cancellation.isCancelled && tabs.isEmpty {_ = try journal.cancelResult(requestID:m.requestID,now:now)}
+        let onlyCancelled=tabs.isEmpty && receipt.newOutputs.isEmpty && !receipt.newReferenceIDs.isEmpty && referenceCancellations==receipt.newReferenceIDs.count
+        if (cancellation.isCancelled || onlyCancelled) && tabs.isEmpty {_ = try journal.cancelResult(requestID:m.requestID,now:now)}
         else if !messages.isEmpty && tabs.isEmpty {_ = try journal.failResult(requestID:m.requestID,errorCode:"documentOpenFailed",now:now)}
         else {_ = try journal.finishResult(requestID:m.requestID,openedItemIDs:opened,openedReferenceIDs:refs,now:now)}
-        store.status="已接收 \(tabs.count) 个结果文档；对方状态：\(status) · 原件保留"
-        if !messages.isEmpty {store.error=messages.joined(separator:"\n")}
-        return .init(requestID:m.requestID,status:cancellation.isCancelled && tabs.isEmpty ? "cancelled":messages.isEmpty ? status:tabs.isEmpty ? "failed":"partial",openedTabIDs:tabs,messages:messages)
+        let localStatus=(cancellation.isCancelled || onlyCancelled) && tabs.isEmpty ? "cancelled":messages.isEmpty ? status:tabs.isEmpty ? "failed":"partial"
+        let total=receipt.newOutputs.count+receipt.newReferenceIDs.count
+        let localSummary=localStatus=="cancelled" ? "本机已取消接收" : !messages.isEmpty && !tabs.isEmpty ? "本机部分接收" : localStatus=="failed" ? "本机接收失败":"本机接收结果"
+        store.status="对方报告：\(status)；\(localSummary)：已打开 \(tabs.count)/\(total) 个文档；原件与现有编辑保留"
+        if localFailures>0 {store.error=messages.joined(separator:"\n")}
+        return .init(requestID:m.requestID,status:localStatus,openedTabIDs:tabs,messages:messages)
     }
-    private static func open(_ item:GaoStagedItem,manifest:GaoActionManifest,store:WorkspaceStore,forceNewText:Bool,provenance:OCRProvenance?=nil,report:PDFHandoffReport?=nil,now:Date) throws -> FileSession {
+    private static func open(_ item:GaoStagedItem,manifest:GaoActionManifest,manifestSHA256:String?=nil,store:WorkspaceStore,forceNewText:Bool,provenance:OCRProvenance?=nil,report:PDFHandoffReport?=nil,sourceDisplayName:String?=nil,now:Date) throws -> FileSession {
         let kind=try DocumentHandoffSafety.review(item.url,declaredUTI:item.item.uti,verifiedStaging:true)
         let name=URL(fileURLWithPath:item.item.relativePath).lastPathComponent
         var checkedReport=report
         if kind == .pdf && checkedReport==nil {
             checkedReport=try PDFHandoffVerifier.inspect(resultData:GaoPrivateIO.read(GaoPrivateIO.regularURL(item.url),maximum:Int64(DocumentHandoffSafety.maximumDocumentBytes)),provenance:provenance)
         }
-        let incoming=IncomingDocument(requestID:manifest.requestID,itemID:item.id,sourceBundleID:manifest.sourceBundleID,type:manifest.action=="ocr.files" && kind.isText ? "ocrText":kind.rawValue,receivedAt:GaoActionContract.timestamp(now),contentSHA256:item.item.sha256,originalName:name,ocrProvenance:provenance,pdfReport:checkedReport,notes:manifest.status=="partial" ? ["对方报告部分完成；请检查失败页及缺失结果。"]:[])
+        var incoming=IncomingDocument(requestID:manifest.requestID,itemID:item.id,sourceBundleID:manifest.sourceBundleID,type:manifest.action=="ocr.files" && kind.isText ? "ocrText":kind.rawValue,receivedAt:GaoActionContract.timestamp(now),contentSHA256:item.item.sha256,originalName:name,ocrProvenance:provenance,pdfReport:checkedReport,notes:manifest.status=="partial" ? ["对方报告部分完成；请检查失败页及缺失结果。"]:[])
+        incoming.inboundAction=manifest.action;incoming.manifestSHA256=manifestSHA256
+        incoming.receivedCopyURL=item.url.absoluteString;incoming.sourceDisplayName=sourceDisplayName
         if forceNewText {
             guard kind.isText,let text=String(data:try GaoPrivateIO.read(GaoPrivateIO.regularURL(item.url),maximum:GaoActionContract.maximumTextBytes),encoding:.utf8) else {throw GaoActionContract.reject("invalidUTF8","交接正文必须为有界 UTF-8 文字。")}
             return try store.newHandoffText(text,markdown:kind == .markdown,title:manifest.parameters["suggestedTitle"]?.stringValue ?? name,incoming:incoming)
@@ -215,6 +249,44 @@ final class GaoHandoffCancellation: @unchecked Sendable {
         try GaoActionTransport.verifyReference(ref,selectedURL:selected)
         guard GaoPrivateIO.unchanged(before,try fd.statValue()) else {throw GaoActionContract.reject("referenceChanged","所选原件在复制期间发生变化。")}
         return .init(item:.init(id:ref.id,relativePath:"payload/"+name,uti:documentUTI(selected),byteCount:result.0,sha256:result.1),url:stage.appendingPathComponent(name))
+    }
+    private static func openReference(_ ref:GaoActionReference,selected:URL,mode:GaoReferenceOpenMode,package:GaoValidatedPackage,store:WorkspaceStore,now:Date) throws -> FileSession {
+        let accessed=selected.startAccessingSecurityScopedResource()
+        defer{if accessed{selected.stopAccessingSecurityScopedResource()}}
+        let verified=try copyReference(ref,selected:selected,into:package.stagingURL)
+        if mode == .copy {
+            return try open(verified,manifest:package.manifest,manifestSHA256:package.manifestSHA256,store:store,forceNewText:false,sourceDisplayName:ref.displayName,now:now)
+        }
+        guard mode == .original else {throw GaoActionContract.reject("cancelled","已取消所选文件授权。")}
+        try GaoActionTransport.verifyReference(ref,selectedURL:selected)
+        let canonical=selected.standardizedFileURL.resolvingSymlinksInPath()
+        if let existing=store.tabs.first(where:{$0.url?.standardizedFileURL.resolvingSymlinksInPath()==canonical}) {
+            // Choosing an already-open original never replaces its edits,
+            // recovery state or existing provenance with a new external claim.
+            store.select(existing)
+            return existing
+        }
+        let previousSelection=store.selection,previousNotes=store.showingNotes
+        let priorIDs=Set(store.tabs.map(\.id))
+        do {
+            store.open(selected)
+            guard let tab=store.tabs.first(where:{$0.url?.standardizedFileURL==selected.standardizedFileURL}) else {throw GaoActionContract.reject("documentOpenFailed","所选原件无法打开；已有标签保留。")}
+            try GaoActionTransport.verifyReference(ref,selectedURL:selected)
+            if tab.kind.isText,tab.originalDigest != verified.item.sha256 {throw GaoActionContract.reject("referenceChanged","所选原件在打开期间发生变化，请重新选择；已有标签保留。")}
+            var incoming=IncomingDocument(requestID:package.manifest.requestID,itemID:ref.id,sourceBundleID:package.manifest.sourceBundleID,
+                type:tab.kind.rawValue,receivedAt:GaoActionContract.timestamp(now),contentSHA256:verified.item.sha256,originalName:ref.displayName,
+                notes:package.manifest.status=="partial" ? ["对方报告部分完成；请检查失败页及缺失结果。"]:[])
+            incoming.inboundAction=package.manifest.action;incoming.manifestSHA256=package.manifestSHA256
+            incoming.receivedCopyURL=verified.url.absoluteString;incoming.sourceDisplayName=ref.displayName;incoming.opensOriginal=true
+            // Only a fully checked open can replace provenance. A failed final
+            // identity/digest check leaves any previous origin record untouched.
+            try DocumentOriginStorage.save(incoming,for:selected)
+            tab.incoming=incoming
+            return tab
+        }catch{
+            store.tabs.removeAll{!priorIDs.contains($0.id)};store.selection=previousSelection;store.showingNotes=previousNotes
+            throw error
+        }
     }
     static func documentUTI(_ url:URL)->String {
         switch url.pathExtension.lowercased() {
@@ -257,9 +329,11 @@ typealias PreparedOCRHandoff = PreparedDocumentHandoff
 @MainActor enum OCRHandoffDispatcher {
     static func isRecognizable(_ url:URL)->Bool {["pdf","png","jpg","jpeg","tiff","tif","heic"].contains(url.pathExtension.lowercased())}
     /// The same operation is called by the menu and by non-GUI integration tests.
-    static func prepare(files:[URL],store:WorkspaceStore,registry:CurrentDocumentHandoffRegistry? = nil,chooseVersion:(URL)->OCRPDFVersion,now:Date=Date()) throws -> PreparedOCRHandoff {
+    static func prepare(files:[URL],store:WorkspaceStore,registry:CurrentDocumentHandoffRegistry? = nil,outputs:[String] = ["text","searchablePDF"],chooseVersion:(URL)->OCRPDFVersion,now:Date=Date()) throws -> PreparedOCRHandoff {
         let registry=registry ?? .shared
-        guard !files.isEmpty,files.count<=128 else {throw GaoActionContract.reject("itemLimit","每批识别最多选择 128 个文档，请分批发送。")}
+        guard !outputs.isEmpty,Set(outputs).count==outputs.count,outputs.allSatisfy({["text","markdown","json","searchablePDF"].contains($0)}) else {throw GaoActionContract.reject("invalidOutputs","请至少选择一种有效且不重复的识别输出格式。")}
+        let limit=min(128,GaoActionContract.maximumItems/outputs.count)
+        guard !files.isEmpty,files.count<=limit else {throw GaoActionContract.reject("itemLimit","本次输出格式最多支持 \(limit) 个输入，请分批发送。")}
         var outgoing:[GaoOutgoingFile]=[],bindings:[GaoOutgoingSourceBinding]=[]
         var temporary:[URL]=[]
         defer{for url in temporary{try? FileManager.default.removeItem(at:url)}}
@@ -286,7 +360,7 @@ typealias PreparedOCRHandoff = PreparedDocumentHandoff
             let file=GaoOutgoingFile(url:selected,uti:GaoHandoffService.documentUTI(selected));outgoing.append(file)
             bindings.append(.init(itemID:file.id,originalReference:original,versionKind:version))
         }
-        let package=try GaoActionWriter.writeRequest(action:"ocr.files",items:outgoing,parameters:["outputs":.array([.string("text"),.string("searchablePDF")])],targetBundleID:"com.gaoseries.GaoJieTu",exchangeRoot:GaoHandoffService.exchangeRoot,now:now)
+        let package=try GaoActionWriter.writeRequest(action:"ocr.files",items:outgoing,parameters:["outputs":.array(outputs.map(GaoJSONValue.string))],targetBundleID:"com.gaoseries.GaoJieTu",exchangeRoot:GaoHandoffService.exchangeRoot,now:now)
         let journal=try GaoOutgoingJournal(exchangeRoot:GaoHandoffService.exchangeRoot)
         let session=try journal.registerOutgoing(packageURL:package,expectedTargetBundleID:"com.gaoseries.GaoJieTu",bindings:bindings,now:now)
         return .init(packageURL:package,session:session)
@@ -307,8 +381,16 @@ typealias PreparedOCRHandoff = PreparedDocumentHandoff
             let panel=NSOpenPanel();panel.title="选择扫描件或图片";panel.allowedContentTypes=[.pdf,.png,.jpeg,.tiff,.heic];panel.allowsMultipleSelection=true
             guard panel.runModal() == .OK else{return};inputs=panel.urls
         }
+        let choices=[("纯文本（新的未保存标签）","text"),("Markdown（新的未保存标签）","markdown"),("JSON（逐输入与逐页校验）","json"),("可搜索 PDF（校验副本）","searchablePDF")]
+        let alert=NSAlert();alert.messageText="选择识别输出";alert.informativeText="\(inputs.count) 个输入将交给搞截图，由你确认识别及发送结果。接收时还需确认，原件与已编辑文档保留。"
+        let controls=choices.map{NSButton(checkboxWithTitle:$0.0,target:nil,action:nil)}
+        for (index,control) in controls.enumerated(){control.state=index == 1 ? .off:.on}
+        let stack=NSStackView(views:controls);stack.orientation = .vertical;stack.alignment = .leading;stack.spacing=8;stack.frame=NSRect(x:0,y:0,width:340,height:112)
+        alert.accessoryView=stack;alert.addButton(withTitle:"继续交给搞截图");alert.addButton(withTitle:"取消")
+        guard alert.runModal() == .alertFirstButtonReturn else{return}
+        let outputs=zip(controls,choices).filter{$0.0.state == .on}.map{$0.1.1}
         do {
-            let prepared=try prepare(files:inputs,store:store,chooseVersion:{_ in
+            let prepared=try prepare(files:inputs,store:store,outputs:outputs,chooseVersion:{_ in
                 let alert=NSAlert();alert.messageText="选择要识别的 PDF 版本";alert.informativeText="当前编辑器有未保存修改。导出当前副本会包含刚输入的表单和批注，磁盘版本只包含已保存内容；两种方式都保留原件。"
                 alert.addButton(withTitle:"导出当前副本并识别");alert.addButton(withTitle:"发送磁盘已保存版本");alert.addButton(withTitle:"取消")
                 switch alert.runModal(){case .alertFirstButtonReturn:return .currentEdits;case .alertSecondButtonReturn:return .diskOriginal;default:return .cancel}
@@ -358,7 +440,11 @@ typealias PreparedOCRHandoff = PreparedDocumentHandoff
     }
     static func chooseDocuments(store:WorkspaceStore){
         do {
-            guard let provider=try GaoCapabilityDiscovery.installedProvider(bundleID:"com.gaoseries.GaoZhengLi",action:"files.choose"),provider.capability.accepts(parameterKeys:["multiple"]) else {store.openPanel();return}
+            guard let provider=try GaoCapabilityDiscovery.installedProvider(bundleID:"com.gaoseries.GaoZhengLi",action:"files.choose"),provider.capability.accepts(parameterKeys:["multiple"]) else {
+                let alert=NSAlert();alert.messageText="搞整理文档选择暂不可用";alert.informativeText="未安装提供兼容 files.choose 能力的搞整理。可以改用本机文件选择器；这不表示已完成跨应用交接。"
+                alert.addButton(withTitle:"使用本机文件选择器…");alert.addButton(withTitle:"取消")
+                if alert.runModal() == .alertFirstButtonReturn{store.openPanel()};return
+            }
             let url=try GaoActionWriter.writeRequest(action:"files.choose",parameters:["multiple":.bool(true)],targetBundleID:provider.bundleID,exchangeRoot:GaoHandoffService.exchangeRoot)
             let journal=try GaoOutgoingJournal(exchangeRoot:GaoHandoffService.exchangeRoot)
             let session=try journal.registerOutgoing(packageURL:url,expectedTargetBundleID:provider.bundleID)
@@ -422,7 +508,7 @@ typealias PreparedOCRHandoff = PreparedDocumentHandoff
         _ = try DocumentHandoffSafety.review(selected,declaredUTI:GaoHandoffService.documentUTI(selected),verifiedStaging:temporary != nil || selected.standardizedFileURL.path.hasPrefix(GaoHandoffService.exchangeRoot.appendingPathComponent("Staging").standardizedFileURL.path+"/"))
         let file=GaoOutgoingFile(url:selected,uti:GaoHandoffService.documentUTI(selected))
         let original=try tab.url.map{try GaoHandoffService.originalContext($0)}
-        let package=try GaoActionWriter.writeRequest(action:"research.importDocuments",items:[file],targetBundleID:researchBundleID,exchangeRoot:GaoHandoffService.exchangeRoot,now:now)
+        let package=try GaoActionWriter.writeRequest(action:"research.importDocuments",items:[file],targetBundleID:researchBundleID,exchangeRoot:GaoHandoffService.exchangeRoot,now:now,includePayloadPrefix:true)
         let journal=try GaoOutgoingJournal(exchangeRoot:GaoHandoffService.exchangeRoot)
         let session=try journal.registerOutgoing(packageURL:package,expectedTargetBundleID:researchBundleID,bindings:[.init(itemID:file.id,originalReference:original,versionKind:version)],now:now)
         return .init(packageURL:package,session:session)

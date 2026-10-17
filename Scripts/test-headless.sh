@@ -15,7 +15,7 @@ text = source.read_text()
 assert text.count('@main @MainActor struct') == 1
 source.write_text(text.replace('@main @MainActor struct', '@MainActor struct'))
 PY
-TEST_SOURCES=(CoreTests OfficeRoundTripTests OfficeRecoveryTests OfficeViewerTests PDFTests PDFHandoffTests CurrentDocumentHandoffTests OCRResultProvenanceTests GaoActionFixtures GaoActionTests GaoOutgoingJournalTests HandoffSafeExportTests DocumentHandoffSafetyTests LaTeXTests StickyNotesTests HandoffProductionTests DataCopyVerification HeadlessTestMain)
+TEST_SOURCES=(CoreTests OfficeRoundTripTests OfficeRecoveryTests OfficeViewerTests PDFTests PDFHandoffTests PDFFormFocusTests PDFImageHandoffTests CurrentDocumentHandoffTests OCRResultProvenanceTests OCRJSONPayloadVerifierTests OCRDispatchOptionsTests GaoActionWriterCompatibilityTests ReferenceSelectionTests EditedDocumentExportTests GaoActionFixtures GaoActionTests GaoOutgoingJournalTests HandoffSafeExportTests DocumentHandoffSafetyTests LaTeXTests StickyNotesTests HandoffProductionTests DataCopyVerification HeadlessTestMain)
 TEST_FILES=()
 for name in $TEST_SOURCES; do TEST_FILES+=("$STAGING/Tests/$name.swift"); done
 python3 - $TEST_FILES <<'PY'

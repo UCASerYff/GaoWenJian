@@ -208,9 +208,9 @@ enum GaoActionTransport {
 }
 
 enum GaoActionWriter {
-    static func writeRequest(action: String, items: [GaoOutgoingFile] = [], references: [GaoActionReference] = [], parameters: [String:GaoJSONValue] = [:], sourceBundleID: String = GaoActionContract.bundleID, targetBundleID: String, exchangeRoot: URL, now: Date = Date(), requestID: UUID = UUID()) throws -> URL {
+    static func writeRequest(action: String, items: [GaoOutgoingFile] = [], references: [GaoActionReference] = [], parameters: [String:GaoJSONValue] = [:], sourceBundleID: String = GaoActionContract.bundleID, targetBundleID: String, exchangeRoot: URL, now: Date = Date(), requestID: UUID = UUID(), includePayloadPrefix: Bool = false) throws -> URL {
         let manifest = GaoActionManifest(kind:"request",requestID:requestID.uuidString,sourceBundleID:sourceBundleID,targetBundleID:targetBundleID,action:action,createdAt:GaoActionContract.timestamp(now),expiresAt:GaoActionContract.timestamp(now.addingTimeInterval(GaoActionContract.ttl)),nonce:try nonce(),items:[],references:references,parameters:parameters)
-        return try write(manifest:manifest,files:items,exchangeRoot:exchangeRoot,now:now)
+        return try write(manifest:manifest,files:items,exchangeRoot:exchangeRoot,now:now,includePayloadPrefix:includePayloadPrefix)
     }
     static func writeResult(inReplyTo request: GaoActionManifest, status: String, items: [GaoOutgoingFile] = [], references: [GaoActionReference] = [], errorCode: String? = nil, provenance: [String:GaoJSONValue] = [:], exchangeRoot: URL, now: Date = Date()) throws -> URL {
         let manifest = GaoActionManifest(kind:"result",requestID:UUID().uuidString,sourceBundleID:GaoActionContract.bundleID,targetBundleID:request.sourceBundleID,action:request.action,createdAt:GaoActionContract.timestamp(now),expiresAt:GaoActionContract.timestamp(now.addingTimeInterval(GaoActionContract.ttl)),nonce:try nonce(),items:[],references:references,parameters:request.parameters,inReplyTo:request.requestID,status:status,errorCode:errorCode ?? "",provenance:provenance)
@@ -221,7 +221,7 @@ enum GaoActionWriter {
         guard SecRandomCopyBytes(kSecRandomDefault,bytes.count,&bytes) == errSecSuccess else { throw GaoActionContract.reject("randomFailure","无法建立安全随机交接标记。") }
         return Data(bytes).base64EncodedString()
     }
-    private static func write(manifest original: GaoActionManifest, files: [GaoOutgoingFile], exchangeRoot: URL, now: Date) throws -> URL {
+    private static func write(manifest original: GaoActionManifest, files: [GaoOutgoingFile], exchangeRoot: URL, now: Date, includePayloadPrefix: Bool = false) throws -> URL {
         guard files.count + original.references.count <= GaoActionContract.maximumItems else { throw GaoActionContract.reject("itemLimit","文件过多，请分批发送。") }
         let exchange = try GaoPrivateIO.directory(exchangeRoot,create:true,requirePrivate:true)
         if mkdirat(exchange.value,"Outgoing",mode_t(0o700)) != 0, errno != EEXIST { throw GaoActionContract.reject("unwritable","无法建立私有发送目录。") }
@@ -237,8 +237,11 @@ enum GaoActionWriter {
                 let filename = String(UUID().uuidString.prefix(8)) + "-" + GaoActionContract.safeFilename(file.url.lastPathComponent)
                 let copied = try GaoPrivateIO.copy(fd,to:payload,name:filename,maximum:GaoActionContract.maximumPayloadBytes-total)
                 total += copied.0
-                // V1 paths are relative to payload/. Readers retain legacy prefix compatibility.
-                manifest.items.append(GaoActionItem(id:file.id,relativePath:filename,uti:file.uti,byteCount:copied.0,sha256:copied.1))
+                // OCR uses paths relative to payload/. The installed research
+                // provider still resolves its V1 paths from the package root.
+                // Opt in for that target without changing physical storage or
+                // the default OCR/result format.
+                manifest.items.append(GaoActionItem(id:file.id,relativePath:(includePayloadPrefix ? "payload/" : "") + filename,uti:file.uti,byteCount:copied.0,sha256:copied.1))
             }
             try GaoActionContract.validate(manifest,expectedTargetBundleID:manifest.targetBundleID,now:now)
             let encoder = JSONEncoder(); encoder.outputFormatting = [.prettyPrinted,.sortedKeys,.withoutEscapingSlashes]

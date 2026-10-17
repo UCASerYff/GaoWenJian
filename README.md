@@ -1,6 +1,6 @@
-# 搞文件 V1.06
+# 搞文件 V1.07
 
-以 LaTeX、Markdown 写作与编译为核心的 macOS 本地工作台，适用于 Apple Silicon、macOS 14 及以上。当前版本 **1.06 / build 7**，初始版本为 1.00。账户、联网同步和 AI 功能暂不开发。
+以 LaTeX、Markdown 写作与编译为核心的 macOS 本地工作台，适用于 Apple Silicon、macOS 14 及以上。当前版本 **1.07 / build 8**，初始版本为 1.00。账户、联网同步和 AI 功能暂不开发。
 
 | 文件 | 当前可用能力 |
 | --- | --- |
@@ -16,6 +16,10 @@
 首页按“写作与编译 → PDF 编辑器 → Office 查看 → 附加工具”排列，LaTeX、Markdown 为主要入口。侧栏与工具栏可随时返回首页，保留已打开的文件与未保存编辑。
 
 采用原生窗口、标签页、文件夹浏览、最近文件与独立设置窗口。用户文档保留原路径，覆盖前留存并校验原件快照；外部修改或删除会阻止覆盖。文本、PDF、RTF 有本地恢复机制，旧 Office 恢复稿继续保留；损坏草稿保留并报错。
+
+V1.07 增加 OCR 输出格式选择（文字、Markdown、JSON、可搜索 PDF），JSON 正文核对实际输入与逐页关联；图片结果按 EXIF 方向核对 PDF 页面。接收标签可展开来源、输入及逐页状态。PDF 表单变化、撤销、恢复稿与发送前提交边界得到补强。新增“文件 → 导出编辑副本…”，兼容搞研究原条目人工导入新版本；尚不提供自动原附件回写。搞整理缺失时明确提示不可用；文件引用由本端重新授权，并明确选择原件或副本。
+
+具体接口与边界见 [交接说明](Docs/Interop-Handoff-V1.07.md)。
 
 V1.06 修复并补全文档交接的实际处理链：
 
@@ -43,7 +47,7 @@ Office 版式预览取决于 macOS 对具体格式的支持；内容阅读模式
 
 ## 安装与运行
 
-安装包在 `Release/GaoWenJian-1.06.dmg`，也可从 [GitHub Releases](https://github.com/UCASerYff/GaoWenJian/releases) 下载。打开后将“搞文件”拖入 Applications。当前版本采用本地签名，未公证。默认安装位置 `/Applications/搞文件.app`。
+安装包在 `Release/GaoWenJian-1.07.dmg`，也可从 [GitHub Releases](https://github.com/UCASerYff/GaoWenJian/releases) 下载。打开后将“搞文件”拖入 Applications。当前版本采用本地签名，未公证。默认安装位置 `/Applications/搞文件.app`。
 
 快捷键：⌘1 首页、⌘O 打开、⌘N 新 Markdown、⇧⌘N 新桌面便笺、⌘2 便笺中心、⌘S 保存、⇧⌘S 文本另存 UTF-8、⌘F 文本查找、⌘B 当前 LaTeX 编译、⌘W 关闭当前标签或浮窗、⌘, 设置。
 
@@ -59,7 +63,7 @@ Scripts/test-headless.sh
 Scripts/build.sh
 ```
 
-开发默认只按改动执行静态、编译或针对性单元/非 GUI 集成检查，不自动执行冒烟测试，也不为验证启动 App、浏览器或测试窗口。`Scripts/test.sh` 保留完整历史回归，其中含原生界面对象测试，需明确选择后使用。当前版本的验证范围见 [V1.06 验证记录](Docs/Verification-V1.06.md)。
+开发默认只按改动执行静态、编译或针对性单元/非 GUI 集成检查，不自动执行冒烟测试，也不为验证启动 App、浏览器或测试窗口。`Scripts/test.sh` 保留完整历史回归，其中含原生界面对象测试，需明确选择后使用。当前版本的验证范围见 [V1.07 验证记录](Docs/Verification-V1.07.md)。
 
 `test-headless.sh` 使用临时资料副本并检查 `NSApp == nil`。可选 `--ocr-provider` 参数用于调用以提供方原始生产方法编译的无 GUI CLI；未提供时不声称运行了真实 OCR 后端往返。`--verify-data-copy` 只在新临时目录中核验指定备份的副本。
 

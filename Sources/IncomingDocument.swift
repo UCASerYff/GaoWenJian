@@ -11,15 +11,22 @@ struct IncomingDocument: Codable, Equatable {
     var ocrProvenance: OCRProvenance?
     var pdfReport: PDFHandoffReport?
     var notes: [String] = []
+    var inboundAction: String?
+    var manifestSHA256: String?
+    var receivedCopyURL: String?
+    var sourceDisplayName: String?
+    var opensOriginal: Bool?
     var sourceName: String {
         switch sourceBundleID {
         case "com.gaoseries.GaoJieTu": return "搞截图"
         case "com.gaoseries.GaoZhengLi": return "搞整理"
+        case "com.academic-achievement.manager": return "搞研究"
         case GaoActionContract.bundleID: return "手动导入"
         default: return sourceBundleID
         }
     }
     var summary: String {
+        if opensOriginal == true { return "所选原件 · 保存将写回原文件" }
         if let report=pdfReport { return report.isVerifiedSearchable ? "PDF 基本文字层核验通过" : "PDF 来源待复核" }
         if type == "ocrText" { return "OCR 文字 · 新的未保存文档" }
         return "交接文档 · 原件保留"

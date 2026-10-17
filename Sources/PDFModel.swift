@@ -238,8 +238,17 @@ final class PDFWorkspaceModel: ObservableObject {
     private var sourceDigest: Data?
     private var undoStates: [Data] = []
     private var redoStates: [Data] = []
-    private var hasExternalFormEdits = false
-    private var draftGeneration = 0
+    private struct FormValue: Equatable {
+        let page: Int
+        let index: Int
+        let name: String?
+        let type: String
+        let value: String?
+        let state: Int
+    }
+    private var observedFormValues: [FormValue] = []
+    private var observedDocumentData: Data?
+    private var formEditGroupActive = false
     private var recoveryIsUnreadable = false
 
     private var recoveryDirectory: URL {
@@ -259,6 +268,7 @@ final class PDFWorkspaceModel: ObservableObject {
             refresh()
             status = loaded.isLocked ? "此文件需要密码才能阅读" : "PDF · 本地文件"
             restoreRecoveryIfPossible()
+            synchronizeFormBaseline()
         } catch { loadError = error.localizedDescription }
     }
 
@@ -310,10 +320,14 @@ final class PDFWorkspaceModel: ObservableObject {
     }
 
     private func remember() throws {
-        pdfView?.window?.makeFirstResponder(nil)
+        try commitDisplayedForm()
         guard let data = document?.dataRepresentation() else {
             throw PDFWorkspaceError.message("无法保留修改前的版本，本次操作已取消。")
         }
+        appendUndoState(data)
+    }
+
+    private func appendUndoState(_ data: Data) {
         undoStates.append(data)
         if undoStates.count > 15 { undoStates.removeFirst() }
         while undoStates.count > 1 && undoStates.reduce(0, { $0 + $1.count }) > 80 * 1024 * 1024 {
@@ -327,23 +341,73 @@ final class PDFWorkspaceModel: ObservableObject {
         status = text
         revision += 1
         refresh()
+        synchronizeFormBaseline()
         pdfView?.needsDisplay = true
         publishDirty()
         persistRecovery()
     }
 
-    func formMayHaveChanged() {
+    /// PDFKit has no public form-value-change notification. Compare its actual
+    /// widget values, rather than treating a click (or an editor notification) as
+    /// a mutation. The canvas polls this inexpensive signature and also checks
+    /// after public AppKit editing notifications, including keyboard navigation.
+    func formMayHaveChanged(endingEditing: Bool = false) {
         guard permitsForms else { return }
-        hasExternalFormEdits = true
-        dirty = true
-        status = "表单修改待保存"
-        publishDirty()
-        draftGeneration += 1
-        let generation = draftGeneration
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
-            guard let self, self.draftGeneration == generation else { return }
-            self.persistRecovery()
+        let values = currentFormValues()
+        if values != observedFormValues {
+            guard let currentData = document?.dataRepresentation() else {
+                dirty = true
+                status = "表单已修改，但恢复稿暂未能生成，请及时另存"
+                publishDirty()
+                return
+            }
+            if !formEditGroupActive, let previous = observedDocumentData {
+                appendUndoState(previous)
+            }
+            formEditGroupActive = true
+            observedFormValues = values
+            observedDocumentData = currentData
+            dirty = true
+            status = "表单修改待保存"
+            revision += 1
+            refresh()
+            publishDirty()
+            // Persist each observed value change; a one-shot timer after the
+            // initial mouse click misses later typing and Tab-entered fields.
+            persistRecovery()
         }
+        if endingEditing { formEditGroupActive = false }
+    }
+
+    func formInteractionWillBegin() {
+        formMayHaveChanged(endingEditing: true)
+    }
+
+    /// Saving and handing off are synchronization boundaries. Refusing to end
+    /// field editing must stop serialization instead of writing stale contents.
+    func commitDisplayedForm() throws {
+        if let window = pdfView?.window, !window.makeFirstResponder(nil) {
+            throw PDFWorkspaceError.message("当前 PDF 表单仍在编辑且无法提交，请先完成输入后重试。原件与未保存修改仍保留。")
+        }
+        formMayHaveChanged(endingEditing: true)
+    }
+
+    private func currentFormValues() -> [FormValue] {
+        guard let document else { return [] }
+        return (0..<document.pageCount).flatMap { pageIndex -> [FormValue] in
+            guard let page = document.page(at: pageIndex) else { return [] }
+            return page.annotations.filter { $0.type == "Widget" }.enumerated().map { index, annotation in
+                return FormValue(page: pageIndex, index: index, name: annotation.fieldName,
+                    type: annotation.widgetFieldType.rawValue, value: annotation.widgetStringValue,
+                    state: annotation.buttonWidgetState.rawValue)
+            }
+        }
+    }
+
+    private func synchronizeFormBaseline() {
+        observedFormValues = currentFormValues()
+        observedDocumentData = observedFormValues.isEmpty ? nil : document?.dataRepresentation()
+        formEditGroupActive = false
     }
 
     func go(to page: Int) {
@@ -568,7 +632,7 @@ final class PDFWorkspaceModel: ObservableObject {
     }
 
     private func materializeCustomAppearance() throws {
-        pdfView?.window?.makeFirstResponder(nil)
+        try commitDisplayedForm()
         // Loaded macOS PDFKit pages can retain an empty AnnotationKit drawing cache.
         // Reload the newly written standard appearance before presenting the object.
         guard let data = document?.dataRepresentation(), let normalized = PDFDocument(data: data) else {
@@ -703,7 +767,7 @@ final class PDFWorkspaceModel: ObservableObject {
     func save(to destination: URL? = nil) throws -> URL {
         guard let document, !document.isLocked else { throw PDFWorkspaceError.message("PDF 尚未成功读取。") }
         guard !document.isEncrypted else { throw PDFWorkspaceError.message("此版对加密 PDF 提供只读阅读，以保留原有加密设置。") }
-        pdfView?.window?.makeFirstResponder(nil) // Commit any currently edited form field before serialization.
+        try commitDisplayedForm()
         guard let data = document.dataRepresentation(), let validation = PDFDocument(data: data), validation.pageCount == document.pageCount else {
             throw PDFWorkspaceError.message("PDF 序列化或完整性检查失败，原文件未改动。")
         }
@@ -727,7 +791,7 @@ final class PDFWorkspaceModel: ObservableObject {
         if target.standardizedFileURL == sourceURL.standardizedFileURL {
             sourceDigest = Self.digest(written)
             dirty = false
-            hasExternalFormEdits = false
+            synchronizeFormBaseline()
             clearRecoveryAfterSave()
             publishDirty()
         }
@@ -740,7 +804,6 @@ final class PDFWorkspaceModel: ObservableObject {
     }
 
     func discardDraft() {
-        draftGeneration += 1
         dirty = false
         clearRecoveryAfterSave()
         publishDirty()
@@ -824,6 +887,7 @@ final class PDFWorkspaceModel: ObservableObject {
     }
 
     func undo() throws {
+        try commitDisplayedForm()
         guard let data = undoStates.last, let restored = PDFDocument(data: data),
               let current = document?.dataRepresentation() else { return }
         redoStates.append(current)
@@ -835,6 +899,7 @@ final class PDFWorkspaceModel: ObservableObject {
     }
 
     func redo() throws {
+        try commitDisplayedForm()
         guard let data = redoStates.last, let restored = PDFDocument(data: data),
               let current = document?.dataRepresentation() else { return }
         undoStates.append(current)

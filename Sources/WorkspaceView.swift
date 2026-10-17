@@ -190,6 +190,8 @@ struct TabWorkspace:View{
     @ObservedObject var store:WorkspaceStore
     private var binding:Binding<String>{Binding(get:{session.text},set:{session.edited($0)})}
     var body:some View{
+        VStack(spacing:0){
+        if let incoming=session.incoming{IncomingDocumentBanner(incoming:incoming)}
         Group{switch session.kind{
         case .markdown:MarkdownWorkspace(text:binding,baseURL:session.url,onError:{store.error=$0})
         case .latex:LaTeXWorkspace(text:binding,url:session.url,save:{store.save(session) ? session.url : nil},onError:{store.error=$0})
@@ -201,6 +203,7 @@ struct TabWorkspace:View{
         case .image:if let url=session.url{ImageWorkspace(url:url)}
         case .other:if let url=session.url{UnsupportedWorkspace(url:url,store:store)}
         }}.frame(maxWidth:.infinity,maxHeight:.infinity)
+        }
     }
 }
 struct ImageWorkspace:View{let url:URL;@State private var scale=1.0;var body:some View{VStack(spacing:0){HStack{Text(url.lastPathComponent).font(.subheadline);Spacer();Slider(value:$scale,in:0.1...3).frame(width:160);Text("\(Int(scale*100))%").font(.caption.monospacedDigit());Button("识别图片文字 (OCR)"){if let s=AppHub.store{OCRHandoffDispatcher.startOCR(for:url,store:s)}};Button("在 Finder 显示"){NSWorkspace.shared.activateFileViewerSelecting([url])}}.padding(12).background(.bar);ScrollView([.horizontal,.vertical]){if let image=NSImage(contentsOf:url){Image(nsImage:image).resizable().scaledToFit().frame(width:min(image.size.width,1200)*scale).padding(24)}else{Text("无法解码这张图片").padding()}}.frame(maxWidth:.infinity,maxHeight:.infinity)}}}

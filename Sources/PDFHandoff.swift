@@ -2,6 +2,8 @@ import AppKit
 import PDFKit
 import Foundation
 import Darwin
+import ImageIO
+import CoreImage
 
 /// Provider statements remain untrusted metadata. A source hash links an OCR
 /// result to the bytes sent by this app; it does not authenticate the provider.
@@ -76,7 +78,8 @@ struct OCRProvenance: Codable, Equatable {
                     confidence = number.doubleValue
                 }
                 result.pages.append(OCRPageProvenance(pageNumber: number.intValue, status: status,
-                    confidence: confidence, confidenceSource: try text(page["confidenceSource"])))
+                    confidence: confidence, confidenceSource: try text(page["confidenceSource"]),
+                    failureReason: try text(page["failureReason"], limit:1024)))
             }
         }
         return result
@@ -88,6 +91,7 @@ struct OCRPageProvenance: Codable, Equatable {
     var status: String?
     var confidence: Double?
     var confidenceSource: String?
+    var failureReason: String? = nil
 }
 
 struct PDFHandoffIssue: Codable, Equatable {
@@ -139,7 +143,14 @@ enum PDFHandoffVerifier {
         var source: PDFDocument?
         if let originalData {
             do { source = try readableDocument(originalData) }
-            catch { issues.append(.init(code: "sourceNotComparable", message: "原件不是可核验的 PDF（例如图像输入）；来源摘要见单独检查，页序、旋转与 PDF 页面尺寸仍需人工复核。")) }
+            catch {
+                // The provider converts a single image, after EXIF orientation,
+                // to one PDF page whose units equal its upright pixel size. Use
+                // the same original drawing as a comparison page; do not infer
+                // an orientation from the returned PDF or trust its geometry.
+                source = imageComparisonDocument(originalData)
+                if source == nil { issues.append(.init(code: "sourceNotComparable", message: "原件不是可核验的 PDF 或单帧位图；来源摘要见单独检查，页序、方向与页面尺寸仍需人工复核。")) }
+            }
         } else {
             issues.append(.init(code: "sourceUnavailable", message: "未提供原件副本，无法核验原件摘要、页序和页面几何。"))
         }
@@ -211,6 +222,47 @@ enum PDFHandoffVerifier {
                 throw PDFWorkspaceError.message("PDF 包含无效页面尺寸，无法核验。")
             }
         }
+        return document
+    }
+
+    private static func imageComparisonDocument(_ bytes: Data) -> PDFDocument? {
+        // These bounds match the real provider's default image decoder budget.
+        // A larger/multiframe source is left unverified, never partly accepted
+        // as though its first frame represented every original page.
+        guard !bytes.isEmpty, bytes.count <= 64 * 1024 * 1024,
+              let imageSource = CGImageSourceCreateWithData(bytes as CFData, [kCGImageSourceShouldCache: false] as CFDictionary),
+              CGImageSourceGetCount(imageSource) == 1,
+              let properties = CGImageSourceCopyPropertiesAtIndex(imageSource, 0, nil) as? [CFString: Any],
+              let width = properties[kCGImagePropertyPixelWidth] as? NSNumber,
+              let height = properties[kCGImagePropertyPixelHeight] as? NSNumber,
+              CFGetTypeID(width) != CFBooleanGetTypeID(), CFGetTypeID(height) != CFBooleanGetTypeID(),
+              width.doubleValue.isFinite, height.doubleValue.isFinite,
+              width.doubleValue > 0, height.doubleValue > 0,
+              width.doubleValue <= 12_000, height.doubleValue <= 12_000,
+              width.doubleValue * height.doubleValue <= 12_000_000,
+              let raw = CGImageSourceCreateImageAtIndex(imageSource, 0, [kCGImageSourceShouldCacheImmediately: true] as CFDictionary) else { return nil }
+        let orientation: Int32
+        if let value = properties[kCGImagePropertyOrientation] {
+            guard let number = value as? NSNumber, CFGetTypeID(number) != CFBooleanGetTypeID(),
+                  number.doubleValue.rounded() == number.doubleValue, (1...8).contains(number.intValue) else { return nil }
+            orientation = number.int32Value
+        } else { orientation = 1 }
+        let image: CGImage
+        if orientation == 1 { image = raw }
+        else {
+            let oriented = CIImage(cgImage: raw).oriented(forExifOrientation: orientation)
+            guard let upright = CIContext(options: [.cacheIntermediates: false, .useSoftwareRenderer: true]).createCGImage(oriented, from: oriented.extent) else { return nil }
+            image = upright
+        }
+        var box = CGRect(x: 0, y: 0, width: image.width, height: image.height)
+        let output = NSMutableData()
+        guard let consumer = CGDataConsumer(data: output), let context = CGContext(consumer: consumer, mediaBox: &box, nil) else { return nil }
+        context.beginPDFPage(nil)
+        context.draw(image, in: box)
+        context.endPDFPage(); context.closePDF()
+        guard let document = PDFDocument(data: output as Data), document.pageCount == 1,
+              let page = document.page(at: 0), normalizedRotation(page.rotation) == 0,
+              rectMatches(page.bounds(for: .mediaBox), box), rectMatches(page.bounds(for: .cropBox), box) else { return nil }
         return document
     }
 
@@ -287,7 +339,7 @@ extension PDFWorkspaceModel {
         guard let document, !document.isLocked, !document.isEncrypted else {
             throw PDFWorkspaceError.message("此 PDF 尚未读取或仍带有加密，不能导出交接副本。")
         }
-        pdfView?.window?.makeFirstResponder(nil)
+        try commitDisplayedForm()
         guard let data = document.dataRepresentation(), data.count <= PDFHandoffVerifier.maximumBytes,
               let validation = PDFDocument(data: data), validation.pageCount == document.pageCount else {
             throw PDFWorkspaceError.message("交接副本生成失败；原件和未保存修改仍保留。")

@@ -203,7 +203,16 @@ private struct RecoveryItem:Codable { var id:UUID;var path:String?;var kind:Stri
             return true
         } catch {self.error=error.localizedDescription;return false}
     }
+    /// Close/quit cannot depend on the asynchronous SwiftUI dirty notification:
+    /// PDFKit may still own a focused field editor when the action is invoked.
+    func commitCurrentPDFEdits(for session:FileSession) throws {
+        guard session.kind == .pdf, let url=session.url else { return }
+        if let model=try CurrentDocumentHandoffRegistry.shared.commitPDFSession(for:url) {
+            session.moduleDirty=model.dirty
+        }
+    }
     func close(_ session:FileSession) {
+        do { try commitCurrentPDFEdits(for:session) } catch { self.error=error.localizedDescription;return }
         if session.dirty || session.moduleDirty {
             let alert=NSAlert();alert.messageText="保存对“\(session.title)”的修改？";alert.informativeText="未保存的修改将被关闭。";alert.addButton(withTitle:"保存");alert.addButton(withTitle:"取消");alert.addButton(withTitle:"不保存")
             switch alert.runModal(){case .alertFirstButtonReturn:guard save(session) else{return};case .alertSecondButtonReturn:return;default:if let path=session.url?.path{NotificationCenter.default.post(name:Notification.Name("GaoWenJian.discardDraft"),object:path)}}
@@ -213,6 +222,8 @@ private struct RecoveryItem:Codable { var id:UUID;var path:String?;var kind:Stri
         checkpoint()
     }
     func prepareToQuit()->Bool {
+        do { for session in tabs { try commitCurrentPDFEdits(for:session) } }
+        catch { self.error=error.localizedDescription;return false }
         checkpoint()
         let dirty=tabs.filter{$0.dirty || $0.moduleDirty}
         guard !dirty.isEmpty else{return true}

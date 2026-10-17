@@ -89,7 +89,7 @@ struct PDFCanvas: NSViewRepresentable {
         model.pdfView = view
         view.placement = placement
         view.onAnnotationDoubleClick = onAnnotationDoubleClick
-        view.onFormInteraction = { [weak model] in model?.formMayHaveChanged() }
+        view.onFormInteraction = { [weak model] in model?.formInteractionWillBegin() }
         view.formsEditable = model.permitsForms
         view.onInitialLayout = { [weak model] scale in
             model?.zoom = scale
@@ -110,7 +110,7 @@ struct PDFCanvas: NSViewRepresentable {
         }
         view.placement = placement
         view.onAnnotationDoubleClick = onAnnotationDoubleClick
-        view.onFormInteraction = { [weak model] in model?.formMayHaveChanged() }
+        view.onFormInteraction = { [weak model] in model?.formInteractionWillBegin() }
         view.formsEditable = model.permitsForms
         model.pdfView = view
     }
@@ -124,8 +124,33 @@ struct PDFCanvas: NSViewRepresentable {
     @MainActor final class Coordinator {
         let model: PDFWorkspaceModel
         var tokens: [NSObjectProtocol] = []
+        private var formTimer: Timer?
         init(model: PDFWorkspaceModel) { self.model = model }
         func observe(_ view: PDFView) {
+            // PDFKit exposes hit notifications, not widget-value-change events.
+            // Observe real values without interrupting the active field editor.
+            let timer = Timer(timeInterval: 0.25, repeats: true) { [weak self] _ in
+                Task { @MainActor in self?.model.formMayHaveChanged() }
+            }
+            formTimer = timer
+            RunLoop.main.add(timer, forMode: .common)
+            for name in [NSText.didChangeNotification, NSText.didEndEditingNotification,
+                         NSControl.textDidChangeNotification, NSControl.textDidEndEditingNotification] {
+                tokens.append(NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) { [weak self, weak view] note in
+                    // NSWindow's shared field editor may sit outside the PDF's
+                    // view subtree. Its public delegate identifies the owning
+                    // control; do not observe another editor in the same window.
+                    guard let view else { return }
+                    let objectView = note.object as? NSView
+                    let editor = note.object as? NSTextView
+                    let owner = editor?.delegate as? NSView
+                    let belongs = objectView?.isDescendant(of: view) == true ||
+                        (editor?.window === view.window && owner?.isDescendant(of: view) == true)
+                    guard belongs else { return }
+                    let ended = name == NSText.didEndEditingNotification || name == NSControl.textDidEndEditingNotification
+                    Task { @MainActor in self?.model.formMayHaveChanged(endingEditing: ended) }
+                })
+            }
             tokens.append(NotificationCenter.default.addObserver(forName: .PDFViewPageChanged, object: view, queue: .main) { [weak self, weak view] _ in
                 Task { @MainActor in
                     guard let self, let page = view?.currentPage, let document = self.model.document else { return }
@@ -139,7 +164,11 @@ struct PDFCanvas: NSViewRepresentable {
                 Task { @MainActor in self?.model.hasSelection = !(view?.currentSelection?.string ?? "").isEmpty }
             })
         }
-        func stopObserving() { for token in tokens { NotificationCenter.default.removeObserver(token) }; tokens.removeAll() }
+        func stopObserving() {
+            formTimer?.invalidate(); formTimer = nil
+            for token in tokens { NotificationCenter.default.removeObserver(token) }
+            tokens.removeAll()
+        }
     }
 }
 

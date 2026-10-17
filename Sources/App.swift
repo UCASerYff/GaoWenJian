@@ -35,6 +35,7 @@ import UniformTypeIdentifiers
         Window("搞文件 V"+(Bundle.main.object(forInfoDictionaryKey:"CFBundleShortVersionString") as? String ?? "1.00"),id:"main"){
             RootWorkspace(store:store,stickyNotes:stickyNotes,stickyWindows:AppHub.stickyWindows!).frame(minWidth:1080,minHeight:700)
                 .onAppear{delegate.store=store;delegate.reopen={openWindow(id:"main");NSApp.activate(ignoringOtherApps:true)}}
+                .onOpenURL{url in delegate.receiveFiles([url]);openWindow(id:"main");NSApp.activate(ignoringOtherApps:true)}
         }.defaultSize(width:1440,height:900)
         .commands{
             CommandGroup(replacing:.newItem){
@@ -57,6 +58,7 @@ import UniformTypeIdentifiers
                     else if let active=store.active{store.save(active)}
                 }.keyboardShortcut("s").disabled(store.active?.kind.canSave != true && !store.showingNotes && !AppHub.isStickyWindow)
                 Button("另存为…"){guard !store.showingNotes && !AppHub.isStickyWindow else{return};if let active=store.active{store.save(active,asCopy:true)}}.keyboardShortcut("s",modifiers:[.command,.shift]).disabled(store.active?.kind.isText != true || store.showingNotes || AppHub.isStickyWindow)
+                Button("导出编辑副本…"){EditedDocumentExporter.showPanel(store:store)}.disabled(store.active == nil || store.showingNotes || AppHub.isStickyWindow)
             }
             CommandGroup(after:.pasteboard){Button("查找…"){NSApp.sendAction(#selector(NSTextView.performFindPanelAction(_:)),to:nil,from:FindSender())}.keyboardShortcut("f")}
             CommandMenu("工作区"){
@@ -116,6 +118,10 @@ final class FindSender:NSObject { @objc var tag:Int {Int(NSFindPanelAction.showF
         receiveFiles(filenames.map{URL(fileURLWithPath:$0)})
         reopen?()
         sender.reply(toOpenOrPrint:.success)
+    }
+    func application(_ sender:NSApplication,open urls:[URL]){
+        receiveFiles(urls)
+        reopen?()
     }
     func applicationShouldTerminateAfterLastWindowClosed(_ sender:NSApplication)->Bool{false}
     func applicationShouldHandleReopen(_ sender:NSApplication,hasVisibleWindows flag:Bool)->Bool{reopen?();return true}

@@ -36,7 +36,8 @@ enum CurrentDocumentHandoffTests {
         try check(reopened?.page(at: 0)?.annotations.contains(where: { $0.contents == "保留的未保存批注" }) == true, "Unsaved annotation is exported with the same current model")
         try check(snapshot.sha256 == FileSafety.digest(exported) && snapshot.pageCount == 1, "Snapshot bytes have a verified digest and page count")
         try check(model.dirty && model.canUndo, "Export retains editor dirty/undo state")
-        try check(try Data(contentsOf: recovery) == recoveryBefore, "Export does not replace or delete the earlier recovery draft")
+        let recoveryAfterCommit = try Data(contentsOf: recovery)
+        try check(recoveryAfterCommit != recoveryBefore && PDFDocument(data: recoveryAfterCommit)?.page(at: 0)?.annotations.first(where: { $0.fieldName == "Latest" })?.widgetStringValue == "刚输入，尚未写入恢复稿", "Committed form values refresh the retained recovery draft to agree with export")
         try check(try Data(contentsOf: source) == sourceBytes, "Export never changes original bytes")
 
         let alias = directory.appendingPathComponent("符号链接.pdf")
@@ -64,7 +65,7 @@ enum CurrentDocumentHandoffTests {
         try rejects("Original is never an export target") { _ = try registry.snapshotCurrentPDF(for: source, to: source) }
         try check(try Data(contentsOf: source) == sourceBytes, "Rejected source target is unchanged")
         try rejects("Missing parent export fails") { _ = try registry.snapshotCurrentPDF(for: source, to: directory.appendingPathComponent("missing/new.pdf")) }
-        try check(try Data(contentsOf: recovery) == recoveryBefore && model.dirty && model.canUndo, "Failed export keeps recovery and edit state")
+        try check(try Data(contentsOf: recovery) == recoveryAfterCommit && model.dirty && model.canUndo, "Failed export keeps the latest committed recovery and edit state")
 
         var external = sourceBytes; external.append(Data("\n% external replacement\n".utf8))
         try external.write(to: source)

@@ -52,6 +52,22 @@ final class CurrentDocumentHandoffRegistry {
         return model
     }
 
+    /// A close/quit action already identifies the exact tab URL. Do not use
+    /// inode alias matching here: two hard-link tabs must remain independently
+    /// closable even though a handoff between them is deliberately ambiguous.
+    func commitPDFSession(for url: URL) throws -> PDFWorkspaceModel? {
+        removeClosedModels()
+        let matches = entries.values.compactMap(\.model).filter {
+            $0.sourceURL.standardizedFileURL == url.standardizedFileURL
+        }
+        guard matches.count <= 1 else {
+            throw PDFWorkspaceError.message("同一 PDF 标签对应多个编辑器，请先返回该文档完成输入。")
+        }
+        guard let model = matches.first else { return nil }
+        try formCommitter(model)
+        return model
+    }
+
     /// Explicit current-editor export. A missing editor is an error, never a
     /// reason to instantiate a second model from a stale recovery file.
     func snapshotCurrentPDF(for url: URL, to destination: URL) throws -> PDFHandoffSnapshot {
@@ -66,9 +82,7 @@ final class CurrentDocumentHandoffRegistry {
     }
 
     private static func commitDisplayedForm(_ model: PDFWorkspaceModel) throws {
-        if let window = model.pdfView?.window, !window.makeFirstResponder(nil) {
-            throw PDFWorkspaceError.message("当前 PDF 表单仍在编辑且无法提交，请先完成输入后重试。原件与未保存修改仍保留。")
-        }
+        try model.commitDisplayedForm()
     }
 
     private static func sameFileContext(_ left: URL, _ right: URL) -> Bool {
