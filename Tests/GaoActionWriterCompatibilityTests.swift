@@ -2,8 +2,7 @@ import AppKit
 import Foundation
 import ImageIO
 
-/// Explicit per-provider path compatibility; the payload bytes are never moved
-/// into an extra directory and the default OCR/result shape stays unchanged.
+/// Provider path compatibility and production document status envelopes.
 @MainActor enum GaoActionWriterCompatibilityTests {
     @discardableResult static func run(in directory: URL, researchValidatorExecutable: URL? = nil) throws -> Int {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
@@ -62,9 +61,52 @@ import ImageIO
         try check(replyManifest.items.count == 1 && replyManifest.items.allSatisfy { !$0.relativePath.contains("/") }, "Result writer default remains payload-relative")
         let resultReadback = try GaoActionTransport.receive(packageURL: reply, exchangeRoot: directory.appendingPathComponent("ResultReadback"), expectedTargetBundleID: "com.gaoseries.Fixture", now: now)
         try check(try Data(contentsOf: resultReadback.stagedItems[0].url) == originalBytes && replyManifest.items[0].sha256 == FileSafety.digest(originalBytes), "Result prefix compatibility does not alter bytes or digests")
+        checks += try documentStatusResults(in: directory.appendingPathComponent("DocumentStatus"), source: original, store: store, now: now)
         try check(try Data(contentsOf: original) == originalBytes && Data(contentsOf: image) == imageBytes && tab.dirty && tab.text == editedText, "Every writer/readback leaves both original files and editor state unchanged")
         try check(NSApp == nil, "No application after writer compatibility checks")
-        print("GaoAction writer compatibility: \(checks) checks passed (research payload prefix, exact source bytes/hash, real transport readback, unchanged OCR/results; no UI)")
+        print("GaoAction writer compatibility: \(checks) checks passed (provider payload paths, production document status envelopes, exact source bytes/hash and real transport readback; no UI)")
+        return checks
+    }
+    private static func documentStatusResults(in directory: URL, source: URL, store: WorkspaceStore, now: Date) throws -> Int {
+        var checks = 0
+        func check(_ condition: @autoclosure () throws -> Bool, _ name: String) throws {
+            guard try condition() else { throw GaoActionContract.reject("writerCompatibilityTest", name) }; checks += 1
+        }
+        let sender = "com.gaoseries.GaoCaoZuo"
+        var titledRequest: GaoActionManifest?
+        for (index, test) in [("documents.newText", true), ("documents.newText", false), ("documents.open", true)].enumerated() {
+            let (action, accept) = test
+            let parameters: [String: GaoJSONValue] = action == "documents.newText" ? ["suggestedTitle": .string("带标题的生产回执 😀.md")] : [:]
+            let requestURL = try GaoActionWriter.writeRequest(action: action, items: [.init(url: source, uti: "net.daringfireball.markdown")], parameters: parameters, sourceBundleID: sender, targetBundleID: GaoActionContract.bundleID, exchangeRoot: directory.appendingPathComponent("Requests"), now: now)
+            let request = try manifest(requestURL)
+            if action == "documents.newText" { titledRequest = request }
+            let beforeCount = store.tabs.count
+            var offeredRequest: GaoActionManifest?, offeredURL: URL?
+            let interaction = GaoHandoffInteraction(confirm: { _ in accept }, selectReference: { _ in nil }, offerResult: { request, url in offeredRequest = request; offeredURL = url })
+            let outcome = try GaoHandoffService.receive(url: requestURL, store: store, interaction: interaction, now: now)
+            guard let resultURL = outcome.resultPackageURL else { throw GaoActionContract.reject("writerCompatibilityTest", "Production dispatcher did not write a status result") }
+            let result = try manifest(resultURL)
+            let wire = try JSONSerialization.jsonObject(with: Data(contentsOf: resultURL.appendingPathComponent("manifest.json"))) as! [String: Any]
+            let expectedStatus = accept ? "completed" : "cancelled"
+            try check(outcome.status == expectedStatus && result.status == expectedStatus && store.tabs.count == beforeCount + (accept ? 1 : 0), "Production document open/cancel path has the expected status and tab count")
+            try check(result.kind == "result" && result.action == request.action && result.inReplyTo == request.requestID && result.sourceBundleID == GaoActionContract.bundleID && result.targetBundleID == sender, "Status reply preserves action, source declaration, target and original request association")
+            try check(result.parameters.isEmpty && (wire["parameters"] as? [String: Any])?.isEmpty == true, "Status result does not echo request-only suggestedTitle")
+            try check(result.errorCode == nil && wire["errorCode"] == nil, "A successful or cancelled document result omits its absent optional errorCode")
+            try check(result.items.isEmpty && result.references.isEmpty && result.provenance?["saved"]?.boolValue == false && result.provenance?["workflowState"]?.stringValue == (accept ? "opened" : "cancelled"), "Document status reply contains only the actual open/cancel outcome, no edited attachment or save claim")
+            try check(offeredURL == resultURL && offeredRequest?.requestID == request.requestID && offeredRequest?.parameters == request.parameters, "The send-status interaction retains the original request context without placing its options into the result")
+            let readback = try GaoActionTransport.receive(packageURL: resultURL, exchangeRoot: directory.appendingPathComponent("Readback-\(index)"), expectedTargetBundleID: sender, now: now)
+            try check(readback.manifest == result && readback.stagedItems.isEmpty, "Production transport accepts the generated zero-attachment result unchanged")
+            if accept && action == "documents.newText" {
+                try check(store.active?.url == nil && store.active?.dirty == true && store.active?.suggestedTitle == parameters["suggestedTitle"]?.stringValue, "Removing result options does not remove the new unsaved document title or dirty state")
+            }
+        }
+        guard let titledRequest else { throw GaoActionContract.reject("writerCompatibilityTest", "Missing generated titled request") }
+        let failure = try GaoActionWriter.writeResult(inReplyTo: titledRequest, status: "failed", errorCode: "documentOpenFailed", provenance: ["workflowState": .string("failed"), "openedItemIDs": .array([]), "saved": .bool(false)], exchangeRoot: directory.appendingPathComponent("ExplicitFailure"), now: now)
+        let failed = try GaoActionTransport.receive(packageURL: failure, exchangeRoot: directory.appendingPathComponent("FailureReadback"), expectedTargetBundleID: sender, now: now)
+        let wire = try JSONSerialization.jsonObject(with: Data(contentsOf: failure.appendingPathComponent("manifest.json"))) as! [String: Any]
+        try check(failed.manifest.status == "failed" && failed.manifest.errorCode == "documentOpenFailed" && wire["errorCode"] as? String == "documentOpenFailed", "An explicit valid error code is preserved on the wire and by the production receiver")
+        try check(failed.manifest.parameters.isEmpty && failed.manifest.inReplyTo == titledRequest.requestID && failed.manifest.targetBundleID == sender && failed.stagedItems.isEmpty, "Explicit failure preserves routing and association without request options or attachments")
+        try check(titledRequest.parameters["suggestedTitle"]?.stringValue == "带标题的生产回执 😀.md", "Writing a result does not mutate its original request options")
         return checks
     }
     private static func manifest(_ package: URL) throws -> GaoActionManifest {

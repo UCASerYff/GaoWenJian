@@ -213,7 +213,9 @@ enum GaoActionWriter {
         return try write(manifest:manifest,files:items,exchangeRoot:exchangeRoot,now:now,includePayloadPrefix:includePayloadPrefix)
     }
     static func writeResult(inReplyTo request: GaoActionManifest, status: String, items: [GaoOutgoingFile] = [], references: [GaoActionReference] = [], errorCode: String? = nil, provenance: [String:GaoJSONValue] = [:], exchangeRoot: URL, now: Date = Date()) throws -> URL {
-        let manifest = GaoActionManifest(kind:"result",requestID:UUID().uuidString,sourceBundleID:GaoActionContract.bundleID,targetBundleID:request.sourceBundleID,action:request.action,createdAt:GaoActionContract.timestamp(now),expiresAt:GaoActionContract.timestamp(now.addingTimeInterval(GaoActionContract.ttl)),nonce:try nonce(),items:[],references:references,parameters:request.parameters,inReplyTo:request.requestID,status:status,errorCode:errorCode ?? "",provenance:provenance)
+        // Request options are not result fields. Keep the association and outcome
+        // in their dedicated fields, and omit an absent optional error code.
+        let manifest = GaoActionManifest(kind:"result",requestID:UUID().uuidString,sourceBundleID:GaoActionContract.bundleID,targetBundleID:request.sourceBundleID,action:request.action,createdAt:GaoActionContract.timestamp(now),expiresAt:GaoActionContract.timestamp(now.addingTimeInterval(GaoActionContract.ttl)),nonce:try nonce(),items:[],references:references,parameters:[:],inReplyTo:request.requestID,status:status,errorCode:errorCode,provenance:provenance)
         return try write(manifest:manifest,files:items,exchangeRoot:exchangeRoot,now:now)
     }
     private static func nonce() throws -> String {
