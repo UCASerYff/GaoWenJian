@@ -31,6 +31,12 @@ import Darwin
             print("PASS: focused research handoff checks; \(receiptChecks) receipt assertions; NSApp remained nil. No App, window or smoke test.")
             return
         }
+        if CommandLine.arguments.contains("--reference-selection-only") {
+            var assertions = 0
+            try suite("reference modification precision") { assertions = try ReferenceSelectionTests.runTimePrecision(in: parent.appendingPathComponent("ReferenceTimeTests")) }
+            print("PASS: focused reference modification time checks; \(assertions) assertions; NSApp remained nil. No App, window or smoke test.")
+            return
+        }
         try suite("core") { try CoreTests.run() }
         try suite("Office models/recovery") { try runOfficeRoundTripTests() }
         try suite("Office readonly") { try runOfficeViewerTests() }
@@ -54,6 +60,7 @@ import Darwin
         try suite("image OCR PDF verification") { _ = try PDFImageHandoffTests.run(in:parent.appendingPathComponent("ImageHandoffTests"),providerExecutable:provider) }
         try suite("OCR dispatch options/JSON") { try OCRDispatchOptionsTests.run(in:parent.appendingPathComponent("OCRDispatchOptionsTests")) }
         try suite("provider path compatibility") { _ = try GaoActionWriterCompatibilityTests.run(in:parent.appendingPathComponent("WriterCompatibilityTests")) }
+        try suite("reference modification precision") { try ReferenceSelectionTests.runTimePrecision(in:parent.appendingPathComponent("ReferenceTimeTests")) }
         try suite("reference selection") { try ReferenceSelectionTests.run(in:parent.appendingPathComponent("ReferenceSelectionTests")) }
         var productionChecks = 0
         try suite("production handoff dispatch") { productionChecks = try HandoffProductionTests.run(in: parent.appendingPathComponent("ProductionFixtures"), providerExecutable: provider) }

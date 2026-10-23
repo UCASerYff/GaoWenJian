@@ -185,9 +185,15 @@ enum GaoActionTransport {
         else { fd = try GaoPrivateIO.directory(selectedURL) }
         let identity = reference.declaredIdentity; let s = try fd.statValue()
         guard identity.device == nil || identity.device == UInt64(bitPattern:Int64(s.st_dev)), identity.inode == nil || identity.inode == UInt64(s.st_ino), identity.byteCount == nil || identity.byteCount == Int64(s.st_size) else { throw GaoActionContract.reject("referenceChanged","原件身份或大小已变化，请重新发送。") }
-        if let modified = identity.modifiedAt, let expected = GaoActionContract.date(modified) {
+        if let modified = identity.modifiedAt {
+            guard let expected = GaoActionContract.date(modified) else { throw GaoActionContract.reject("invalidReference","原件修改时间无效。") }
             let actual = Date(timeIntervalSince1970:Double(s.st_mtimespec.tv_sec) + Double(s.st_mtimespec.tv_nsec)/1_000_000_000)
-            guard abs(actual.timeIntervalSince(expected)) < 0.001 else { throw GaoActionContract.reject("referenceChanged","原件修改时间已变化，请重新发送。") }
+            // V1 senders may serialize whole seconds only. Compare that exact
+            // declared second, without accepting a neighbouring second through
+            // a wider tolerance. Fractional declarations keep the existing bound.
+            let matches = modified.contains(".") ? abs(actual.timeIntervalSince(expected)) < 0.001
+                : Double(s.st_mtimespec.tv_sec) == expected.timeIntervalSince1970
+            guard matches else { throw GaoActionContract.reject("referenceChanged","原件修改时间已变化，请重新发送。") }
         }
         if let volume = identity.volumeUUID {
             guard (try selectedURL.resourceValues(forKeys:[.volumeUUIDStringKey])).volumeUUIDString == volume else { throw GaoActionContract.reject("referenceChanged","原件所在卷已变化。") }

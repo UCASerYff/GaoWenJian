@@ -29,4 +29,4 @@ swiftc -swift-version 5 -Xfrontend -disable-sandbox -target arm64-apple-macos14.
   "$STAGING"/Sources/*.swift $TEST_FILES -o "$STAGING/headless-regression"
 EVIDENCE_DIR="$PROJECT_DIR/TestResults/Headless-$(date +%Y%m%d-%H%M%S)-${STAGING:t}"
 "$STAGING/headless-regression" --data-dir "$STAGING/data" --evidence-dir "$EVIDENCE_DIR" "$@"
-if [[ " ${*} " != *" --verify-data-copy "* && " ${*} " != *" --research-handoff-only "* ]]; then node "$PROJECT_DIR/Tests/MarkdownCoreTests.js"; fi
+if [[ " ${*} " != *" --verify-data-copy "* && " ${*} " != *" --research-handoff-only "* && " ${*} " != *" --reference-selection-only "* ]]; then node "$PROJECT_DIR/Tests/MarkdownCoreTests.js"; fi

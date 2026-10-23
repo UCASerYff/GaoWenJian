@@ -1,5 +1,6 @@
 import AppKit
 import Foundation
+import Darwin
 
 @MainActor enum ReferenceSelectionTests {
     @MainActor static func run(in directory: URL) throws {
@@ -121,6 +122,109 @@ import Foundation
         try check(store.status.contains("对方报告：completed") && store.status.contains("本机部分接收") && store.status.contains("1/2") && !store.status.contains("全部完成") && store.error != nil, "Local failure is distinct from provider completion and shows the accurate opened fraction")
         try check(NSApp == nil && !offeredReplies.isEmpty, "All status replies use injected presentation, without launching an App")
         print("Reference selection: default copy, explicit original, local authorization cancellation, partial import, changed/deleted/unreadable references, dirty-tab preservation and files.choose result routing passed. System sandbox revocation remains unverified.")
+    }
+
+    @MainActor @discardableResult static func runTimePrecision(in directory: URL) throws -> Int {
+        guard NSApp == nil, CommandLine.arguments.contains("--data-dir"), FileSafety.root.path.hasPrefix("/private/tmp/gaowenjian-") else {
+            throw FileIssue.message("Reference time tests require isolated temporary data without an App")
+        }
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        let original = directory.appendingPathComponent("公开整秒引用.txt"), other = directory.appendingPathComponent("另一公开原件.txt")
+        let bytes = Data("公开合成文件：整秒声明与纳秒 stat 不应被误判。α 😀\n".utf8)
+        try bytes.write(to: original); try bytes.write(to: other)
+        let seconds = 1_792_020_000
+        var assertions = 0
+        func check(_ condition: @autoclosure () throws -> Bool, _ label: String) throws {
+            guard try condition() else { throw FileIssue.message("Reference time: " + label) }; assertions += 1
+        }
+        func rejects(_ code: String, _ body: () throws -> Void) throws {
+            do { try body() }
+            catch let error as GaoActionIssue { try check(error.code == code, "Expected \(code), got \(error.code)"); return }
+            throw FileIssue.message("Expected reference time rejection: " + code)
+        }
+        func setTime(_ nanos: Int) throws {
+            let fd = try GaoPrivateIO.regularURL(original)
+            var values = [timespec(tv_sec: seconds, tv_nsec: 0), timespec(tv_sec: seconds, tv_nsec: nanos)]
+            guard futimens(fd.value, &values) == 0 else { throw FileIssue.message("Cannot set isolated fixture modification time") }
+            let stat = try fd.statValue()
+            try check(stat.st_mtimespec.tv_sec == seconds && stat.st_mtimespec.tv_nsec == nanos, "Fixture has exact requested stat time")
+        }
+        let wholeSecond = GaoActionContract.timestamp(Date(timeIntervalSince1970: Double(seconds)))
+        for nanos in [0, 1, 500_000, 862_398_221, 999_999_999] {
+            try setTime(nanos)
+            var ref = try reference(original, id: "whole-second")
+            ref.declaredIdentity.modifiedAt = wholeSecond
+            try GaoActionTransport.verifyReference(ref, selectedURL: original); assertions += 1
+        }
+        try setTime(862_398_221)
+        var whole = try reference(original, id: "whole-second")
+        whole.declaredIdentity.modifiedAt = wholeSecond
+        for offset in [-1, 1] {
+            var neighbouring = whole
+            neighbouring.declaredIdentity.modifiedAt = GaoActionContract.timestamp(Date(timeIntervalSince1970: Double(seconds + offset)))
+            try rejects("referenceChanged") { try GaoActionTransport.verifyReference(neighbouring, selectedURL: original) }
+        }
+        let fraction = try reference(original, id: "fractional")
+        try GaoActionTransport.verifyReference(fraction, selectedURL: original); assertions += 1
+        for fractionSuffix in [".861Z", ".864Z"] {
+            // Keep the date portion tied to the fixture second rather than a
+            // wall clock, while crossing the existing strict 1ms boundary.
+            var wrongFraction = fraction
+            wrongFraction.declaredIdentity.modifiedAt = String(wholeSecond.dropLast()) + fractionSuffix
+            try rejects("referenceChanged") { try GaoActionTransport.verifyReference(wrongFraction, selectedURL: original) }
+        }
+        for invalid in ["not-a-date", String(wholeSecond.dropLast()), "2026-10-23T06:40:45+00:00"] {
+            var malformed = whole; malformed.declaredIdentity.modifiedAt = invalid
+            try rejects("invalidReference") { try GaoActionTransport.verifyReference(malformed, selectedURL: original) }
+        }
+        var different = whole; different.declaredIdentity.device! += 1
+        try rejects("referenceChanged") { try GaoActionTransport.verifyReference(different, selectedURL: original) }
+        different = whole; different.declaredIdentity.inode! += 1
+        try rejects("referenceChanged") { try GaoActionTransport.verifyReference(different, selectedURL: original) }
+        different = whole; different.declaredIdentity.byteCount! += 1
+        try rejects("referenceChanged") { try GaoActionTransport.verifyReference(different, selectedURL: original) }
+        different = whole; different.declaredIdentity.volumeUUID = UUID().uuidString
+        try rejects("referenceChanged") { try GaoActionTransport.verifyReference(different, selectedURL: original) }
+        different = whole; different.sha256 = String(repeating: "0", count: 64)
+        try rejects("referenceChanged") { try GaoActionTransport.verifyReference(different, selectedURL: original) }
+        try rejects("referenceMismatch") { try GaoActionTransport.verifyReference(whole, selectedURL: other) }
+        var changed = bytes; changed[0] = changed[0] ^ 1
+        try changed.write(to: original); try setTime(862_398_221)
+        try rejects("referenceChanged") { try GaoActionTransport.verifyReference(whole, selectedURL: original) }
+        try bytes.write(to: original); try setTime(862_398_221)
+        try GaoActionTransport.verifyReference(GaoHandoffService.originalContext(original), selectedURL: original); assertions += 1
+        let beforeChange = try GaoPrivateIO.regularURL(original).statValue()
+        try setTime(862_398_222)
+        try check(try !GaoPrivateIO.unchanged(beforeChange, GaoPrivateIO.regularURL(original).statValue()),
+                  "Full FD change detection still rejects even a nanosecond-only change within the declared second")
+        try setTime(862_398_221)
+
+        let store = WorkspaceStore(); store.tabs = []; store.selection = nil
+        store.newText(.text, text: "保持已有未保存内容")
+        let previous = store.active!, previousText = previous.text
+        let recovery = FileSafety.root.appendingPathComponent("recovery.json"), recoveryBefore = try Data(contentsOf: FileSafety.root.appendingPathComponent("recovery.json"))
+        var withoutSHA = whole; withoutSHA.sha256 = nil
+        var selected = 0
+        let interaction = GaoHandoffInteraction(confirm: { _ in true }, selectReference: { _ in selected += 1; return original }, offerResult: { _, _ in }, referenceMode: { _ in .copy })
+        let clock = Date()
+        let reply = try chooseResult([withoutSHA], foreign: directory.appendingPathComponent("Foreign"), now: clock)
+        let outcome = try GaoHandoffService.receive(url: reply, store: store, interaction: interaction, now: clock)
+        guard let copy = store.tabs.first(where: { outcome.openedTabIDs.contains($0.id) }), let copiedURL = copy.url else {
+            throw FileIssue.message("Whole-second files.choose copy did not open: " + outcome.messages.joined(separator: "; "))
+        }
+        try check(outcome.status == "completed" && selected == 1 && copy.kind == .text && copiedURL != original && copy.text == String(data: bytes, encoding: .utf8),
+                  "Actual files.choose result with whole-second mtime and no SHA opens the independently selected verified copy")
+        try check(try Data(contentsOf: copiedURL) == bytes && copy.incoming?.contentSHA256 == FileSafety.digest(bytes),
+                  "copyReference computes and retains its own payload SHA for a provider reference without SHA")
+        try check(previous.dirty && previous.text == previousText && (try Data(contentsOf: recovery)) == recoveryBefore
+                  && (try Data(contentsOf: original)) == bytes, "Reference copy preserves original bytes, existing dirty editor and recovery")
+        let resultManifest = try manifest(reply)
+        let record = try GaoOutgoingJournal(exchangeRoot: GaoHandoffService.exchangeRoot).lookupResult(resultManifest.requestID)
+        try check(record?.status == "completed" && record?.phase == .completed && record?.openedReferenceIDs == [withoutSHA.id],
+                  "Local copy completion records only the actual opened reference")
+        try check(NSApp == nil, "Reference precision checks never create an application or window")
+        print("Reference modification time: \(assertions) assertions passed (exact serialized seconds, nanosecond stat, adjacent-second rejection, unchanged fractional bound, identity/size/volume/SHA/path checks, no-SHA files.choose production copy and editor/original preservation; no UI)")
+        return assertions
     }
 
     private static func request(_ references: [GaoActionReference], root: URL, now: Date) throws -> URL {
