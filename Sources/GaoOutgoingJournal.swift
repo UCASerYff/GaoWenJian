@@ -60,6 +60,9 @@ struct GaoOutgoingResultRecord: Codable, Equatable, Identifiable {
     var openedItemIDs: [String]
     var openedReferenceIDs: [String]
     var errorCode: String?
+    /// Nil preserves records written before per-source research progress was
+    /// retained; new receipts store only source IDs already bound and verified.
+    var researchImportedSourceIDs: [String]? = nil
     var id: String { requestID }
 }
 enum GaoOutgoingResultReceipt {
@@ -174,6 +177,7 @@ final class GaoOutgoingJournal {
         }
         guard results.count < 100_000 else { throw Self.issue("journalLimit") }
         try GaoActionContract.validate(m,expectedTargetBundleID:GaoActionContract.bundleID,now:now)
+        try ResearchImportReceipt.validate(m,session:session)
         guard package.stagingURL.deletingLastPathComponent().resolvingSymlinksInPath().standardizedFileURL == root.appendingPathComponent("Staging",isDirectory:true).resolvingSymlinksInPath().standardizedFileURL else { throw Self.issue("resultItems") }
         let stage = try GaoPrivateIO.directory(package.stagingURL,requirePrivate:true)
         let manifestBytes = try GaoPrivateIO.read(GaoPrivateIO.regular(stage,components:["manifest.json"]),maximum:Int64(GaoActionContract.maximumManifestBytes))
@@ -208,8 +212,28 @@ final class GaoOutgoingJournal {
             guard status == session.phase.rawValue, newOutputs.isEmpty, newReferences.isEmpty else { throw Self.issue("resultAfterTerminal") }
         }
         if status == "pending", [.partial,.completed].contains(session.phase) { throw Self.issue("resultRegression") }
+        let researchImportedSourceIDs: [String]?
+        if session.action == "research.importDocuments" {
+            guard session.phase != .partial || ["partial","completed"].contains(status) else { throw Self.issue("resultRegression") }
+            // Older partial records remain readable, but do not identify which
+            // sources succeeded. Only full completion can safely resolve that
+            // unknown progress; nil must never be treated as an empty success set.
+            if oldResults.contains(where: { $0.status == "partial" && $0.researchImportedSourceIDs == nil }) {
+                guard status == "completed" else { throw Self.issue("researchProgressUnknown") }
+            }
+            // The complete source list has already passed the strict research
+            // receipt validator. An imported source cannot become unsuccessful
+            // in a later full snapshot, even when its overall status is partial.
+            let imported = Set((m.provenance?["sources"]?.arrayValue ?? []).compactMap { value -> String? in
+                guard let source = value.objectValue, source["status"]?.stringValue == "imported" else { return nil }
+                return source["sourceItemID"]?.stringValue
+            })
+            let previouslyImported = Set(oldResults.flatMap { $0.researchImportedSourceIDs ?? [] })
+            guard previouslyImported.isSubset(of:imported) else { throw Self.issue("researchSourceRegression") }
+            researchImportedSourceIDs = session.sources.map(\.item.id).filter(imported.contains)
+        } else { researchImportedSourceIDs = nil }
         let stamp = GaoActionContract.timestamp(now)
-        let record = GaoOutgoingResultRecord(requestID:m.requestID,inReplyTo:reply,manifestSHA256:package.manifestSHA256,status:status,phase:.received,executionStarted:false,receivedAt:stamp,updatedAt:stamp,outputs:outputs,referenceIDs:m.references.map(\.id),referenceFingerprints:referenceFingerprints,openedItemIDs:[],openedReferenceIDs:[],errorCode:m.errorCode)
+        let record = GaoOutgoingResultRecord(requestID:m.requestID,inReplyTo:reply,manifestSHA256:package.manifestSHA256,status:status,phase:.received,executionStarted:false,receivedAt:stamp,updatedAt:stamp,outputs:outputs,referenceIDs:m.references.map(\.id),referenceFingerprints:referenceFingerprints,openedItemIDs:[],openedReferenceIDs:[],errorCode:m.errorCode,researchImportedSourceIDs:researchImportedSourceIDs)
         var nextSession = session; nextSession.phase = GaoOutgoingPhase(rawValue:status)!; nextSession.updatedAt = stamp
         var nextSessions = sessions; nextSessions[reply] = nextSession
         var nextResults = results; nextResults[m.requestID] = record
@@ -289,6 +313,16 @@ final class GaoOutgoingJournal {
     private func validateStoredResult(_ r: GaoOutgoingResultRecord) throws {
         guard UUID(uuidString:r.requestID) != nil, let session = sessions[r.inReplyTo], GaoActionContract.validSHA(r.manifestSHA256), ["pending","partial","completed","failed","cancelled","unsupported"].contains(r.status), GaoActionContract.date(r.receivedAt) != nil, GaoActionContract.date(r.updatedAt) != nil, r.outputs.count + r.referenceIDs.count <= GaoActionContract.maximumItems, Set(r.outputs.map(\.resultItemID)).count == r.outputs.count, Set(r.referenceIDs).count == r.referenceIDs.count, Set(r.referenceFingerprints.keys) == Set(r.referenceIDs), r.referenceFingerprints.values.allSatisfy(GaoActionContract.validSHA), Set(r.openedItemIDs).isSubset(of:Set(r.outputs.map(\.resultItemID))), Set(r.openedReferenceIDs).isSubset(of:Set(r.referenceIDs)), r.errorCode == nil || r.errorCode!.utf8.count <= 256 else { throw Self.issue("journalCorrupt") }
         guard ![.executing,.completed,.interrupted].contains(r.phase) || r.executionStarted else { throw Self.issue("journalCorrupt") }
+        if let imported = r.researchImportedSourceIDs {
+            guard session.action == "research.importDocuments", !session.sources.isEmpty,
+                  Set(imported).count == imported.count, Set(imported).isSubset(of:Set(session.sources.map(\.item.id))),
+                  r.outputs.isEmpty, r.referenceIDs.isEmpty else { throw Self.issue("journalCorrupt") }
+            switch r.status {
+            case "completed": guard imported.count == session.sources.count else { throw Self.issue("journalCorrupt") }
+            case "partial": guard !imported.isEmpty, imported.count < session.sources.count else { throw Self.issue("journalCorrupt") }
+            default: guard imported.isEmpty else { throw Self.issue("journalCorrupt") }
+            }
+        }
         for output in r.outputs {
             guard !output.resultItemID.isEmpty, GaoActionContract.validSHA(output.itemSHA256), GaoActionContract.validUTI(output.uti) else { throw Self.issue("journalCorrupt") }
             if session.action == "ocr.files" { guard let id = output.sourceItemID, let sha = output.sourceSHA256, session.sources.contains(where:{$0.item.id == id && $0.item.sha256 == sha}) else { throw Self.issue("journalCorrupt") } }

@@ -152,7 +152,15 @@ enum GaoOutgoingJournalTests {
             var reply = researchRequest; reply.kind = "result"; reply.requestID = UUID().uuidString
             reply.sourceBundleID = researchTarget; reply.targetBundleID = GaoActionContract.bundleID
             reply.items = []; reply.references = []; reply.inReplyTo = researchSession.requestID
-            reply.status = status; reply.errorCode = ""; reply.provenance = ["workflowState":.string(status == "completed" ? "imported":"awaitingUser")]
+            reply.status = status; reply.errorCode = nil
+            reply.provenance = [
+                "requestManifestSHA256":.string(researchSession.manifestSHA256),
+                "workflowState":.string(status == "completed" ? "imported":status),
+                "sources":.array(researchSession.sources.map { source in
+                    .object(["sourceItemID":.string(source.item.id),"sourceSHA256":.string(source.item.sha256),
+                             "status":.string(status == "completed" ? "imported":status)])
+                })
+            ]
             mutate?(&reply)
             let package = root.appendingPathComponent(UUID().uuidString+".gaoaction",isDirectory:true)
             try GaoActionFixtures.write(manifest:reply,payload:[:],to:package)

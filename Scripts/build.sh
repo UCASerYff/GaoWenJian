@@ -1,10 +1,32 @@
 #!/bin/zsh
 set -euo pipefail
 PROJECT_DIR=${0:A:h:h}
+validate_app_destination() {
+  python3 - "$1" <<'PY'
+import os
+from pathlib import Path
+import sys
+
+destination = Path(sys.argv[1])
+if not destination.is_absolute() or destination.suffix != '.app' or os.path.lexists(destination):
+    raise SystemExit('需要不存在的绝对 .app 目标')
+destination = destination.resolve()
+if not any(parent.name.endswith('.noindex') and parent.is_dir() for parent in destination.parents):
+    raise SystemExit('App 导出目标必须位于实际存在的 .noindex 目录中')
+print(destination)
+PY
+}
+APP_ONLY_DESTINATION=''
+if [[ "${1:-}" == '--app-only' ]]; then
+  [[ $# == 2 ]] || { print -u2 '需要 --app-only 和一个目标路径'; exit 1; }
+  APP_ONLY_DESTINATION=$(validate_app_destination "$2")
+elif [[ $# != 0 ]]; then
+  print -u2 '仅支持无参数打包或 --app-only 目标路径'; exit 1
+fi
 APP_VERSION=$(tr -d '\n' < "$PROJECT_DIR/VERSION")
 BUILD_NUMBER=$(tr -d '\n' < "$PROJECT_DIR/BUILD")
 [[ "$APP_VERSION" =~ '^[0-9]+\.[0-9]{2}$' && "$BUILD_NUMBER" =~ '^[0-9]+$' ]] || { print -u2 '版本或构建号无效'; exit 1; }
-STAGING=$(mktemp -d /private/tmp/gaowenjian-build.XXXXXX)
+STAGING=$(python3 -c 'import tempfile; print(tempfile.mkdtemp(prefix="gaowenjian-build.", suffix=".noindex", dir="/private/tmp"))')
 trap 'rm -rf "$STAGING"' EXIT
 APP="$STAGING/搞文件.app"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
@@ -29,9 +51,9 @@ plutil -lint "$APP/Contents/Info.plist"
 codesign --force --sign - --identifier com.gaoseries.GaoWenJian.tectonic "$APP/Contents/Resources/Tools/tectonic"
 codesign --force --sign - --identifier com.gaoseries.GaoWenJian "$APP"
 codesign --verify --deep --strict "$APP"
-if [[ "${1:-}" == '--app-only' ]]; then
-  [[ $# == 2 && "$2" == /* && "$2" == *.app && ! -e "$2" ]] || { print -u2 '需要不存在的绝对 app 目标'; exit 1; }
-  ditto "$APP" "$2"; print "APP=$2"; exit 0
+if [[ -n "$APP_ONLY_DESTINATION" ]]; then
+  APP_ONLY_DESTINATION=$(validate_app_destination "$APP_ONLY_DESTINATION")
+  ditto "$APP" "$APP_ONLY_DESTINATION"; print "APP=$APP_ONLY_DESTINATION"; exit 0
 fi
 mkdir -p "$STAGING/disk" "$PROJECT_DIR/Release"
 ditto "$APP" "$STAGING/disk/搞文件.app"

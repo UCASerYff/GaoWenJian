@@ -24,6 +24,13 @@ import Darwin
             guard NSApp == nil else { throw FileIssue.message("Application initialized by headless suite " + name) }
             suites += 1
         }
+        if CommandLine.arguments.contains("--research-handoff-only") {
+            try suite("current text format") { try CurrentDocumentHandoffTests.runText(in: parent.appendingPathComponent("CurrentTextTests")) }
+            var receiptChecks = 0
+            try suite("research import receipts") { receiptChecks = try ResearchImportReceiptTests.run(in: parent.appendingPathComponent("ResearchReceiptTests")) }
+            print("PASS: focused research handoff checks; \(receiptChecks) receipt assertions; NSApp remained nil. No App, window or smoke test.")
+            return
+        }
         try suite("core") { try CoreTests.run() }
         try suite("Office models/recovery") { try runOfficeRoundTripTests() }
         try suite("Office readonly") { try runOfficeViewerTests() }

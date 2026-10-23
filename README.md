@@ -1,6 +1,6 @@
-# 搞文件 V1.08
+# 搞文件 V1.09
 
-以 LaTeX、Markdown 写作与编译为核心的 macOS 本地工作台，适用于 Apple Silicon、macOS 14 及以上。当前版本 **1.08 / build 9**，初始版本为 1.00。账户、联网同步和 AI 功能暂不开发。
+以 LaTeX、Markdown 写作与编译为核心的 macOS 本地工作台，适用于 Apple Silicon、macOS 14 及以上。当前版本 **1.09 / build 10**，初始版本为 1.00。账户、联网同步和 AI 功能暂不开发。
 
 | 文件 | 当前可用能力 |
 | --- | --- |
@@ -20,6 +20,8 @@
 V1.07 增加 OCR 输出格式选择（文字、Markdown、JSON、可搜索 PDF），JSON 正文核对实际输入与逐页关联；图片结果按 EXIF 方向核对 PDF 页面。接收标签可展开来源、输入及逐页状态。PDF 表单变化、撤销、恢复稿与发送前提交边界得到补强。新增“文件 → 导出编辑副本…”，兼容搞研究原条目人工导入新版本；尚不提供自动原附件回写。搞整理缺失时明确提示不可用；文件引用由本端重新授权，并明确选择原件或副本。
 
 V1.08 修复文档处理状态回执的兼容性：结果不再沿用请求参数，无错误时省略错误码，避免文档已打开而发送方仍等待结果。专项验收补充见 [验收记录](Docs/Acceptance-20261018.txt)。
+
+V1.09 修复无扩展名文本标题误触发 TXT 转换确认，并为研究导入回执增加原请求摘要、完整来源和状态校验。研究回执只报告导入状态，不能携带编辑附件或保存当前文稿；人工编辑副本仍由研究原条目审核导回。详见 [V1.09 回执约定](Docs/Interop-Handoff-V1.09.md)。
 
 具体接口与边界见 [交接说明](Docs/Interop-Handoff-V1.07.md) 及 [V1.08 回执补充](Docs/Interop-Handoff-V1.08.md)。
 
@@ -49,7 +51,7 @@ Office 版式预览取决于 macOS 对具体格式的支持；内容阅读模式
 
 ## 安装与运行
 
-安装包在 `Release/GaoWenJian-1.08.dmg`，也可从 [GitHub Releases](https://github.com/UCASerYff/GaoWenJian/releases) 下载。打开后将“搞文件”拖入 Applications。当前版本采用本地签名，未公证。默认安装位置 `/Applications/搞文件.app`。
+安装包在 `Release/GaoWenJian-1.09.dmg`，也可从 [GitHub Releases](https://github.com/UCASerYff/GaoWenJian/releases) 下载。打开后将“搞文件”拖入 Applications。当前版本采用本地签名，未公证。默认安装位置 `/Applications/搞文件.app`。
 
 快捷键：⌘1 首页、⌘O 打开、⌘N 新 Markdown、⇧⌘N 新桌面便笺、⌘2 便笺中心、⌘S 保存、⇧⌘S 文本另存 UTF-8、⌘F 文本查找、⌘B 当前 LaTeX 编译、⌘W 关闭当前标签或浮窗、⌘, 设置。
 
@@ -69,7 +71,7 @@ Scripts/build.sh
 
 `test-headless.sh` 使用临时资料副本并检查 `NSApp == nil`。可选 `--ocr-provider` 参数用于调用以提供方原始生产方法编译的无 GUI CLI；未提供时不声称运行了真实 OCR 后端往返。`--verify-data-copy` 只在新临时目录中核验指定备份的副本。
 
-构建临时目录自动清理。`Scripts/build.sh --app-only /private/tmp/新的测试程序.app` 可生成隔离测试 App；`--data-dir /private/tmp/隔离资料` 指定测试资料位置；`--show-notes` 直接显示便笺中心。
+构建在 `.noindex` 临时目录中进行，结束后自动清理。先建立 `.noindex` 临时目录，再使用 `Scripts/build.sh --app-only /private/tmp/搞文件测试.noindex/新的测试程序.app` 可导出隔离测试 App；目标须为不存在的绝对 `.app` 路径，并位于实际 `.noindex` 目录中。`--data-dir /private/tmp/搞文件测试.noindex/隔离资料` 指定测试资料位置；`--show-notes` 直接显示便笺中心。
 
 安全安装：
 

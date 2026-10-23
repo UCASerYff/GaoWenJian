@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "bundleID": "com.gaoseries.GaoWenJian",
-  "appVersion": "1.08",
+  "appVersion": "1.09",
   "actions": [
     {
       "action": "documents.open",

@@ -5,6 +5,7 @@ import PDFKit
 enum CurrentDocumentHandoffTests {
     @MainActor static func run(in directory: URL) throws {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        try runText(in: directory.appendingPathComponent("Text"))
         let source = directory.appendingPathComponent("即时 表单.pdf")
         let sourceBytes = try fixture()
         try sourceBytes.write(to: source)
@@ -85,6 +86,82 @@ enum CurrentDocumentHandoffTests {
         try check(weakModel == nil && (try registry.currentPDF(for: weakSource)) == nil, "Registry never retains closed models")
         model.discardDraft()
         print("Current PDF handoff: live-model capture, immediate form commit, aliases, weak lifecycle, ambiguity, original/recovery/undo preservation, failed export and external conflicts passed")
+    }
+
+    /// Focused text regression; callable without the unrelated PDF or UI suites.
+    @MainActor static func runText(in directory: URL) throws {
+        try check(NSApp == nil, "Text handoff starts without an application")
+        try check(CommandLine.arguments.contains("--data-dir") && FileSafety.root.path.hasPrefix("/private/tmp/gaowenjian-"),
+                  "Text handoff tests require isolated temporary app data")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let store = WorkspaceStore()
+        store.tabs = []; store.selection = nil
+        let now = Date(timeIntervalSince1970: 1_792_020_000)
+        let fixtures: [(kind: FileKind, title: String, convert: Bool, suffix: String, uti: String)] = [
+            (.text, "没有扩展名的纯文本", false, ".txt", "public.utf8-plain-text"),
+            (.markdown, "没有扩展名的 Markdown", false, ".md", "net.daringfireball.markdown"),
+            (.csv, "没有扩展名的表格", false, ".csv", "public.utf8-plain-text"),
+            (.latex, "没有扩展名的 LaTeX", true, ".txt", "public.utf8-plain-text"),
+            (.latex, "真实源码.tex", true, ".tex.txt", "public.utf8-plain-text"),
+            (.text, "真实源码.swift", true, ".swift.txt", "public.utf8-plain-text"),
+            (.text, "未知源码.custom", true, ".custom.txt", "public.utf8-plain-text"),
+            (.text, "已知文本.TXT", false, ".TXT", "public.utf8-plain-text")
+        ]
+        for (index, fixture) in fixtures.enumerated() {
+            let initial = "磁盘或收到的原始文字 \(index)\n"
+            var original: URL?
+            if fixture.title.hasSuffix(".swift") {
+                let url = directory.appendingPathComponent(fixture.title)
+                try Data(initial.utf8).write(to: url)
+                store.open(url); original = url
+            } else if index == 0 {
+                let incoming = IncomingDocument(requestID: UUID().uuidString, itemID: "text", sourceBundleID: "com.gaoseries.Fixture",
+                                                type: "text", receivedAt: GaoActionContract.timestamp(now),
+                                                contentSHA256: FileSafety.digest(Data(initial.utf8)), originalName: "input.txt")
+                _ = try store.newHandoffText(initial, markdown: false, title: fixture.title, incoming: incoming)
+            } else {
+                store.newText(fixture.kind, text: initial)
+                store.active?.suggestedTitle = fixture.title
+            }
+            guard let tab = store.active else { throw FileIssue.message("Missing text handoff fixture") }
+            let current = fixture.kind == .latex ? "\\documentclass{article}\n\\begin{document}当前源码 α\\end{document}\n" : "当前未保存文字 \(index) α 😀\n"
+            tab.edited(current); store.checkpoint()
+            let recovery = FileSafety.root.appendingPathComponent("recovery.json")
+            let recoveryBefore = try Data(contentsOf: recovery)
+            let incomingBefore = tab.incoming
+            // sendCurrent uses this same predicate to present the TXT consent.
+            try check(CurrentDocumentDispatcher.usesPlainTextCopy(tab) == fixture.convert,
+                      "Only unsupported source formats require TXT consent: " + fixture.title)
+            var pdfChoices = 0
+            let prepared = try CurrentDocumentDispatcher.prepare(store: store, registry: CurrentDocumentHandoffRegistry(),
+                chooseVersion: { _ in pdfChoices += 1; return .cancel }, now: now)
+            try check(pdfChoices == 0, "Text handoff never requests a PDF version")
+            let request = try JSONDecoder().decode(GaoActionManifest.self, from: Data(contentsOf: prepared.packageURL.appendingPathComponent("manifest.json")))
+            try check(request.action == "research.importDocuments" && request.targetBundleID == CurrentDocumentDispatcher.researchBundleID
+                      && request.items.count == 1 && request.references.isEmpty, "Text uses the actual research request contract")
+            let item = request.items[0]
+            let bytes = Data(current.utf8)
+            try check(item.relativePath.hasSuffix(fixture.suffix) && item.uti == fixture.uti,
+                      "Snapshot suffix and UTI reflect the delivered format: " + fixture.title)
+            try check(try Data(contentsOf: prepared.packageURL.appendingPathComponent(item.relativePath)) == bytes
+                      && item.sha256 == FileSafety.digest(bytes) && item.byteCount == Int64(bytes.count), "Wire payload binds the exact current UTF-8 bytes")
+            let received = try GaoActionTransport.receive(packageURL: prepared.packageURL, exchangeRoot: GaoHandoffService.exchangeRoot,
+                expectedTargetBundleID: CurrentDocumentDispatcher.researchBundleID, now: now)
+            try check(received.stagedItems.count == 1 && (try Data(contentsOf: received.stagedItems[0].url)) == bytes,
+                      "Real transport reads the named payload without a hidden format conversion")
+            try check(try DocumentHandoffSafety.review(received.stagedItems[0].url, declaredUTI: item.uti, verifiedStaging: true).isText,
+                      "Delivered extension and UTI pass the document safety contract")
+            let retained = try GaoOutgoingJournal(exchangeRoot: GaoHandoffService.exchangeRoot).sourceURL(requestID: prepared.session.requestID, itemID: item.id)
+            try check(try Data(contentsOf: retained) == bytes && prepared.session.sources[0].binding.versionKind == "currentEdits"
+                      && prepared.session.phase == .prepared, "Journal retains this current version without claiming research completion")
+            try check(tab.text == current && tab.dirty && tab.url == original && tab.incoming == incomingBefore
+                      && (try Data(contentsOf: recovery)) == recoveryBefore, "Text handoff preserves unsaved state, origin and recovery bytes")
+            if let original {
+                try check(try Data(contentsOf: original) == Data(initial.utf8), "Source conversion never overwrites the original")
+            }
+        }
+        try check(NSApp == nil, "Text handoff never creates an application or window")
+        print("Current text handoff: extensionless text/Markdown/CSV, source TXT consent, exact suffix/UTI/payload, real transport, original/recovery/dirty state passed")
     }
 
     private static func fixture() throws -> Data {

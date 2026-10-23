@@ -461,7 +461,11 @@ typealias PreparedOCRHandoff = PreparedDocumentHandoff
     static let researchBundleID="com.academic-achievement.manager"
     private static let researchFormats:Set<String>=["doc","docx","xls","xlsx","csv","tsv","ppt","pptx","pdf","md","markdown","txt","rtf","json","xml","yaml","yml","png","jpg","jpeg","heic","tif","tiff"]
     static func usesPlainTextCopy(_ tab:FileSession)->Bool {
-        tab.kind.isText && !researchFormats.contains(URL(fileURLWithPath:tab.title).pathExtension.lowercased())
+        let titleExtension=URL(fileURLWithPath:tab.title).pathExtension.lowercased()
+        // A handoff title is optional metadata, not evidence of an unknown
+        // source format. Only absent extensions use the editor's known format.
+        let sourceExtension=titleExtension.isEmpty ? tab.suggestedExtension:titleExtension
+        return tab.kind.isText && !researchFormats.contains(sourceExtension)
     }
 
     static func prepare(store:WorkspaceStore,registry:CurrentDocumentHandoffRegistry? = nil,chooseVersion:(URL)->OCRPDFVersion,now:Date=Date()) throws -> PreparedDocumentHandoff {

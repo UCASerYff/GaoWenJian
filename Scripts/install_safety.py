@@ -186,9 +186,13 @@ def load_manifest(path):
         manifest = json.load(stream)
     if manifest.get("bundle_id") != BUNDLE or manifest.get("format") != 1:
         fail("不是搞文件的安装记录。")
+    nonce = manifest.get("nonce")
+    if not isinstance(nonce, str) or not re.fullmatch(r"[0-9a-f]{32}", nonce):
+        fail("安装记录中的事务标识无效。")
     target = Path(manifest["target_app"])
     stage = Path(manifest["stage_dir"])
-    if target.name != APP_NAME or stage.parent != target.parent or stage.name != ".gaowenjian-install-" + manifest["nonce"]:
+    expected_stage = ".gaowenjian-install-" + nonce
+    if target.name != APP_NAME or stage.parent != target.parent or stage.name not in (expected_stage, expected_stage + ".noindex"):
         fail("安装记录中的路径校验失败。")
     if Path(manifest["manifest_path"]) != path.resolve():
         fail("安装记录已移位，禁止清理未核验路径。")
@@ -278,7 +282,7 @@ def install(args):
         transaction = backup_root / ("安装-" + stamp + "-" + nonce[:8])
         transaction.mkdir(mode=0o700)
         path = transaction / "manifest.json"
-        stage = target.parent / (".gaowenjian-install-" + nonce)
+        stage = target.parent / (".gaowenjian-install-" + nonce + ".noindex")
         stage.mkdir(mode=0o700)
         candidate = stage / "candidate.app"
         previous = stage / "previous.app"

@@ -1,5 +1,5 @@
 #!/usr/bin/python3
-"""Installer regression tests use only a fresh system-temporary directory."""
+"""Installer regression tests use only a fresh unindexed temporary directory."""
 import json
 from pathlib import Path
 import plistlib
@@ -34,23 +34,24 @@ def fixture(path, version, payload, bundle=BUNDLE):
 def main():
     spec = importlib.util.spec_from_file_location("install_safety", PROJECT / "Scripts/install_safety.py")
     installer = importlib.util.module_from_spec(spec); spec.loader.exec_module(installer)
-    own = "bundle id: fixture\npath: /tmp/previous.app (0x123)\nidentifier: " + BUNDLE + "\n"
-    other = "bundle id: other\npath: /tmp/other.app (0x124)\nidentifier: com.example.Other\n"
-    assert installer.registered_paths(own + other) == {"/tmp/previous.app"}
+    registered_fixture = "/tmp/GaoFiles-RegistryFixture.noindex/previous.app"
+    own = "bundle id: fixture\npath: " + registered_fixture + " (0x123)\nidentifier: " + BUNDLE + "\n"
+    other = "bundle id: other\npath: /tmp/GaoFiles-RegistryFixture.noindex/other.app (0x124)\nidentifier: com.example.Other\n"
+    assert installer.registered_paths(own + other) == {registered_fixture}
     with mock.patch.object(installer, "run", return_value=other) as command:
-        installer.register(Path("/tmp/previous.app"), False, remove=True)
+        installer.register(Path(registered_fixture), False, remove=True)
         assert command.call_count == 1  # Unregistered transaction copy: query only.
     with mock.patch.object(installer, "run", side_effect=[own, ""]) as command:
-        installer.register(Path("/tmp/previous.app"), False, remove=True)
-        assert command.call_args_list[-1].args[0] == [installer.LSREGISTER, "-u", "/tmp/previous.app"]
+        installer.register(Path(registered_fixture), False, remove=True)
+        assert command.call_args_list[-1].args[0] == [installer.LSREGISTER, "-u", registered_fixture]
     with mock.patch.object(installer, "run", side_effect=[own, RuntimeError("cannot unregister")]):
-        try: installer.register(Path("/tmp/previous.app"), False, remove=True)
+        try: installer.register(Path(registered_fixture), False, remove=True)
         except RuntimeError: pass
         else: raise AssertionError("A real registration failure must stop cleanup")
     try: installer.registered_paths("")
     except RuntimeError: pass
     else: raise AssertionError("Unreadable registry must not become empty")
-    root = Path(tempfile.mkdtemp(prefix="GaoFiles-InstallTests-")).resolve()
+    root = Path(tempfile.mkdtemp(prefix="GaoFiles-InstallTests-", suffix=".noindex", dir="/private/tmp")).resolve()
     try:
         source = root / "new/搞文件.app"
         fixture(source, "1.00", b"initial candidate")
@@ -63,7 +64,28 @@ def main():
 
         def install():
             output = invoke(args)
-            return Path(next(line[len("MANIFEST="):] for line in output.splitlines() if line.startswith("MANIFEST=")))
+            path = Path(next(line[len("MANIFEST="):] for line in output.splitlines() if line.startswith("MANIFEST=")))
+            record = json.loads(path.read_text())
+            stage = Path(record["stage_dir"])
+            assert stage == target.parent / (".gaowenjian-install-" + record["nonce"] + ".noindex")
+            assert stage.is_dir()
+            before = path.read_bytes()
+            assert installer.load_manifest(path) == record and path.read_bytes() == before
+            return path
+
+        def legacy_stage_fixture(path):
+            # Convert only this fresh simulated transaction into the historical
+            # directory spelling. Production must read old pointers in place.
+            record = json.loads(path.read_text())
+            stage = Path(record["stage_dir"])
+            legacy_stage = stage.with_name(".gaowenjian-install-" + record["nonce"])
+            stage.rename(legacy_stage)
+            record["stage_dir"] = str(legacy_stage)
+            path.write_text(json.dumps(record))
+            before = path.read_bytes()
+            assert installer.load_manifest(path) == record
+            assert path.read_bytes() == before  # No pointer rewrite on load.
+            return record
 
         # First install explicitly records missing data and preferences.
         manifest_path = install()
@@ -71,17 +93,26 @@ def main():
         assert manifest["state"] == "installed_pending_verification"
         assert manifest["backups"]["data"]["inventory"]["state"] == "missing"
         assert manifest["backups"]["preferences"]["inventory"]["state"] == "missing"
+        original_manifest = manifest_path.read_bytes()
+        for invalid_nonce in (None, "", "../outside", "g" * 32):
+            invalid = dict(manifest, nonce=invalid_nonce)
+            manifest_path.write_text(json.dumps(invalid))
+            invoke([FINALIZE, "--manifest", manifest_path, "--verified"], expected=1)
+            assert target.exists() and Path(manifest["stage_dir"]).is_dir()
+        manifest_path.write_bytes(original_manifest)
         invoke([FINALIZE, "--manifest", manifest_path, "--rollback"])
         assert not target.exists()
         assert not Path(manifest["stage_dir"]).exists()
         assert manifest_path.exists()
 
-        # Verify a successful first install removes staging, and keeps the manifest.
+        # A historical pending install can still finalize without moving pointers.
         manifest_path = install()
-        manifest = json.loads(manifest_path.read_text())
+        manifest = legacy_stage_fixture(manifest_path)
         invoke([FINALIZE, "--manifest", manifest_path, "--verified"])
         assert target.exists() and not Path(manifest["stage_dir"]).exists()
-        assert json.loads(manifest_path.read_text())["state"] == "verified"
+        finalized = json.loads(manifest_path.read_text())
+        assert finalized["state"] == "verified" and finalized["stage_dir"] == manifest["stage_dir"]
+        assert finalized["backups"] == manifest["backups"]
 
         # An update backs up attachments and preferences byte-for-byte.
         (data / "attachments/nested").mkdir(parents=True)
@@ -92,7 +123,7 @@ def main():
         shutil.rmtree(source)
         fixture(source, "1.01", b"updated candidate")
         manifest_path = install()
-        manifest = json.loads(manifest_path.read_text())
+        manifest = legacy_stage_fixture(manifest_path)
         previous = Path(manifest["stage_dir"]) / "previous.app"
         assert previous.exists()
         assert (previous / "Contents/MacOS/GaoWenJian").read_bytes() == b"initial candidate"
@@ -103,6 +134,8 @@ def main():
         invoke([FINALIZE, "--manifest", manifest_path, "--rollback"])
         assert (target / "Contents/MacOS/GaoWenJian").read_bytes() == b"initial candidate"
         assert preferences.read_bytes() == prefs and (data / "database.sqlite").exists()
+        rolled_back = json.loads(manifest_path.read_text())
+        assert rolled_back["stage_dir"] == manifest["stage_dir"] and rolled_back["backups"] == manifest["backups"]
 
         # Verification is explicit; a non-GUI update can require unchanged real data.
         manifest_path = install()
@@ -133,7 +166,7 @@ def main():
         (Path(manifest["backups"]["data"]["backup_path"]) / "database.sqlite").write_bytes(b"damaged backup")
         invoke([FINALIZE, "--manifest", manifest_path, "--verified"], expected=1)
         assert (Path(manifest["stage_dir"]) / "previous.app").exists()
-        print("Install tests passed: missing records, initial install, update backups, nested attachments, preferences, rollback, verified cleanup, wrong bundle rejection, unresolved data rejection and damaged backup protection.")
+        print("Install tests passed: unindexed staging, historical manifest finalize/rollback without pointer rewrites, invalid transaction rejection, missing records, initial install, update backups, nested attachments, preferences, rollback, verified cleanup, wrong bundle rejection, unresolved data rejection and damaged backup protection; no App launch or system registration.")
     finally:
         shutil.rmtree(root)
 
