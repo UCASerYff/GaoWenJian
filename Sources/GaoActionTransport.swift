@@ -188,12 +188,7 @@ enum GaoActionTransport {
         if let modified = identity.modifiedAt {
             guard let expected = GaoActionContract.date(modified) else { throw GaoActionContract.reject("invalidReference","原件修改时间无效。") }
             let actual = Date(timeIntervalSince1970:Double(s.st_mtimespec.tv_sec) + Double(s.st_mtimespec.tv_nsec)/1_000_000_000)
-            // V1 senders may serialize whole seconds only. Compare that exact
-            // declared second, without accepting a neighbouring second through
-            // a wider tolerance. Fractional declarations keep the existing bound.
-            let matches = modified.contains(".") ? abs(actual.timeIntervalSince(expected)) < 0.001
-                : Double(s.st_mtimespec.tv_sec) == expected.timeIntervalSince1970
-            guard matches else { throw GaoActionContract.reject("referenceChanged","原件修改时间已变化，请重新发送。") }
+            guard abs(actual.timeIntervalSince(expected)) < 0.001 else { throw GaoActionContract.reject("referenceChanged","原件修改时间已变化，请重新发送。") }
         }
         if let volume = identity.volumeUUID {
             guard (try selectedURL.resourceValues(forKeys:[.volumeUUIDStringKey])).volumeUUIDString == volume else { throw GaoActionContract.reject("referenceChanged","原件所在卷已变化。") }

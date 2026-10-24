@@ -318,8 +318,9 @@ final class GaoHandoffCancellation: @unchecked Sendable {
         let file=try GaoPrivateIO.regularURL(url),state=try file.statValue()
         let volume=try url.resourceValues(forKeys:[.volumeUUIDStringKey]).volumeUUIDString
         let modified=Date(timeIntervalSince1970:Double(state.st_mtimespec.tv_sec)+Double(state.st_mtimespec.tv_nsec)/1_000_000_000)
+        let formatter=ISO8601DateFormatter();formatter.formatOptions=[.withInternetDateTime,.withFractionalSeconds]
         return GaoActionReference(id:UUID().uuidString,kind:"file",fileURL:url.standardizedFileURL.absoluteString,
-            displayName:url.lastPathComponent,declaredIdentity:.init(volumeUUID:volume,device:UInt64(state.st_dev),inode:UInt64(state.st_ino),byteCount:state.st_size,modifiedAt:GaoActionContract.timestamp(modified)))
+            displayName:url.lastPathComponent,declaredIdentity:.init(volumeUUID:volume,device:UInt64(state.st_dev),inode:UInt64(state.st_ino),byteCount:state.st_size,modifiedAt:formatter.string(from:modified)))
     }
 }
 
