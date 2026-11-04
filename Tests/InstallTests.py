@@ -147,7 +147,8 @@ def main():
         invoke([FINALIZE, "--manifest", manifest_path, "--verified", "--require-unchanged-data", "--verification-note", "isolated tests and static install verification; no smoke test"])
         checked = json.loads(manifest_path.read_text())
         assert checked["unchanged_data_verified"] is True and "no smoke test" in checked["verification_note"]
-        assert not Path(manifest["stage_dir"]).exists()
+        assert (Path(manifest["stage_dir"]) / "previous.app").exists()
+        assert checked["retained_previous_program"]["program_path"] == str(Path(manifest["stage_dir"]) / "previous.app")
         assert Path(manifest["backups"]["data"]["backup_path"]).exists()
         assert (target / "Contents/MacOS/GaoWenJian").read_bytes() == b"updated candidate"
 

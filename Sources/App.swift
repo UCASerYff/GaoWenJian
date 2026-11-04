@@ -26,6 +26,20 @@ import UniformTypeIdentifiers
         _store=StateObject(wrappedValue:model)
         _stickyNotes=StateObject(wrappedValue:notes)
         AppHub.store=model;AppHub.stickyNotes=notes
+        OrganizerActionProvider.indexSearch = { [weak model] query, scope in
+            guard let model else {throw FileIssue.message("写作工作区不可用。")}
+            model.organizerHost.loadExisting()
+            guard let organizer=model.organizerHost.model,organizer.fatalError == nil else {
+                throw FileIssue.message("请先打开“文件整理 / 查找”，导入旧资料或新建资料库，并通过系统面板授权目录。")
+            }
+            return try organizer.providerSearch(query:query,scope:scope)
+        }
+        OrganizerActionProvider.manageAssociations = { [weak model] uti, completion in
+            guard let model,!model.organizerHost.isMoving else{return false}
+            model.showOrganizer();model.organizerHost.loadExisting()
+            guard let organizer=model.organizerHost.model,organizer.fatalError == nil else{return false}
+            return organizer.requestAssociation(uti:uti,completion:completion)
+        }
         AppHub.stickyWindows=StickyNotesWindowManager(store:notes)
         NSColorPanel.shared.showsAlpha=true
         let appearance=UserDefaults.standard.string(forKey:"appAppearance") ?? "system"
@@ -45,8 +59,8 @@ import UniformTypeIdentifiers
                 Button("打开文件…",action:store.openPanel).keyboardShortcut("o")
                 Button("打开文件夹…",action:store.openFolderPanel).keyboardShortcut("o",modifiers:[.command,.shift])
                 Button("识别扫描件/图片 (OCR)…"){OCRHandoffDispatcher.startOCR(store:store)}
-                Button("从搞整理选择文档…"){OCRHandoffDispatcher.chooseDocuments(store:store)}
-                Button("将当前文档副本交给搞研究…"){CurrentDocumentDispatcher.sendCurrent(store:store)}.disabled(store.active == nil || store.showingNotes)
+                Button("选择本机文档…"){OCRHandoffDispatcher.chooseDocuments(store:store)}
+                Button("将当前文档副本交给搞研究…"){CurrentDocumentDispatcher.sendCurrent(store:store)}.disabled(store.active == nil || store.showingOrganizer || store.showingNotes)
                 Button("取消当前文档交接"){GaoHandoffService.cancelCurrent()}.disabled(!store.handoffBusy)
                 Menu("新建其他格式"){
                     Button("CSV 表格"){store.newText(.csv,text:"名称,数值,备注\n项目,0,\n")};Button("纯文本"){store.newText(.text)}
@@ -55,24 +69,26 @@ import UniformTypeIdentifiers
             CommandGroup(replacing:.saveItem){
                 Button("保存"){
                     if store.showingNotes || AppHub.isStickyWindow {_=AppHub.saveStickyNotes()}
-                    else if let active=store.active{store.save(active)}
-                }.keyboardShortcut("s").disabled(store.active?.kind.canSave != true && !store.showingNotes && !AppHub.isStickyWindow)
-                Button("另存为…"){guard !store.showingNotes && !AppHub.isStickyWindow else{return};if let active=store.active{store.save(active,asCopy:true)}}.keyboardShortcut("s",modifiers:[.command,.shift]).disabled(store.active?.kind.isText != true || store.showingNotes || AppHub.isStickyWindow)
-                Button("导出编辑副本…"){EditedDocumentExporter.showPanel(store:store)}.disabled(store.active == nil || store.showingNotes || AppHub.isStickyWindow)
+                    else if !store.showingOrganizer,let active=store.active{store.save(active)}
+                }.keyboardShortcut("s").disabled((store.showingOrganizer && !AppHub.isStickyWindow) || (store.active?.kind.canSave != true && !store.showingNotes && !AppHub.isStickyWindow))
+                Button("另存为…"){guard !store.showingOrganizer && !store.showingNotes && !AppHub.isStickyWindow else{return};if let active=store.active{store.save(active,asCopy:true)}}.keyboardShortcut("s",modifiers:[.command,.shift]).disabled(store.active?.kind.isText != true || store.showingOrganizer || store.showingNotes || AppHub.isStickyWindow)
+                Button("导出编辑副本…"){EditedDocumentExporter.showPanel(store:store)}.disabled(store.active == nil || store.showingOrganizer || store.showingNotes || AppHub.isStickyWindow)
             }
             CommandGroup(after:.pasteboard){Button("查找…"){NSApp.sendAction(#selector(NSTextView.performFindPanelAction(_:)),to:nil,from:FindSender())}.keyboardShortcut("f")}
             CommandMenu("工作区"){
                 Button("返回首页"){store.showHome();openWindow(id:"main");NSApp.activate(ignoringOtherApps:true)}.keyboardShortcut("1")
+                Button("文件整理 / 查找"){store.showOrganizer();openWindow(id:"main")}.keyboardShortcut("3")
                 Divider()
-                Button("编译当前 LaTeX"){guard !store.showingNotes && !AppHub.isStickyWindow else{return};if let active=store.active,store.save(active),let url=active.url{NotificationCenter.default.post(name:Notification.Name("GaoWenJian.compileActive"),object:url.path)}}.keyboardShortcut("b").disabled(store.active?.kind != .latex || store.showingNotes || AppHub.isStickyWindow)
+                Button("编译当前 LaTeX"){guard !store.showingOrganizer && !store.showingNotes && !AppHub.isStickyWindow else{return};if let active=store.active,store.save(active),let url=active.url{NotificationCenter.default.post(name:Notification.Name("GaoWenJian.compileActive"),object:url.path)}}.keyboardShortcut("b").disabled(store.active?.kind != .latex || store.showingOrganizer || store.showingNotes || AppHub.isStickyWindow)
                 Button("关闭当前标签或便笺"){
                     if AppHub.isStickyWindow{NSApp.keyWindow?.performClose(nil)}
                     else if NSApp.keyWindow?.title.hasPrefix("搞文件 V") != true {NSApp.keyWindow?.performClose(nil)}
+                    else if store.showingOrganizer{store.showHome()}
                     else if store.showingNotes{NSApp.keyWindow?.makeFirstResponder(nil);store.showingNotes=false}
                     else if let active=store.active{store.close(active)}
                 }.keyboardShortcut("w")
-                Button("文件历史…",action:store.showHistory).disabled(store.active?.url==nil)
-                Button("在 Finder 显示"){if let url=store.active?.url{NSWorkspace.shared.activateFileViewerSelecting([url])}}.disabled(store.active?.url==nil)
+                Button("文件历史…",action:store.showHistory).disabled(store.showingOrganizer || store.active?.url==nil)
+                Button("在 Finder 显示"){if let url=store.active?.url{NSWorkspace.shared.activateFileViewerSelecting([url])}}.disabled(store.showingOrganizer || store.active?.url==nil)
                 Divider();Button("显示主窗口"){openWindow(id:"main");NSApp.activate(ignoringOtherApps:true)}.keyboardShortcut("0")
             }
             CommandMenu("便笺"){
@@ -127,6 +143,10 @@ final class FindSender:NSObject { @objc var tag:Int {Int(NSFindPanelAction.showF
     func applicationShouldHandleReopen(_ sender:NSApplication,hasVisibleWindows flag:Bool)->Bool{reopen?();return true}
     func applicationShouldTerminate(_ sender:NSApplication)->NSApplication.TerminateReply{
         sender.keyWindow?.makeFirstResponder(nil)
+        if (store ?? AppHub.store)?.organizerHost.blocksQuit == true {
+            let alert=NSAlert();alert.messageText="整理资料操作尚未结束";alert.informativeText="请等待本次物理整理、核验备份或系统关联修改结束，再核对记录并退出。";alert.addButton(withTitle:"返回整理");alert.runModal()
+            return .terminateCancel
+        }
         guard (store ?? AppHub.store)?.prepareToQuit() != false else{return .terminateCancel}
         guard AppHub.stickyWindows?.prepareToQuit() != false else {
             let alert=NSAlert();alert.messageText="便笺尚未保存，已取消退出"
@@ -134,6 +154,7 @@ final class FindSender:NSObject { @objc var tag:Int {Int(NSFindPanelAction.showF
             alert.addButton(withTitle:"返回编辑");alert.runModal()
             return .terminateCancel
         }
+        AppHub.store?.organizerHost.shutdown()
         return .terminateNow
     }
 }

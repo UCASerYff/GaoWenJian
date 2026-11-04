@@ -24,6 +24,12 @@ import Darwin
             guard NSApp == nil else { throw FileIssue.message("Application initialized by headless suite " + name) }
             suites += 1
         }
+        if CommandLine.arguments.contains("--ocr-provider-routing-only") {
+            var assertions = 0
+            try suite("OCR canonical owner and legacy fences") { assertions = try OCRProviderRoutingTests.run(in:parent.appendingPathComponent("OCRRoutingTests")) }
+            print("PASS: focused OCR provider routing; \(assertions) assertions; NSApp remained nil. No provider App/window or smoke test.")
+            return
+        }
         if CommandLine.arguments.contains("--research-handoff-only") {
             try suite("current text format") { try CurrentDocumentHandoffTests.runText(in: parent.appendingPathComponent("CurrentTextTests")) }
             var receiptChecks = 0

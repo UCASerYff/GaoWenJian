@@ -27,6 +27,7 @@ import ImageIO
                 outputs: formats, chooseVersion: { _ in .diskOriginal }, now: now)
         }
         let standard = try OCRHandoffDispatcher.prepare(files: [first], store: store, registry: registry, chooseVersion: { _ in .diskOriginal }, now: now)
+        try check(try manifest(standard.packageURL).targetBundleID == "com.gaoseries.GaoCaoZuo" && standard.session.targetBundleID == "com.gaoseries.GaoCaoZuo", "New OCR request and expected result provider both use the integrated operation host")
         try check(try manifest(standard.packageURL).parameters["outputs"]?.arrayValue?.compactMap(\.stringValue) == ["text", "searchablePDF"], "Default text+PDF remains compatible")
         for format in ["text", "markdown", "json", "searchablePDF"] {
             let request = try prepare([first], [format])

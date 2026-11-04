@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "bundleID": "com.gaoseries.GaoWenJian",
-  "appVersion": "1.09",
+  "appVersion": "1.10",
   "actions": [
     {
       "action": "documents.open",
@@ -22,6 +22,151 @@
         },
         "additionalProperties": false
       }
+    },
+    {
+      "action": "files.search",
+      "parametersSchema": {
+        "type": "object",
+        "properties": {
+          "query": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096
+          }
+        },
+        "required": [
+          "query"
+        ],
+        "additionalProperties": false
+      },
+      "supportsItems": false,
+      "supportsReferences": true,
+      "referencesSchema": {
+        "type": "array",
+        "maxItems": 1,
+        "items": {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "enum": [
+                "directory"
+              ]
+            }
+          },
+          "additionalProperties": true
+        }
+      },
+      "selectionModes": [
+        "references"
+      ],
+      "resultModes": [
+        "references"
+      ],
+      "requiresUserConfirmation": true,
+      "maximumItems": 256,
+      "maximumPayloadBytes": 2147483648,
+      "requestTTLSeconds": 120
+    },
+    {
+      "action": "files.choose",
+      "parametersSchema": {
+        "type": "object",
+        "properties": {
+          "allowedUTIs": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 64,
+            "items": {
+              "type": "string",
+              "maxLength": 256
+            }
+          },
+          "multiple": {
+            "type": "boolean"
+          }
+        },
+        "additionalProperties": false
+      },
+      "supportsItems": false,
+      "supportsReferences": true,
+      "referencesSchema": {
+        "type": "array",
+        "maxItems": 1,
+        "items": {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "enum": [
+                "directory"
+              ]
+            }
+          },
+          "additionalProperties": true
+        }
+      },
+      "selectionModes": [
+        "references"
+      ],
+      "resultModes": [
+        "references"
+      ],
+      "requiresUserConfirmation": true,
+      "maximumItems": 256,
+      "maximumPayloadBytes": 2147483648,
+      "requestTTLSeconds": 120
+    },
+    {
+      "action": "files.reveal",
+      "parametersSchema": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      },
+      "supportsItems": false,
+      "supportsReferences": true,
+      "referencesSchema": {
+        "type": "array",
+        "minItems": 1,
+        "maxItems": 1,
+        "items": {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "enum": [
+                "file",
+                "directory",
+                "application"
+              ]
+            }
+          },
+          "additionalProperties": true
+        }
+      },
+      "requiresUserConfirmation": true,
+      "maximumItems": 1,
+      "requestTTLSeconds": 120
+    },
+    {
+      "action": "associations.manage",
+      "parametersSchema": {
+        "type": "object",
+        "properties": {
+          "uti": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          }
+        },
+        "additionalProperties": false
+      },
+      "supportsItems": false,
+      "supportsReferences": false,
+      "requiresUserConfirmation": true,
+      "maximumItems": 0,
+      "requestTTLSeconds": 120
     }
   ]
 }

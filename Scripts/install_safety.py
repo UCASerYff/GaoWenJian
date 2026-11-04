@@ -2,10 +2,12 @@
 """Verified local install transactions. Never migrates, deletes, or restores user data."""
 import argparse
 import contextlib
+import ctypes
 import datetime
 import decimal
 import fcntl
 import hashlib
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -17,6 +19,7 @@ import subprocess
 import sys
 import tempfile
 import uuid
+sys.dont_write_bytecode = True
 
 BUNDLE = "com.gaoseries.GaoWenJian"
 APP_NAME = "搞文件.app"
@@ -25,6 +28,235 @@ PROJECT = Path(__file__).resolve().parent.parent
 DEFAULT_DATA = Path.home() / "Library/Application Support/GaoSeries/GaoWenJian"
 DEFAULT_PREFS = Path.home() / "Library/Preferences" / (BUNDLE + ".plist")
 LSREGISTER = "/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
+_NATIVE = None
+
+
+def native_state():
+    global _NATIVE
+    if _NATIVE is None:
+        spec = importlib.util.spec_from_file_location("gaowenjian_receiver_native", Path(__file__).with_name("receiver_native_state.py"))
+        _NATIVE = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(_NATIVE)
+    return _NATIVE
+
+
+def exclusive_private(path, data):
+    with Path(path).open("xb") as stream:
+        os.chmod(path, 0o600)
+        stream.write(data); stream.flush(); os.fsync(stream.fileno())
+    with native_state().directory_fd(Path(path).parent, read=True) as fd:
+        os.fsync(fd)
+
+
+def native_program_evidence(app):
+    info = app_info(app)
+    state = native_state().no_materialization(lambda: native_state().full_state(Path(app)))()
+    root = state["metadata"][""]["stat"]
+    return {"identity": {"path": str(app), "identity": ":".join(map(str, (root[0], root[1], root[3]))),
+                         "bundleID": BUNDLE, "exe": info["CFBundleExecutable"],
+                         "version": info.get("CFBundleShortVersionString"), "build": info.get("CFBundleVersion")},
+            "fullNativeOriginalState": state}
+
+
+def program_binding(manifest):
+    keys = ("format", "bundle_id", "nonce", "version", "build", "target_app", "stage_dir", "manifest_path", "had_previous", "simulate", "data_root", "preferences", "backup_root", "backups", "candidate_inventory", "previous_inventory")
+    return {key: manifest.get(key) for key in keys}
+
+
+def program_signature_evidence(app, simulate):
+    verify_signature(app, simulate)
+    if simulate:
+        return {"simulated": True, "notARealSignatureVerification": True}
+    result = {}
+    for label, args in (("details", ["-d", "--verbose=4"]), ("requirements", ["-d", "-r-"]), ("entitlements", ["-d", "--entitlements", "-", "--xml"])):
+        p = subprocess.run(["/usr/bin/codesign", *args, str(app)], capture_output=True)
+        if p.returncode:
+            fail("无法记录旧接收方原签名，未保留为已核验备份。")
+        result[label] = {"stdout": p.stdout.decode("utf-8", errors="strict"), "stderr": p.stderr.decode("utf-8", errors="strict")}
+    return result
+
+
+def retention_paths(path):
+    root = path.parent / "ProgramRecovery.noindex"
+    return root, root / "retention.json"
+
+
+def verify_program_retention(manifest, path, require_pointer=True, require_formal_anchor=True, program_location=None):
+    native = native_state()
+    root, receipt_path = retention_paths(path)
+    rs = native.safe_lstat(root)
+    if not stat.S_ISDIR(rs.st_mode) or rs.st_uid != os.getuid() or stat.S_IMODE(rs.st_mode) != 0o700:
+        fail("旧接收方程序恢复记录容器不安全。")
+    receipt_bytes = native.read_regular(receipt_path, 64 * 1024 * 1024)
+    receipt = json.loads(receipt_bytes)
+    previous = Path(manifest["stage_dir"]) / "previous.app"
+    if (receipt.get("schemaVersion") != 1 or receipt.get("kind") != "GaoWenJianRetainedReceiverProgram"
+            or receipt.get("binding") != program_binding(manifest) or receipt.get("programPath") != str(previous)):
+        fail("旧接收方程序恢复记录与本安装事务不匹配。")
+    source_bytes = native.read_regular(root / "manifest.before.json", 64 * 1024 * 1024)
+    if hashlib.sha256(source_bytes).hexdigest() != receipt.get("sourceManifestSHA256") or program_binding(json.loads(source_bytes)) != program_binding(manifest):
+        fail("原安装记录快照摘要或身份不匹配。")
+    before_bytes = native.read_regular(root / "native-before.json", 64 * 1024 * 1024)
+    if hashlib.sha256(before_bytes).hexdigest() != receipt.get("nativeBeforeSHA256"):
+        fail("原程序完整安全元数据依据变化。")
+    before = json.loads(before_bytes)
+    location = Path(program_location) if program_location is not None else previous
+    if location not in (previous, Path(manifest["target_app"])):
+        fail("恢复原件不在本事务的两个精确位置。")
+    current = native_program_evidence(location)
+    if location == previous:
+        if current["fullNativeOriginalState"] != receipt.get("retainedNativeState"):
+            fail("持久旧程序原件的完整原生元数据或内容变化。")
+    else:
+        native.moved_equal(receipt["retainedNativeState"], current["fullNativeOriginalState"])
+    native.moved_equal(before["fullNativeOriginalState"], current["fullNativeOriginalState"])
+    if before.get("identity", {}).get("bundleID") != BUNDLE or before["identity"].get("path") != manifest["target_app"] or before["identity"].get("identity") != current["identity"]["identity"]:
+        fail("保留的不是原同inode接收方程序。")
+    for name, checksum in receipt.get("restoreTools", {}).items():
+        if name not in ("install_safety.py", "receiver_native_state.py") or digest_file(root / "Tools" / name) != checksum:
+            fail("独立恢复工具摘要不匹配。")
+    if set(receipt.get("restoreTools", {})) != {"install_safety.py", "receiver_native_state.py"}:
+        fail("独立程序恢复工具不完整。")
+    if require_pointer:
+        pointer = manifest.get("retained_previous_program", {})
+        if (pointer.get("receipt_path") != str(receipt_path) or pointer.get("receipt_sha256") != hashlib.sha256(receipt_bytes).hexdigest()
+                or pointer.get("program_path") != str(previous) or pointer.get("original_identity") != current["identity"]["identity"]):
+            fail("安装记录中的旧程序恢复指针不匹配。")
+    program_signature_evidence(location, manifest["simulate"])
+    if not manifest["simulate"] and require_formal_anchor:
+        paths = registered_paths(run([LSREGISTER, "-dump"]))
+        if str(Path(manifest["target_app"])) not in paths or str(previous) in paths:
+            fail("需要正式程序正向登记及旧原件精确缺席；未自动注销或按空视图放行。")
+    return receipt
+
+
+def retain_previous_program(manifest, path, before_path):
+    native = native_state()
+    previous = Path(manifest["stage_dir"]) / "previous.app"
+    ensure_not_running(previous, manifest["simulate"])
+    stage = Path(manifest["stage_dir"])
+    ss = native.safe_lstat(stage)
+    if not stage.name.endswith(".noindex") or ss.st_uid != os.getuid() or stat.S_IMODE(ss.st_mode) != 0o700:
+        fail("原旧程序只允许持久保留在本次真实私有.noindex暂存。")
+    root, receipt_path = retention_paths(path)
+    if not manifest.get("retained_previous_program") and not receipt_path.exists():
+        if before_path is None:
+            fail("缺少安装前完整旧接收方程序元数据依据；原件保留，禁止清理。")
+        before_bytes = native.read_regular(Path(before_path), 64 * 1024 * 1024)
+        before = json.loads(before_bytes)
+        current = native_program_evidence(previous)
+        if before.get("identity", {}).get("bundleID") != BUNDLE or before["identity"].get("path") != manifest["target_app"] or before["identity"].get("identity") != current["identity"]["identity"]:
+            fail("安装前依据与同inode旧接收方程序不匹配。")
+        native.moved_equal(before["fullNativeOriginalState"], current["fullNativeOriginalState"])
+        signature = program_signature_evidence(previous, manifest["simulate"])
+        source_manifest = native.read_regular(path, 64 * 1024 * 1024)
+        root.mkdir(mode=0o700, exist_ok=False)
+        exclusive_private(root / "manifest.before.json", source_manifest)
+        exclusive_private(root / "native-before.json", before_bytes)
+        tools = root / "Tools"; tools.mkdir(mode=0o700)
+        hashes = {}
+        for name in ("install_safety.py", "receiver_native_state.py"):
+            data = Path(__file__).with_name(name).read_bytes()
+            exclusive_private(tools / name, data); hashes[name] = hashlib.sha256(data).hexdigest()
+        receipt = {"schemaVersion": 1, "kind": "GaoWenJianRetainedReceiverProgram", "binding": program_binding(manifest),
+                   "programPath": str(previous), "originalIdentity": current["identity"]["identity"],
+                   "sourceManifestSHA256": hashlib.sha256(source_manifest).hexdigest(), "nativeBeforeSHA256": hashlib.sha256(before_bytes).hexdigest(),
+                   "retainedNativeState": current["fullNativeOriginalState"], "originalSignature": signature, "restoreTools": hashes,
+                   "noArchiveOrCopyReplacesOriginal": True, "receiverBackupMustRemain": True}
+        exclusive_private(receipt_path, json.dumps(receipt, ensure_ascii=False, sort_keys=True, indent=2).encode() + b"\n")
+    receipt = verify_program_retention(manifest, path, require_pointer=False)
+    manifest["retained_previous_program"] = {"receipt_path": str(receipt_path), "receipt_sha256": digest_file(receipt_path),
+        "program_path": str(previous), "original_identity": receipt["originalIdentity"],
+        "restore_command": ["/usr/bin/python3", str(root / "Tools/install_safety.py"), "finalize", "--manifest", str(path), "--rollback"]}
+    atomic_json(path, manifest)
+    verify_program_retention(manifest, path)
+
+
+def rename_program_exclusive(source, target, expected_state):
+    native = native_state()
+    expected = expected_state["metadata"][""]["stat"]
+    with native.directory_fd(source.parent, read=True) as left, native.directory_fd(target.parent, read=True) as right:
+        current = native.checked_stat(source.name, left)
+        if (current.st_dev, current.st_ino, current.st_uid) != (expected[0], expected[1], expected[3]) or os.fstat(left).st_dev != os.fstat(right).st_dev:
+            fail("原程序移动身份或同卷条件变化，保留原件。")
+        lib = native._app_libc()
+        if lib.renameatx_np(left, os.fsencode(source.name), right, os.fsencode(target.name), 0x4) != 0:
+            raise OSError(ctypes.get_errno(), "排他原程序移动失败；未覆盖任何目标")
+        os.fsync(left);os.fsync(right)
+
+
+def rollback_retained_program(manifest, path):
+    """Durable exact-program recovery; no data restoration or automatic launch."""
+    native = native_state()
+    target = Path(manifest["target_app"]);stage = Path(manifest["stage_dir"])
+    previous = stage / "previous.app";failed = stage / "failed-candidate.app"
+    ensure_not_running(previous, manifest["simulate"])
+    ensure_not_running(failed, manifest["simulate"])
+    root, _ = retention_paths(path);intent_path = root / "restore-intent.json"
+    if not intent_path.exists():
+        receipt = verify_program_retention(manifest, path, require_formal_anchor=False)
+        if os.path.lexists(failed):
+            fail("已有未知失败程序，未创建恢复意图或覆盖。")
+        candidate = None
+        if target.exists():
+            if inventory(target, permit_symlinks=True) != manifest["candidate_inventory"]:
+                fail("当前正式程序已不是此事务安装版本，禁止历史回滚覆盖。")
+            candidate = native_program_evidence(target)
+        intent = {"schemaVersion": 1, "kind": "GaoWenJianExactReceiverProgramRestore", "nonce": manifest["nonce"],
+                  "retentionReceiptSHA256": manifest["retained_previous_program"]["receipt_sha256"],
+                  "previous": str(previous), "target": str(target), "failed": str(failed),
+                  "originalIdentity": receipt["originalIdentity"], "candidateBefore": candidate}
+        exclusive_private(intent_path, json.dumps(intent, ensure_ascii=False, sort_keys=True).encode() + b"\n")
+    intent = json.loads(native.read_regular(intent_path, 64 * 1024 * 1024))
+    if (intent.get("schemaVersion") != 1 or intent.get("kind") != "GaoWenJianExactReceiverProgramRestore"
+            or intent.get("nonce") != manifest["nonce"] or intent.get("retentionReceiptSHA256") != manifest["retained_previous_program"]["receipt_sha256"]
+            or [intent.get(key) for key in ("previous", "target", "failed")] != list(map(str, (previous, target, failed)))):
+        fail("原程序恢复意图不属于本事务，保留现场。")
+    if previous.exists():
+        receipt = verify_program_retention(manifest, path, require_formal_anchor=False)
+        if intent.get("originalIdentity") != receipt["originalIdentity"]:
+            fail("恢复意图的原件身份变化。")
+        if target.exists():
+            if failed.exists() or intent.get("candidateBefore") is None or native_program_evidence(target)["fullNativeOriginalState"] != intent["candidateBefore"]["fullNativeOriginalState"]:
+                fail("恢复前正式候选或失败位置变化，禁止覆盖。")
+            register(target, manifest["simulate"], remove=True)
+            rename_program_exclusive(target, failed, intent["candidateBefore"]["fullNativeOriginalState"])
+        if intent.get("candidateBefore") is not None:
+            if not failed.exists():
+                fail("原当前候选不在正式或失败位置，保留现场。")
+            native.moved_equal(intent["candidateBefore"]["fullNativeOriginalState"], native_program_evidence(failed)["fullNativeOriginalState"])
+        elif os.path.lexists(failed):
+            fail("恢复期间出现未知失败程序，未覆盖。")
+        verify_signature(previous, manifest["simulate"])
+        register(previous, manifest["simulate"], remove=True)
+        rename_program_exclusive(previous, target, receipt["retainedNativeState"])
+    receipt = verify_program_retention(manifest, path, require_formal_anchor=False, program_location=target)
+    if receipt["originalIdentity"] != intent.get("originalIdentity"):
+        fail("正式路径不是本次原程序，未接管。")
+    if intent.get("candidateBefore") is not None:
+        if not failed.exists():
+            fail("被换下的本次候选缺失；原程序已回正式，保留恢复意图。")
+        native.moved_equal(intent["candidateBefore"]["fullNativeOriginalState"], native_program_evidence(failed)["fullNativeOriginalState"])
+    elif os.path.lexists(failed):
+        fail("中断恢复后出现未知失败程序，未接管或注销。")
+    register(target, manifest["simulate"])
+    if failed.exists():
+        register(failed, manifest["simulate"], remove=True)
+    restored = native_program_evidence(target)
+    native.moved_equal(receipt["retainedNativeState"], restored["fullNativeOriginalState"])
+    restored_path = root / "restored.json"
+    if not restored_path.exists():
+        exclusive_private(restored_path, json.dumps({"schemaVersion": 1, "programPath": str(target),
+            "originalIdentity": restored["identity"]["identity"], "retentionReceiptSHA256": manifest["retained_previous_program"]["receipt_sha256"],
+            "nativeRestoredState": restored["fullNativeOriginalState"], "displacedCandidatePath": str(failed) if failed.exists() else None,
+            "noUserDataRestored": True}, ensure_ascii=False, sort_keys=True).encode() + b"\n")
+    observed = json.loads(native.read_regular(restored_path, 64 * 1024 * 1024))
+    if observed.get("programPath") != str(target) or observed.get("originalIdentity") != receipt["originalIdentity"] or observed.get("retentionReceiptSHA256") != manifest["retained_previous_program"]["receipt_sha256"]:
+        fail("已有恢复回执不配对，保留现场。")
+    manifest["program_restoration"] = {"receipt_path": str(restored_path), "receipt_sha256": digest_file(restored_path), "program_path": str(target), "original_identity": receipt["originalIdentity"]}
+    manifest["state"] = "rolled_back";manifest["rolled_back_at"] = datetime.datetime.now().astimezone().isoformat()
+    atomic_json(path, manifest)
+    print("已恢复原同inode旧接收方程序；本次候选、用户现用资料和完整安全备份保留，未回写资料。")
 
 
 def fail(message):
@@ -216,7 +448,16 @@ def rollback(manifest, path):
     stage = Path(manifest["stage_dir"])
     previous = stage / "previous.app"
     simulate = manifest["simulate"]
+    # Old receipts remain readable in place, but rollback must never generate a
+    # failed-candidate.app in an ordinary indexed historical staging directory.
+    # Relocating such a historical transaction requires a separately verified
+    # pointer/restore-receipt migration; do not silently rename its stage here.
+    if not any(parent.name.endswith(".noindex") and parent.is_dir() for parent in [stage, *stage.parents]):
+        fail("旧回滚暂存不在 .noindex 容器中；已保留原程序和收据。请先核验备份指针迁移，禁止原样执行后补清理。")
     ensure_not_running(target, simulate)
+    if manifest.get("retained_previous_program"):
+        rollback_retained_program(manifest, path)
+        return
     if target.exists():
         app_info(target)
         register(target, simulate, remove=True)
@@ -267,6 +508,10 @@ def install(args):
     if len(version.split(".")) != 2 or len(version.split(".")[1]) != 2 or decimal.Decimal(version) < decimal.Decimal("1.00") or not build.isdigit():
         fail("版本配置无效，应从 1.00 / build 1 开始。")
     verify_signature(source, args.simulate)
+    if not args.simulate and decimal.Decimal(version) >= decimal.Decimal("1.10"):
+        # New formal candidates require the approved certificate/Team/stable DR.
+        # Generic verify_signature remains backward-compatible for old rollback.
+        run([sys.executable, str(Path(__file__).with_name("sign_bundle.py")), "verify", "--app", str(source)])
     had_previous = target.exists()
     if had_previous:
         old = app_info(target)
@@ -304,12 +549,17 @@ def install(args):
                 manifest["backups"][key] = {"original_path": str(original), "backup_path": str(destination), "inventory": copied}
                 atomic_json(path, manifest)
             copy_verified(source, candidate, args.simulate, permit_symlinks=True)
-            if not args.simulate:
-                run(["/usr/bin/codesign", "--force", "--deep", "--sign", "-", "--timestamp=none", str(candidate)])
+            # Preserve the already verified build signature and designated identity.
+            # Installation copies bytes; it must not recursively re-sign nested tools
+            # or create a second signature generation that invalidates user grants.
             verify_signature(candidate, args.simulate)
             manifest["candidate_inventory"] = inventory(candidate, permit_symlinks=True)
             if had_previous:
                 manifest["previous_inventory"] = inventory(target, permit_symlinks=True)
+                before_path = transaction / "program-before-native.json"
+                evidence = native_program_evidence(target)
+                exclusive_private(before_path, json.dumps(evidence, ensure_ascii=False, sort_keys=True, indent=2).encode() + b"\n")
+                manifest["program_before_native"] = {"path": str(before_path), "sha256": digest_file(before_path)}
             manifest["state"] = "prepared"
             atomic_json(path, manifest)
             if had_previous:
@@ -354,7 +604,15 @@ def finalize(args):
     path = Path(args.manifest).expanduser().resolve()
     manifest = load_manifest(path)
     with installation_lock(Path(manifest["backup_root"])):
+        if manifest["state"] == "verified" and args.rollback:
+            if manifest.get("had_previous") and not manifest.get("retained_previous_program"):
+                fail("历史verified事务缺完整旧程序恢复指针，保留现场，禁止猜测回滚。")
+            verify_backup(manifest)
+            rollback(manifest, path)
+            return
         if manifest["state"] in ("verified", "rolled_back"):
+            if manifest["state"] == "verified" and manifest.get("had_previous"):
+                verify_program_retention(manifest, path)
             print("安装事务已完成：" + manifest["state"])
             return
         if manifest["state"] != "installed_pending_verification":
@@ -376,20 +634,34 @@ def finalize(args):
             app_info(stage / "previous.app")
             if inventory(stage / "previous.app", permit_symlinks=True) != manifest["previous_inventory"]:
                 fail("旧程序备份发生变化，禁止清理。")
+        if manifest["had_previous"]:
+            before_path = getattr(args, "previous_native_before", None)
+            if before_path is None and manifest.get("program_before_native"):
+                item = manifest["program_before_native"]
+                before_path = Path(item["path"])
+                if digest_file(before_path) != item["sha256"]:
+                    fail("安装前完整程序元数据依据摘要变化。")
+            retain_previous_program(manifest, path, Path(before_path) if before_path is not None else None)
         if stage.exists():
             allowed = {"previous.app", "candidate.app"}
             if any(child.name not in allowed for child in stage.iterdir()):
                 fail("暂存目录包含未知文件，禁止自动清理。")
-            for child in stage.iterdir():
+            for child in list(stage.iterdir()):
+                if child.name == "previous.app" and manifest.get("retained_previous_program"):
+                    continue
                 app_info(child)
+                if inventory(child, permit_symlinks=True) != manifest["candidate_inventory"]:
+                    fail("未知暂存程序不是本事务候选，不自动删除。")
                 register(child, manifest["simulate"], remove=True)
-            shutil.rmtree(str(stage))
+                shutil.rmtree(str(child))
+            if not any(stage.iterdir()):
+                stage.rmdir()
         manifest["state"] = "verified"
         manifest["verified_at"] = datetime.datetime.now().astimezone().isoformat()
         manifest["verification_note"] = args.verification_note
         manifest["unchanged_data_verified"] = bool(args.require_unchanged_data)
         atomic_json(path, manifest)
-        print("安装后验证已记录，旧程序和本次安装暂存已删除。用户资料与安全备份保留。")
+        print("安装后验证已记录；完整旧接收方原程序在私有.noindex位置及恢复指针中保留。用户资料和安全备份保留。" if manifest.get("retained_previous_program") else "安装后验证已记录，空安装暂存已清理。用户资料和安全备份保留。")
 
 
 def main():
@@ -407,6 +679,7 @@ def main():
     final_parser.add_argument("--manifest", required=True)
     final_parser.add_argument("--verification-note", default="", help="如实记录本次采用的验证方式，不自动运行 GUI")
     final_parser.add_argument("--require-unchanged-data", action="store_true", help="清理旧程序前再次核对资料和设置逐文件未变")
+    final_parser.add_argument("--previous-native-before", help="旧安装事务兼容：安装前完整旧接收方程序native证据；不修改原证据或原程序")
     actions = final_parser.add_mutually_exclusive_group(required=True)
     actions.add_argument("--verified", action="store_true")
     actions.add_argument("--rollback", action="store_true")

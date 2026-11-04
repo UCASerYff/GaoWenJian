@@ -14,6 +14,7 @@ enum GaoReferenceOpenMode: Equatable { case copy, original, cancel }
     var selectReference: (GaoActionReference) -> URL?
     var offerResult: (GaoActionManifest, URL) -> Void
     var referenceMode: (GaoActionReference) -> GaoReferenceOpenMode = { _ in .copy }
+    var organizer: OrganizerProviderInteraction = .application
     static let application = GaoHandoffInteraction(confirm: { review in
         let alert=NSAlert();alert.messageText=review.title;alert.informativeText=review.message
         alert.addButton(withTitle:"确认接收");alert.addButton(withTitle:"取消")
@@ -93,6 +94,16 @@ final class GaoHandoffCancellation: @unchecked Sendable {
     }
     private static func review(_ package:GaoValidatedPackage,status:String?=nil)->GaoHandoffReview {
         let manifest=package.manifest
+        if OrganizerActionProvider.actions.contains(manifest.action) {
+            let detail: String
+            switch manifest.action {
+            case "files.search": detail="搜索："+(manifest.parameters["query"]?.stringValue ?? "")+"。只查询本机已授权索引，勾选后才返回原件引用。"
+            case "files.choose": detail="使用搞文件内置选择器。仅明确所选的普通文件引用会返回，不复制正文。"
+            case "files.reveal": detail="需要在本机重新核对请求对象身份，然后请求 Finder 定位。"
+            default: detail="打开真实文件关联管理。只有你明确提交修改且系统读回一致才报告完成；打开界面本身仍是等待处理。"
+            }
+            return GaoHandoffReview(title:"接收文件整理/查找请求？",message:"来源声明：\(HandoffNames.display(manifest.sourceBundleID))（不是身份认证）\n动作：\(manifest.action)\n"+detail+"\n引用不授予权限；现有未保存内容保留。")
+        }
         let inputs=package.stagedItems.map{"• \(HandoffNames.display(URL(fileURLWithPath:$0.item.relativePath).lastPathComponent))（\($0.item.byteCount) 字节）"}
             + manifest.references.map{"• \(HandoffNames.display($0.displayName))（需要本端核对读取权限）"}
         let attachmentMode = manifest.action == "documents.newText" || manifest.action == "ocr.files"
@@ -110,7 +121,7 @@ final class GaoHandoffCancellation: @unchecked Sendable {
             return .init(requestID:m.requestID,status:previous.phase.rawValue,duplicate:true)
         }
         guard GaoActionContract.supportedActions.contains(m.action) else {
-            return try requestReply(m,status:"unsupported",tabs:[],itemIDs:[],messages:["搞文件仅提供文档打开与新建文字动作。"],ledger:ledger,interaction:interaction,now:now)
+            return try requestReply(m,status:"unsupported",tabs:[],itemIDs:[],messages:["搞文件尚不支持这个动作，现有文档未修改。"],ledger:ledger,interaction:interaction,now:now)
         }
         if !interaction.confirm(review(package)) || cancellation.isCancelled {
             store.status="已取消接收文档；原件与现有未保存修改保留"
@@ -118,6 +129,9 @@ final class GaoHandoffCancellation: @unchecked Sendable {
         }
         _ = try ledger.transition(requestID:m.requestID,to:.approved,now:now)
         _ = try ledger.transition(requestID:m.requestID,to:.executing,now:now)
+        if OrganizerActionProvider.actions.contains(m.action) {
+            return try processOrganizerRequest(m, store:store, ledger:ledger, interaction:interaction, now:now, cancellation:cancellation)
+        }
         var tabs:[UUID]=[],opened:[String]=[],messages:[String]=[],referenceCancellations=0
         for item in package.stagedItems {
             if cancellation.isCancelled {break}
@@ -139,6 +153,46 @@ final class GaoHandoffCancellation: @unchecked Sendable {
         let localSummary=status=="cancelled" ? "已取消文档交接" : status=="partial" ? "本机部分接收" : status=="failed" ? "本机接收失败":"本机已接收"
         store.status="\(localSummary)；已打开 \(tabs.count)/\(total) 个文档；原件与现有编辑保留"
         return try requestReply(m,status:status,tabs:tabs,itemIDs:opened,messages:messages,ledger:ledger,interaction:interaction,now:now)
+    }
+    private static func processOrganizerRequest(_ request:GaoActionManifest, store:WorkspaceStore, ledger:GaoProcessedRequestStore, interaction:GaoHandoffInteraction, now:Date, cancellation:GaoHandoffCancellation) throws -> GaoHandoffOutcome {
+        var callbackCompleted=false
+        var synchronousCompletion:GaoHandoffOutcome?
+        do {
+            try cancellation.check()
+            let immediate=try OrganizerActionProvider.perform(request,interaction:interaction.organizer,associationCompletion:{ result in
+                guard !callbackCompleted else{return}
+                callbackCompleted=true
+                do {
+                    // Other document requests may have updated the journal while
+                    // this UI awaited a user action. Reopen it, never overwrite
+                    // those newer rows with the earlier in-memory generation.
+                    let currentLedger=try GaoProcessedRequestStore(root:exchangeRoot)
+                    guard currentLedger.lookup(request.requestID)?.phase == .executing else {throw GaoActionContract.reject("alreadyProcessed","关联请求已结束或被恢复处理，未再次生成业务。")}
+                    let checked:OrganizerProviderResult
+                    do {try OrganizerActionProvider.validateCompletion(result,request:request);checked=result}
+                    catch {checked = .failed(error.localizedDescription)}
+                    synchronousCompletion = try organizerReply(request,result:checked,store:store,ledger:currentLedger,interaction:interaction,now:Date())
+                } catch { store.error=error.localizedDescription;store.status="关联回执未能保存，保留记录且未重复修改系统。" }
+            })
+            if let result=immediate {
+                callbackCompleted=true
+                return try organizerReply(request,result:result,store:store,ledger:ledger,interaction:interaction,now:now)
+            }
+            if let synchronousCompletion {return synchronousCompletion}
+            store.status="文件关联请求等待本人在管理页明确修改或取消；打开管理界面不表示完成。"
+            return .init(requestID:request.requestID,status:"pending")
+        }catch{
+            callbackCompleted=true
+            return try organizerReply(request,result:.failed(error.localizedDescription),store:store,ledger:ledger,interaction:interaction,now:now)
+        }
+    }
+    private static func organizerReply(_ request:GaoActionManifest,result:OrganizerProviderResult,store:WorkspaceStore,ledger:GaoProcessedRequestStore,interaction:GaoHandoffInteraction,now:Date) throws -> GaoHandoffOutcome {
+        try OrganizerActionProvider.validateCompletion(result,request:request)
+        let reply=try GaoActionWriter.writeResult(inReplyTo:request,status:result.status,references:result.references,errorCode:result.errorCode,provenance:result.provenance,exchangeRoot:exchangeRoot,now:now)
+        _ = try ledger.transition(requestID:request.requestID,to:GaoRequestPhase(rawValue:result.status)!,resultPackageName:reply.lastPathComponent,errorCode:result.errorCode,now:now)
+        store.status=result.status == "completed" ? "文件整理/查找处理完成，回执已保留；接收端仍需核对原件权限。" : result.status == "cancelled" ? "文件整理/查找请求已取消；原件与现有编辑保留。" : "文件整理/查找未完成；原件与现有编辑保留。"
+        interaction.offerResult(request,reply)
+        return .init(requestID:request.requestID,status:result.status,resultPackageURL:reply,messages:result.provenance["reason"]?.stringValue.map{[$0]} ?? [])
     }
     private static func requestReply(_ m:GaoActionManifest,status:String,tabs:[UUID],itemIDs:[String],messages:[String],ledger:GaoProcessedRequestStore,interaction:GaoHandoffInteraction,now:Date) throws -> GaoHandoffOutcome {
         let reply=try GaoActionWriter.writeResult(inReplyTo:m,status:status,errorCode:status=="failed" || status=="partial" ? "documentOpenFailed":nil,
@@ -328,6 +382,9 @@ enum OCRPDFVersion {case currentEdits,diskOriginal,cancel}
 struct PreparedDocumentHandoff {let packageURL:URL;let session:GaoOutgoingSession}
 typealias PreparedOCRHandoff = PreparedDocumentHandoff
 @MainActor enum OCRHandoffDispatcher {
+    /// Canonical owner for NEW OCR requests after the screenshot integration.
+    /// Persisted outgoing sessions retain their original target and digest.
+    static let providerBundleID = "com.gaoseries.GaoCaoZuo"
     static func isRecognizable(_ url:URL)->Bool {["pdf","png","jpg","jpeg","tiff","tif","heic"].contains(url.pathExtension.lowercased())}
     /// The same operation is called by the menu and by non-GUI integration tests.
     static func prepare(files:[URL],store:WorkspaceStore,registry:CurrentDocumentHandoffRegistry? = nil,outputs:[String] = ["text","searchablePDF"],chooseVersion:(URL)->OCRPDFVersion,now:Date=Date()) throws -> PreparedOCRHandoff {
@@ -361,9 +418,9 @@ typealias PreparedOCRHandoff = PreparedDocumentHandoff
             let file=GaoOutgoingFile(url:selected,uti:GaoHandoffService.documentUTI(selected));outgoing.append(file)
             bindings.append(.init(itemID:file.id,originalReference:original,versionKind:version))
         }
-        let package=try GaoActionWriter.writeRequest(action:"ocr.files",items:outgoing,parameters:["outputs":.array(outputs.map(GaoJSONValue.string))],targetBundleID:"com.gaoseries.GaoJieTu",exchangeRoot:GaoHandoffService.exchangeRoot,now:now)
+        let package=try GaoActionWriter.writeRequest(action:"ocr.files",items:outgoing,parameters:["outputs":.array(outputs.map(GaoJSONValue.string))],targetBundleID:providerBundleID,exchangeRoot:GaoHandoffService.exchangeRoot,now:now)
         let journal=try GaoOutgoingJournal(exchangeRoot:GaoHandoffService.exchangeRoot)
-        let session=try journal.registerOutgoing(packageURL:package,expectedTargetBundleID:"com.gaoseries.GaoJieTu",bindings:bindings,now:now)
+        let session=try journal.registerOutgoing(packageURL:package,expectedTargetBundleID:providerBundleID,bindings:bindings,now:now)
         return .init(packageURL:package,session:session)
     }
     /// The fallback menu and integration tests share the exact safe export operation.
@@ -383,11 +440,11 @@ typealias PreparedOCRHandoff = PreparedDocumentHandoff
             guard panel.runModal() == .OK else{return};inputs=panel.urls
         }
         let choices=[("纯文本（新的未保存标签）","text"),("Markdown（新的未保存标签）","markdown"),("JSON（逐输入与逐页校验）","json"),("可搜索 PDF（校验副本）","searchablePDF")]
-        let alert=NSAlert();alert.messageText="选择识别输出";alert.informativeText="\(inputs.count) 个输入将交给搞截图，由你确认识别及发送结果。接收时还需确认，原件与已编辑文档保留。"
+        let alert=NSAlert();alert.messageText="选择识别输出";alert.informativeText="\(inputs.count) 个输入将交给搞操作，由你确认识别及发送结果。接收时还需确认，原件与已编辑文档保留。"
         let controls=choices.map{NSButton(checkboxWithTitle:$0.0,target:nil,action:nil)}
         for (index,control) in controls.enumerated(){control.state=index == 1 ? .off:.on}
         let stack=NSStackView(views:controls);stack.orientation = .vertical;stack.alignment = .leading;stack.spacing=8;stack.frame=NSRect(x:0,y:0,width:340,height:112)
-        alert.accessoryView=stack;alert.addButton(withTitle:"继续交给搞截图");alert.addButton(withTitle:"取消")
+        alert.accessoryView=stack;alert.addButton(withTitle:"继续交给搞操作");alert.addButton(withTitle:"取消")
         guard alert.runModal() == .alertFirstButtonReturn else{return}
         let outputs=zip(controls,choices).filter{$0.0.state == .on}.map{$0.1.1}
         do {
@@ -396,19 +453,19 @@ typealias PreparedOCRHandoff = PreparedDocumentHandoff
                 alert.addButton(withTitle:"导出当前副本并识别");alert.addButton(withTitle:"发送磁盘已保存版本");alert.addButton(withTitle:"取消")
                 switch alert.runModal(){case .alertFirstButtonReturn:return .currentEdits;case .alertSecondButtonReturn:return .diskOriginal;default:return .cancel}
             })
-            guard let provider=try GaoCapabilityDiscovery.installedProvider(bundleID:"com.gaoseries.GaoJieTu",action:"ocr.files"),provider.capability.accepts(parameterKeys:["outputs"]) else {
+            guard let provider=try GaoCapabilityDiscovery.installedProvider(bundleID:providerBundleID,action:"ocr.files"),provider.bundleID == prepared.session.targetBundleID,provider.capability.action == "ocr.files",provider.capability.accepts(parameterKeys:["outputs"]) else {
                 fallback(prepared,store:store);return
             }
             GaoCapabilityDiscovery.send(packageURL:prepared.packageURL,to:provider){ error in
                 Task { @MainActor in
                     do {try GaoOutgoingJournal(exchangeRoot:GaoHandoffService.exchangeRoot).markDispatched(requestID:prepared.session.requestID,success:error==nil)}catch{store.error=error.localizedDescription;return}
                     if let error {store.error="发送请求失败："+error.localizedDescription}
-                    else {store.status="识别请求已交给搞截图，等待用户处理并发送结果；尚未完成识别"}
+                    else {store.status="识别请求已交给搞操作，等待用户处理并发送结果；尚未完成识别"}
                 }
             }
         }catch {store.error=error.localizedDescription}
     }
-    static func fallback(_ prepared:PreparedDocumentHandoff,store:WorkspaceStore,title:String="未找到兼容的搞截图 OCR 能力"){
+    static func fallback(_ prepared:PreparedDocumentHandoff,store:WorkspaceStore,title:String="未找到兼容的搞操作 OCR 能力"){
         let alert=NSAlert();alert.messageText=title;alert.informativeText="可以导出本次核验的文档副本，或在 Finder 显示交接包；交接包过期后请重新发起。"
         alert.addButton(withTitle:"导出文档副本…");alert.addButton(withTitle:"在 Finder 显示交接包");alert.addButton(withTitle:"取消")
         switch alert.runModal(){
@@ -440,20 +497,12 @@ typealias PreparedOCRHandoff = PreparedDocumentHandoff
         }
     }
     static func chooseDocuments(store:WorkspaceStore){
-        do {
-            guard let provider=try GaoCapabilityDiscovery.installedProvider(bundleID:"com.gaoseries.GaoZhengLi",action:"files.choose"),provider.capability.accepts(parameterKeys:["multiple"]) else {
-                let alert=NSAlert();alert.messageText="搞整理文档选择暂不可用";alert.informativeText="未安装提供兼容 files.choose 能力的搞整理。可以改用本机文件选择器；这不表示已完成跨应用交接。"
-                alert.addButton(withTitle:"使用本机文件选择器…");alert.addButton(withTitle:"取消")
-                if alert.runModal() == .alertFirstButtonReturn{store.openPanel()};return
-            }
-            let url=try GaoActionWriter.writeRequest(action:"files.choose",parameters:["multiple":.bool(true)],targetBundleID:provider.bundleID,exchangeRoot:GaoHandoffService.exchangeRoot)
-            let journal=try GaoOutgoingJournal(exchangeRoot:GaoHandoffService.exchangeRoot)
-            let session=try journal.registerOutgoing(packageURL:url,expectedTargetBundleID:provider.bundleID)
-            GaoCapabilityDiscovery.send(packageURL:url,to:provider){error in Task{@MainActor in
-                do{try GaoOutgoingJournal(exchangeRoot:GaoHandoffService.exchangeRoot).markDispatched(requestID:session.requestID,success:error==nil)}catch{store.error=error.localizedDescription;return}
-                store.status=error==nil ? "已请求搞整理选择文档，等待用户发送所选结果":"文件选择请求发送失败"
-            }}
-        }catch{store.error=error.localizedDescription}
+        // File selection is now in-process. Never discover the retired organizer
+        // or send files.choose to this application and recursively re-enter it.
+        let panel=NSOpenPanel();panel.title="从本机选择文档";panel.message="所选文档直接在搞文件打开；现有标签和未保存内容保留。"
+        panel.canChooseFiles=true;panel.canChooseDirectories=false;panel.allowsMultipleSelection=true
+        guard panel.runModal() == .OK else{return}
+        for url in panel.urls {store.open(url)}
     }
 }
 

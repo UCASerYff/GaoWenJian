@@ -15,7 +15,7 @@ text = source.read_text()
 assert text.count('@main @MainActor struct') == 1
 source.write_text(text.replace('@main @MainActor struct', '@MainActor struct'))
 PY
-TEST_SOURCES=(CoreTests OfficeRoundTripTests OfficeRecoveryTests OfficeViewerTests PDFTests PDFHandoffTests PDFFormFocusTests PDFImageHandoffTests CurrentDocumentHandoffTests OCRResultProvenanceTests OCRJSONPayloadVerifierTests OCRDispatchOptionsTests GaoActionWriterCompatibilityTests ResearchImportReceiptTests ReferenceSelectionTests EditedDocumentExportTests GaoActionFixtures GaoActionTests GaoOutgoingJournalTests HandoffSafeExportTests DocumentHandoffSafetyTests LaTeXTests StickyNotesTests HandoffProductionTests DataCopyVerification HeadlessTestMain)
+TEST_SOURCES=(CoreTests OfficeRoundTripTests OfficeRecoveryTests OfficeViewerTests PDFTests PDFHandoffTests PDFFormFocusTests PDFImageHandoffTests CurrentDocumentHandoffTests OCRResultProvenanceTests OCRJSONPayloadVerifierTests OCRDispatchOptionsTests OCRProviderRoutingTests GaoActionWriterCompatibilityTests ResearchImportReceiptTests ReferenceSelectionTests EditedDocumentExportTests GaoActionFixtures GaoActionTests GaoOutgoingJournalTests HandoffSafeExportTests DocumentHandoffSafetyTests LaTeXTests StickyNotesTests HandoffProductionTests DataCopyVerification HeadlessTestMain)
 TEST_FILES=()
 for name in $TEST_SOURCES; do TEST_FILES+=("$STAGING/Tests/$name.swift"); done
 python3 - $TEST_FILES <<'PY'
@@ -26,7 +26,7 @@ for name in sys.argv[1:]:
 print('Audited headless test sources: no application, window, browser or modal construction')
 PY
 swiftc -swift-version 5 -Xfrontend -disable-sandbox -target arm64-apple-macos14.0 -module-cache-path "$STAGING/cache" \
-  "$STAGING"/Sources/*.swift $TEST_FILES -o "$STAGING/headless-regression"
+  "$STAGING"/Sources/*.swift -framework CoreServices -lsqlite3 $TEST_FILES -o "$STAGING/headless-regression"
 EVIDENCE_DIR="$PROJECT_DIR/TestResults/Headless-$(date +%Y%m%d-%H%M%S)-${STAGING:t}"
 "$STAGING/headless-regression" --data-dir "$STAGING/data" --evidence-dir "$EVIDENCE_DIR" "$@"
-if [[ " ${*} " != *" --verify-data-copy "* && " ${*} " != *" --research-handoff-only "* && " ${*} " != *" --reference-selection-only "* ]]; then node "$PROJECT_DIR/Tests/MarkdownCoreTests.js"; fi
+if [[ " ${*} " != *" --verify-data-copy "* && " ${*} " != *" --research-handoff-only "* && " ${*} " != *" --reference-selection-only "* && " ${*} " != *" --ocr-provider-routing-only "* ]]; then node "$PROJECT_DIR/Tests/MarkdownCoreTests.js"; fi

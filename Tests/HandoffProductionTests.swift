@@ -248,6 +248,8 @@ import PDFKit
         try rejects("Optional errorCode still rejects wrong wire type") { _ = try GaoHandoffService.receive(url: malformedError, store: store, interaction: interaction, now: clock) }
         try check(store.tabs.count == tabsBeforeMalformed, "Malformed optional field cannot mutate documents")
 
+        // Legacy manually-created screenshot sessions remain bound to their old
+        // owner; the actual new dispatcher sessions above use GaoCaoZuo.
         for (ext, uti, format) in [("txt", "public.utf8-plain-text", "text"), ("md", "net.daringfireball.markdown", "markdown")] {
             let payload = root.appendingPathComponent("无格式声明." + ext)
             try Data("OCR WITHOUT OPTIONAL FORMAT\n\n# Unicode 中文\n".utf8).write(to: payload)

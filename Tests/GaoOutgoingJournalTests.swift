@@ -7,6 +7,8 @@ enum GaoOutgoingJournalTests {
         let fm = FileManager.default
         try fm.createDirectory(at:root,withIntermediateDirectories:true,attributes:[.posixPermissions:0o700])
         let clock = GaoActionFixtures.clock
+        // Historical manually-created sessions deliberately keep the old owner.
+        // This is not the new OCRHandoffDispatcher's canonical provider.
         let provider = "com.gaoseries.GaoJieTu"
         var assertions = 0
         func check(_ condition: @autoclosure () throws -> Bool, _ message: String) throws {

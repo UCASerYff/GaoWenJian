@@ -114,7 +114,7 @@ enum GaoActionContract {
     static let maximumPayloadBytes: Int64 = 2_147_483_648
     static let maximumTextBytes: Int64 = 8_388_608
     static let ttl: TimeInterval = 120
-    static let supportedActions = ["documents.open", "documents.newText"]
+    static let supportedActions = ["documents.open", "documents.newText", "files.search", "files.choose", "files.reveal", "associations.manage"]
     static let knownActions: Set<String> = ["capture.region","capture.window","capture.display","ocr.files","images.annotate","images.pin","text.translate","storage.inspect","cleanup.review","apps.uninstall.review","files.search","files.choose","files.reveal","associations.manage","documents.open","documents.newText","research.importDocuments","portal.openSite","portal.openWorkspace","portal.focusSearch","portal.proposeSite","portal.prepareDownload","windows.overview","desktop.openSettings","downloads.prepare"]
     static func timestamp(_ date: Date) -> String {
         let formatter = ISO8601DateFormatter(); formatter.timeZone = TimeZone(secondsFromGMT:0)
@@ -226,7 +226,8 @@ enum GaoActionContract {
             if let target = try string("targetLanguage",required:true), !language(target) { throw reject("invalidParameter","目标语言无效。") }
             if let source = try string("sourceLanguage"), source != "auto", !language(source) { throw reject("invalidParameter","来源语言无效。") }
         case "storage.inspect": if let s = try string("mode"), !["metadata","duplicates"].contains(s) { throw reject("invalidParameter","检查模式无效。") }
-        case "files.search": _ = try string("query",required:true)
+        case "files.search":
+            if let query = try string("query",required:true), query.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty { throw reject("invalidParameter","搜索内容不能为空。") }
         case "files.choose":
             if let a = try list("allowedUTIs"), !a.allSatisfy(validUTI) { throw reject("invalidParameter","文件类型列表无效。") }
             if let b = p["multiple"], b.boolValue == nil { throw reject("invalidParameter","多选参数无效。") }

@@ -18,10 +18,12 @@ struct IncomingDocument: Codable, Equatable {
     var opensOriginal: Bool?
     var sourceName: String {
         switch sourceBundleID {
-        case "com.gaoseries.GaoJieTu": return "搞截图"
+        case "com.gaoseries.GaoJieTu": return "搞截图" // Historical source label; never rewrites a persisted session.
+        case "com.gaoseries.GaoCaoZuo": return "搞操作"
         case "com.gaoseries.GaoZhengLi": return "搞整理"
         case "com.academic-achievement.manager": return "搞研究"
-        case GaoActionContract.bundleID: return "手动导入"
+        case GaoActionContract.bundleID:
+            return ["files.search","files.choose"].contains(inboundAction ?? "") ? "搞文件 · 文件整理/查找" : "手动导入"
         default: return sourceBundleID
         }
     }

@@ -1,6 +1,7 @@
 import AppKit
 import SwiftUI
 import UniformTypeIdentifiers
+import Darwin
 
 enum FileKind: String, CaseIterable {
     case markdown, latex, pdf, word, spreadsheet, presentation, csv, text, image, richText, other
@@ -76,13 +77,34 @@ private struct RecoveryItem:Codable { var id:UUID;var path:String?;var kind:Stri
     @Published var error:String?
     @Published var status = "文件仅保存在本机"
     @Published var restoredCount = 0
-    @Published var showingNotes = false
+    @Published var showingNotes = false { didSet { if showingNotes { showingOrganizer = false } } }
+    @Published var showingOrganizer = false
+    let organizerHost = OrganizerHostController()
     @Published var handoffBusy = false
     private var stateReadable = true
     private var recoveryReadable = true
     private var timer:Timer?
     var active:FileSession? { tabs.first {$0.id == selection} }
     init() {
+        organizerHost.configure(openDocument:{[weak self] url in self?.open(url)})
+        organizerHost.validateMoveSources = { [weak self] urls in
+            guard let self else {throw FileIssue.message("写作工作区不可用，已停止整理。")}
+            let protected=self.tabs.compactMap{ $0.url?.standardizedFileURL }
+            let dataRoot=FileSafety.root.standardizedFileURL.path
+            for url in urls {
+                let path=url.standardizedFileURL.path
+                var candidateIdentity=stat()
+                let hasIdentity=lstat(url.path,&candidateIdentity)==0
+                let isOpenObject=protected.contains { opened in
+                    if opened.path==path{return true}
+                    var identity=stat()
+                    return hasIdentity && lstat(opened.path,&identity)==0 && identity.st_dev==candidateIdentity.st_dev && identity.st_ino==candidateIdentity.st_ino
+                }
+                guard path != dataRoot, !path.hasPrefix(dataRoot+"/"), !isOpenObject else {
+                    throw FileIssue.message("文件正在编辑或属于应用资料：\(url.lastPathComponent)。请先保存并关闭文档，再重新预览整理；应用资料不能作为原件整理。")
+                }
+            }
+        }
         do {
             try FileManager.default.createDirectory(at:FileSafety.root,withIntermediateDirectories:true)
             let stateURL=FileSafety.root.appendingPathComponent("workspace.json")
@@ -120,8 +142,9 @@ private struct RecoveryItem:Codable { var id:UUID;var path:String?;var kind:Stri
         do {try JSONEncoder().encode(WorkspaceState(recent:recent.map(\.path),folder:folder?.path)).write(to:FileSafety.root.appendingPathComponent("workspace.json"),options:.atomic)}
         catch{self.error=error.localizedDescription}
     }
-    func select(_ session:FileSession){NSApp?.keyWindow?.makeFirstResponder(nil);showingNotes=false;selection=session.id}
-    func showHome(){NSApp?.keyWindow?.makeFirstResponder(nil);showingNotes=false;selection=nil}
+    func select(_ session:FileSession){NSApp?.keyWindow?.makeFirstResponder(nil);showingNotes=false;showingOrganizer=false;selection=session.id}
+    func showHome(){NSApp?.keyWindow?.makeFirstResponder(nil);showingNotes=false;showingOrganizer=false;selection=nil}
+    func showOrganizer(){NSApp?.keyWindow?.makeFirstResponder(nil);showingNotes=false;showingOrganizer=true}
     func openPanel(){let panel=NSOpenPanel();panel.canChooseDirectories=false;panel.allowsMultipleSelection=true;panel.title="打开文件";if panel.runModal() == .OK {panel.urls.forEach(open)}}
     func openPanel(for kinds:[FileKind]) {
         let panel=NSOpenPanel();panel.canChooseDirectories=false;panel.allowsMultipleSelection=true
@@ -132,6 +155,7 @@ private struct RecoveryItem:Codable { var id:UUID;var path:String?;var kind:Stri
     }
     func openFolderPanel(){let panel=NSOpenPanel();panel.canChooseFiles=false;panel.canChooseDirectories=true;panel.title="打开工作文件夹";if panel.runModal() == .OK, let url=panel.url {folder=url;refreshFolder();persistState()}}
     func open(_ url:URL) {
+        guard !organizerHost.isMoving else {error="物理整理尚在进行，请等待结束后打开文档。";return}
         if url.pathExtension.lowercased() == "gaoaction" {
             GaoHandoffService.handleIncoming(url: url, store: self)
             return
@@ -139,7 +163,7 @@ private struct RecoveryItem:Codable { var id:UUID;var path:String?;var kind:Stri
         var directory:ObjCBool=false
         guard FileManager.default.fileExists(atPath:url.path,isDirectory:&directory) else {error="文件不存在：\(url.lastPathComponent)";return}
         if directory.boolValue {folder=url;refreshFolder();persistState();return}
-        showingNotes=false
+        showingNotes=false;showingOrganizer=false
         if let existing=tabs.first(where:{$0.url?.standardizedFileURL == url.standardizedFileURL}) {selection=existing.id;return}
         do {
             let kind=FileKind(url:url)
@@ -158,25 +182,25 @@ private struct RecoveryItem:Codable { var id:UUID;var path:String?;var kind:Stri
             status="已打开 \(url.lastPathComponent)"
         } catch {self.error="无法打开文件：\(error.localizedDescription)"}
     }
-    func newText(_ kind:FileKind,text:String="") {NSApp?.keyWindow?.makeFirstResponder(nil);showingNotes=false;let tab=FileSession(text:text,kind:kind,dirty:!text.isEmpty);tab.savedText="";tabs.append(tab);selection=tab.id;checkpoint()}
+    func newText(_ kind:FileKind,text:String="") {NSApp?.keyWindow?.makeFirstResponder(nil);showingNotes=false;showingOrganizer=false;let tab=FileSession(text:text,kind:kind,dirty:!text.isEmpty);tab.savedText="";tabs.append(tab);selection=tab.id;checkpoint()}
     @discardableResult func newHandoffText(_ text:String,markdown:Bool,title:String?,incoming:IncomingDocument) throws -> FileSession {
         guard recoveryReadable else { throw FileIssue.message("草稿恢复记录无法读取，交接文字尚未导入，请先处理现有恢复记录。") }
         guard text.utf8.count <= DocumentHandoffSafety.maximumTextBytes, !text.contains("\0") else { throw FileIssue.message("交接正文超过限制或含无效字符，未改变当前文档。") }
         NSApp?.keyWindow?.makeFirstResponder(nil)
-        let previousSelection=selection, previousNotes=showingNotes
+        let previousSelection=selection, previousNotes=showingNotes, previousOrganizer=showingOrganizer
         let tab=FileSession(text:text,kind:markdown ? .markdown:.text,dirty:true)
         tab.incoming=incoming; tab.suggestedTitle=HandoffNames.title(title,fallback:incoming.originalName)
-        tab.savedText="";tabs.append(tab);selection=tab.id;showingNotes=false
-        do { try writeCheckpoint() } catch {tabs.removeAll{$0.id==tab.id};selection=previousSelection;showingNotes=previousNotes;throw error}
+        tab.savedText="";tabs.append(tab);selection=tab.id;showingNotes=false;showingOrganizer=false
+        do { try writeCheckpoint() } catch {tabs.removeAll{$0.id==tab.id};selection=previousSelection;showingNotes=previousNotes;showingOrganizer=previousOrganizer;throw error}
         status="已新建未保存的交接文字 · 当前原文档保留"
         return tab
     }
     @discardableResult func openHandoffDocument(_ url:URL,incoming:IncomingDocument) throws -> FileSession {
         try DocumentOriginStorage.save(incoming,for:url)
         NSApp?.keyWindow?.makeFirstResponder(nil)
-        let previousSelection=selection, previousNotes=showingNotes
+        let previousSelection=selection, previousNotes=showingNotes, previousOrganizer=showingOrganizer
         open(url)
-        guard let tab=tabs.first(where:{$0.url?.standardizedFileURL==url.standardizedFileURL}) else { selection=previousSelection;showingNotes=previousNotes;throw FileIssue.message("交接文档无法打开，原有标签保留。") }
+        guard let tab=tabs.first(where:{$0.url?.standardizedFileURL==url.standardizedFileURL}) else { selection=previousSelection;showingNotes=previousNotes;showingOrganizer=previousOrganizer;throw FileIssue.message("交接文档无法打开，原有标签保留。") }
         tab.incoming=incoming
         return tab
     }

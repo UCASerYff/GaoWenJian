@@ -50,8 +50,9 @@ import ImageIO
         try imageBytes.write(to: image)
         let ocr = try OCRHandoffDispatcher.prepare(files: [image], store: store, registry: CurrentDocumentHandoffRegistry(), chooseVersion: { _ in .diskOriginal }, now: now)
         let ocrManifest = try manifest(ocr.packageURL)
+        try check(ocrManifest.targetBundleID == "com.gaoseries.GaoCaoZuo" && ocr.session.targetBundleID == ocrManifest.targetBundleID, "New OCR request and durable expected provider both identify the real operation host")
         try check(ocrManifest.items.count == 1 && ocrManifest.items.allSatisfy { !$0.relativePath.contains("/") }, "Actual default OCR dispatcher still uses payload-relative filenames")
-        let ocrReadback = try GaoActionTransport.receive(packageURL: ocr.packageURL, exchangeRoot: directory.appendingPathComponent("OCRReadback"), expectedTargetBundleID: "com.gaoseries.GaoJieTu", now: now)
+        let ocrReadback = try GaoActionTransport.receive(packageURL: ocr.packageURL, exchangeRoot: directory.appendingPathComponent("OCRReadback"), expectedTargetBundleID: OCRHandoffDispatcher.providerBundleID, now: now)
         try check(try Data(contentsOf: ocrReadback.stagedItems[0].url) == imageBytes && ocrManifest.items[0].sha256 == FileSafety.digest(imageBytes), "OCR physical payload and source digest are unchanged")
 
         let inboundURL = try GaoActionWriter.writeRequest(action: "documents.open", items: [.init(url: original, uti: "net.daringfireball.markdown")], sourceBundleID: "com.gaoseries.Fixture", targetBundleID: GaoActionContract.bundleID, exchangeRoot: directory.appendingPathComponent("Inbound"), now: now)

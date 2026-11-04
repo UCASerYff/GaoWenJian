@@ -15,19 +15,21 @@ struct RootWorkspace:View {
             if sidebar{sidebarView.frame(width:236);Divider()}
             VStack(spacing:0){
                 if !store.tabs.isEmpty{
-                    ScrollView(.horizontal){HStack(spacing:4){ForEach(store.tabs){session in TabButton(session:session,selected:!store.showingNotes && store.selection==session.id,select:{store.select(session)},close:{store.close(session)})}}.padding(.horizontal,8).padding(.vertical,6)}.scrollIndicators(.hidden).background(.bar)
+                    ScrollView(.horizontal){HStack(spacing:4){ForEach(store.tabs){session in TabButton(session:session,selected:!store.showingNotes && !store.showingOrganizer && store.selection==session.id,select:{store.select(session)},close:{store.close(session)})}}.padding(.horizontal,8).padding(.vertical,6)}.scrollIndicators(.hidden).background(.bar)
                     Divider()
                 }
                 ZStack {
                     if !store.tabs.isEmpty {
                         ForEach(store.tabs) { session in
                             TabWorkspace(session:session,store:store)
-                                .opacity(!store.showingNotes && store.selection == session.id ? 1 : 0)
-                                .allowsHitTesting(!store.showingNotes && store.selection == session.id)
-                                .accessibilityHidden(store.showingNotes || store.selection != session.id)
+                                .opacity(!store.showingNotes && !store.showingOrganizer && store.selection == session.id ? 1 : 0)
+                                .allowsHitTesting(!store.showingNotes && !store.showingOrganizer && store.selection == session.id)
+                                .accessibilityHidden(store.showingNotes || store.showingOrganizer || store.selection != session.id)
                         }
                     }
-                    if store.showingNotes {
+                    if store.showingOrganizer {
+                        OrganizerHostView(host:store.organizerHost,openDocument:{store.open($0)},goHome:store.showHome)
+                    } else if store.showingNotes {
                         StickyNotesWorkspace(store:stickyNotes,windows:stickyWindows,onGoHome:store.showHome,onOpenMarkdown:{text in store.newText(.markdown,text:text)})
                     } else if store.active == nil {welcome}
                 }.frame(maxWidth:.infinity,maxHeight:.infinity)
@@ -44,8 +46,8 @@ struct RootWorkspace:View {
                 Menu{Button("LaTeX"){store.newText(.latex,text:Templates.latex)};Button("Markdown"){store.newText(.markdown)};Divider();Button("文本"){store.newText(.text)}}label:{Label("新建",systemImage:"plus")}
                 Button(action:store.openPanel){Label("打开",systemImage:"folder")}
                 Button(action:{OCRHandoffDispatcher.startOCR(store:store)}){Label("识别文字",systemImage:"doc.text.viewfinder")}.help("识别扫描件或图片文字 (OCR)")
-                Button{if store.showingNotes{_=AppHub.saveStickyNotes()}else if let active=store.active{store.save(active)}}label:{Image(systemName:"square.and.arrow.down")}.help("保存 ⌘S").disabled(store.active?.kind.canSave != true && !store.showingNotes)
-                Button{history=true}label:{Image(systemName:"clock.arrow.circlepath")}.help("本地历史").disabled(store.showingNotes || store.active?.url==nil)
+                Button{if store.showingNotes{_=AppHub.saveStickyNotes()}else if let active=store.active{store.save(active)}}label:{Image(systemName:"square.and.arrow.down")}.help("保存 ⌘S").disabled(store.showingOrganizer || (store.active?.kind.canSave != true && !store.showingNotes))
+                Button{history=true}label:{Image(systemName:"clock.arrow.circlepath")}.help("本地历史").disabled(store.showingOrganizer || store.showingNotes || store.active?.url==nil)
                 Button{openSettings()}label:{Image(systemName:"gearshape")}.help("设置")
             }}
         }
@@ -62,13 +64,15 @@ struct RootWorkspace:View {
         VStack(alignment:.leading,spacing:0){
             HStack(spacing:11){if let image=NSImage(named:"AppIcon"){Image(nsImage:image).resizable().frame(width:38,height:38)}else{Image(systemName:"doc.on.doc.fill").font(.title)};VStack(alignment:.leading,spacing:3){Text("搞文件").font(.headline);Text("写作 · 编译 · PDF").font(.caption).foregroundStyle(.secondary)}}.padding(18)
             VStack(alignment:.leading,spacing:5){
-                sidebarShortcut("首页",symbol:"house",selected:!store.showingNotes && store.active==nil,action:store.showHome)
+                sidebarShortcut("首页",symbol:"house",selected:!store.showingNotes && !store.showingOrganizer && store.active==nil,action:store.showHome)
                 Text("核心写作").font(.caption2.weight(.semibold)).foregroundStyle(.secondary).padding(.leading,10).padding(.top,10)
                 sidebarShortcut("LaTeX",symbol:"function"){store.openPanel(for:[.latex])}
                 sidebarShortcut("Markdown",symbol:"text.badge.checkmark"){store.openPanel(for:[.markdown])}
                 Divider().padding(.vertical,6)
                 sidebarShortcut("PDF 编辑器",symbol:"doc.richtext"){store.openPanel(for:[.pdf])}
                 sidebarShortcut("Office 查看器",symbol:"doc.viewfinder"){store.openPanel(for:[.word,.spreadsheet,.presentation])}
+                Divider().padding(.vertical,6)
+                sidebarShortcut("文件整理 / 查找",symbol:"folder.badge.gearshape",selected:store.showingOrganizer,action:store.showOrganizer)
             }.padding(.horizontal,14).padding(.bottom,16)
             TextField("搜索文件名",text:$search).textFieldStyle(.roundedBorder).padding(.horizontal,14).padding(.bottom,12)
             HStack{Text(store.folder?.lastPathComponent ?? "最近打开").font(.caption.weight(.semibold)).foregroundStyle(.secondary);Spacer();Button(action:store.openFolderPanel){Image(systemName:"folder.badge.plus")}.buttonStyle(.plain).help("打开文件夹")}.padding(.horizontal,18).padding(.bottom,8)
@@ -133,6 +137,11 @@ struct RootWorkspace:View {
                         OfficeLaunchCard(title:"PowerPoint",symbol:"rectangle.on.rectangle",color:.orange){store.openPanel(for:[.presentation])}
                     }
                 }
+                HStack(spacing:16){
+                    Image(systemName:"folder.badge.gearshape").font(.title2).foregroundStyle(.secondary)
+                    VStack(alignment:.leading,spacing:4){Text("文件整理与查找").font(.headline);Text("授权目录索引、筛选与虚拟工作区，预览后安全整理原件。").font(.callout).foregroundStyle(.secondary)}
+                    Spacer();Button("打开整理 / 查找",action:store.showOrganizer)
+                }.padding(16).background(Color.primary.opacity(0.035),in:RoundedRectangle(cornerRadius:10))
                 HStack(spacing:12){
                     Text("附加工具").font(.caption.weight(.medium)).foregroundStyle(.secondary)
                     Button(action:showStickyNotes){Label("便笺",systemImage:"note.text")}.buttonStyle(.borderless)
@@ -153,7 +162,7 @@ struct RootWorkspace:View {
         HStack{Text(title).font(.headline);Spacer();Text(detail).font(.caption).foregroundStyle(.secondary)}
     }
     private func showStickyNotes(){NSApp.keyWindow?.makeFirstResponder(nil);store.showingNotes=true}
-    private var statusBar:some View{HStack(spacing:14){Image(systemName:"internaldrive").font(.caption);Text(store.showingNotes ? stickyNotes.saveStatus : store.status).font(.caption).lineLimit(1);Spacer();if !store.showingNotes,let active=store.active{SessionStatus(session:active)};Text("本地模式").font(.caption).foregroundStyle(.secondary)}.padding(.horizontal,14).frame(height:30).background(.bar)}
+    private var statusBar:some View{HStack(spacing:14){Image(systemName:"internaldrive").font(.caption);Text(store.showingOrganizer ? "文件整理 / 查找 · 原编辑标签保留" : store.showingNotes ? stickyNotes.saveStatus : store.status).font(.caption).lineLimit(1);Spacer();if !store.showingOrganizer && !store.showingNotes,let active=store.active{SessionStatus(session:active)};Text("本地模式").font(.caption).foregroundStyle(.secondary)}.padding(.horizontal,14).frame(height:30).background(.bar)}
 }
 struct SessionStatus:View{@ObservedObject var session:FileSession;var body:some View{HStack(spacing:12){if session.kind.isText{Text("\(session.text.count) 字符 · \(session.text.components(separatedBy:"\n").count) 行")};Text(session.kind.isOfficeViewer ? "只读查看" : session.dirty || session.moduleDirty ? "有未保存修改" : "已保存").foregroundStyle(session.dirty || session.moduleDirty ? Color.orange : .secondary)}.font(.caption)}}
 struct TabButton:View{

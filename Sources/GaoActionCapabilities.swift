@@ -58,6 +58,10 @@ enum GaoCapabilityDiscovery {
         return GaoInstalledProvider(bundleID:bundleID,applicationURL:applicationURL,appVersion:version,capability:capability)
     }
     @MainActor static func send(packageURL: URL, to provider: GaoInstalledProvider, completion: @escaping (Error?) -> Void) {
+        // Internal organizer operations are direct calls, never a self-handoff.
+        guard !(provider.bundleID == GaoActionContract.bundleID && ["files.search","files.choose","files.reveal","associations.manage"].contains(provider.capability.action)) else {
+            completion(GaoActionContract.reject("recursiveProvider","本应用的文件整理/查找必须直接调用内置功能，不能递归发送给自己。"));return
+        }
         // Recheck the exact installed bundle immediately before the explicit NSWorkspace handoff.
         do {
             guard let current = try self.provider(applicationURL:provider.applicationURL,bundleID:provider.bundleID,action:provider.capability.action), current.appVersion == provider.appVersion else { throw GaoActionContract.reject("providerChanged","目标应用已变化，请重新检查能力。") }
