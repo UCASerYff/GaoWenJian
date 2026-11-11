@@ -20,15 +20,15 @@ func runOfficeRecoveryTests() throws {
     try expect(originalAfterDraft == digest, "草稿不会修改原件")
     word.setText(id: word.paragraphs[0].id, text: "未保存草稿二")
     try word.apply(); try OfficeRecovery.persist(package: package, original: original, originalDigest: digest)
-    let previous = try OfficeRecovery.read(for: original, previous: true)!
-    try expect(previous.record.documentDigest == first.record.documentDigest, "保留上一个完整恢复副本")
+    let previous = try OfficeRecovery.read(for: original, previous: true)
+    try expect(previous == nil, "不生成恢复稿的自动备份")
+    let restored = try OfficePackage(url: OfficeRecovery.read(for: original)!.url)
     let currentURL = OfficeRecovery.documentURL(for: original)
     let damaged = Data("损坏但必须保留的草稿".utf8); try damaged.write(to: currentURL)
     var refused = false
     do { try OfficeRecovery.persist(package: package, original: original, originalDigest: digest) } catch { refused = true }
     let afterRefusal = try Data(contentsOf: currentURL)
     try expect(refused && afterRefusal == damaged, "损坏草稿不会被当作空内容覆盖")
-    let restored = try OfficePackage(url: previous.url)
     OfficeRecovery.discardIfSafe(for: original, expectedOriginalDigest: digest)
     try expect(FileManager.default.fileExists(atPath: currentURL.path), "放弃修改时保留损坏草稿")
     // A fully loaded candidate can be bound to the actual original and must respect external conflicts.
@@ -44,5 +44,5 @@ func runOfficeRecoveryTests() throws {
     var retainedDamagedBytes = false
     for case let file as URL in archived { if let data = try? Data(contentsOf: file), data == damaged { retainedDamagedBytes = true } }
     try expect(retainedDamagedBytes, "已归档的损坏草稿逐字节保留")
-    print("Office recovery tests: PASS (atomic drafts / previous copy / conflict / corruption retention)")
+    print("Office recovery tests: PASS (atomic drafts / no previous backup / conflict / corruption retention)")
 }

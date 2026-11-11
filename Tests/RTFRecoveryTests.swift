@@ -50,7 +50,7 @@ struct RTFRecoveryTests {
         expect(FileManager.default.fileExists(atPath:RTFRecovery.url(for:freshURL).path),"missing fresh recovery")
         try fresh.save(freshURL)
         expect(!fresh.dirty && !FileManager.default.fileExists(atPath:RTFRecovery.url(for:freshURL).path),"saved draft not cleared")
-        expect(try FileSafety.snapshots(for:freshURL).count==1,"original snapshot missing")
+        expect(!FileManager.default.fileExists(atPath:FileSafety.root.appendingPathComponent("History").path),"saving created a backup")
         fresh.content=NSAttributedString(string:"待丢弃");fresh.markDirty()
         NotificationCenter.default.post(name:Notification.Name("GaoWenJian.discardDraft"),object:source.path)
         RunLoop.main.run(until:Date().addingTimeInterval(0.15))

@@ -39,7 +39,7 @@ func runOfficeRoundTripTests() throws {
     try expect(retainedDocument.xmlString.contains("内嵌对象正文"), "编辑父段落不修改内嵌对象文本")
     let retainedAttachment = try Data(contentsOf: reopenedWordPackage.location("word/media/unknown.bin"))
     try expect(retainedAttachment == unknown, "Word 附件逐字节保留")
-    try expect((try? FileSafety.snapshots(for: wordURL).count) ?? 0 >= 2, "重复覆盖保存前原件快照")
+    try expect(!FileManager.default.fileExists(atPath: FileSafety.root.appendingPathComponent("History").path), "重复保存不创建自动备份")
 
     // Excel: cached formula updates, blank/text range semantics, cross-sheet references, repeated save and sparse cells.
     let excelURL = root.appendingPathComponent("excel.xlsx")
@@ -124,5 +124,5 @@ func runOfficeRoundTripTests() throws {
     let afterConflict = try Data(contentsOf: wordURL)
     try expect(afterConflict == externallyChanged, "阻止后外部内容完整")
     try runOfficeRecoveryTests()
-    print("Office round-trip tests: PASS (Word / Excel / PPT / preservation / backups / conflict protection)")
+    print("Office round-trip tests: PASS (Word / Excel / PPT / preservation / no automatic backups / conflict protection)")
 }

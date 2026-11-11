@@ -498,31 +498,8 @@ final class OFIndexStore: @unchecked Sendable {
             try execute("UPDATE authorized_roots SET status='changed',diagnostic='已放弃未完成快照，可重新完整扫描' WHERE id=?", [.text(rootID.uuidString)])
         }
     }
-    /// SQLite online backup creates a consistent database including WAL changes; never overwrites a prior backup.
-    func backupDatabase(to url:URL) throws {
-        lock.lock(); defer {lock.unlock()}
-        let fd = open(url.path,O_CREAT | O_EXCL | O_WRONLY | O_NOFOLLOW | O_CLOEXEC,0o600)
-        guard fd >= 0 else {throw OFIndexError.unsafe("备份目标已存在或不可写，不覆盖")}; close(fd)
-        var target:OpaquePointer?
-        var success = false
-        defer {if let target {sqlite3_close(target)}; if !success {try? FileManager.default.removeItem(at:url)}}
-        guard sqlite3_open_v2(url.path,&target,SQLITE_OPEN_READWRITE | SQLITE_OPEN_FULLMUTEX,nil) == SQLITE_OK,
-              let backup = sqlite3_backup_init(target,"main",db,"main") else {throw OFIndexError.database("无法开始一致性备份")}
-        let result = sqlite3_backup_step(backup,-1)
-        let finish = sqlite3_backup_finish(backup)
-        guard result == SQLITE_DONE,finish == SQLITE_OK else {throw OFIndexError.database("备份未完成（\(result)）")}
-        var check:OpaquePointer?
-        guard sqlite3_prepare_v2(target,"PRAGMA quick_check",-1,&check,nil) == SQLITE_OK,sqlite3_step(check) == SQLITE_ROW,
-              let bytes = sqlite3_column_text(check,0),String(cString:bytes) == "ok" else {
-            sqlite3_finalize(check); throw OFIndexError.recovery("新备份完整性检查失败")
-        }
-        sqlite3_finalize(check)
-        success = true
-    }
-
     // Synthetic migration tests and diagnostics need the actual SQLite version, never guessed feature claims.
     var sqliteVersion:String { String(cString:sqlite3_libversion()) }
-    func checkpointForBackup() throws { try execute("PRAGMA wal_checkpoint(FULL)") }
 
     private func transaction<T>(_ body:()throws->T) throws -> T {
         lock.lock(); defer {lock.unlock()}

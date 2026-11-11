@@ -9,8 +9,8 @@
 - Bundle identifier 为 com.gaoseries.GaoWenJian。安装目标 /Applications/搞文件.app。
 - 源码、资源、使用说明、测试和当前安装包全部保存在本目录。用户真实文档原路径保存，不将用户文件复制到发行包。
 - 工作区状态、恢复草稿和历史默认 ~/Library/Application Support/GaoSeries/GaoWenJian；损坏或无法读取时禁止以空资料覆盖。
-- 任何覆盖保存必须保留原件快照。无法无损处理的格式须明确提示并提供另存，不得静默删除未知对象或宏。
-- 发布与安装前安全备份、核验本应用资料和设置；新版本成功验证后精确删除本项目旧程序、旧安装包和中间构建；保留源码、最新版发行包、用户资料和安全备份。失败恢复旧程序。
+- 覆盖保存前必须核对原文件身份与内容，使用原子替换并保留外部修改冲突保护；不创建原件快照或历史备份。无法无损处理的格式须明确提示并提供另存，不得静默删除未知对象或宏。
+- 发布与安装前只读逐文件核验本应用资料、设置和附件；不复制资料或保留旧程序。候选程序核验通过后替换正式安装；失败停止并如实报告，不新建备份或回滚副本。完成后只保留源码、最新版发行包和现用用户资料。
 - 用户于本轮批准新建公开 GitHub 仓库发布搞文件及 Release；后续按工作区规则更新对应仓库。只上传程序、源码、资源和许可，严禁上传安全备份、个人便笺、文档、附件、设置或凭据。
 - 便笺资料独立存于同一内部资料路径下的 StickyNotes 子目录；富文本和附件需整体核验，损坏、摘要冲突、过新格式或主记录缺失时不得空白覆盖。关闭桌面便笺仅隐藏，删除进入回收站；未保存时不得静默退出。
 - 正式候选使用已授权的 Apple Development 签名（下节），不声称 Developer ID 或公证；身份不可用就停止，禁止降为 ad-hoc。
@@ -22,7 +22,7 @@
 - `Scripts/sign_bundle.py` 是唯一生产签名入口，build预检必须在实际用户上下文确认身份。沙箱security空结果/失败不能当无证书，更不能自动降签；真实私钥不能使用时停止报告，不修改钥匙串ACL/partition-list，不导入或导出私钥。
 - 固定主DR：`designated => identifier "com.gaoseries.GaoWenJian" and anchor apple generic and certificate leaf[subject.OU] = "5G96498KGJ"`；每个嵌套对象按原identifier使用相同Team约束。tectonic固定identifier `com.gaoseries.GaoWenJian.tectonic`。旧cdhash requirement不保留。以后更新沿用该证书/Team/完整DR，证书轮换另核。
 - 先逐个嵌套代码/框架/扩展inside-out签，宿主最后封资源，绝不 `--deep` 签。逐对象提取、保留并核对原entitlements和语义flags；ad-hoc/linker-signed两机制位随证书签名消失，不是业务权限。无原entitlements就不额外加调试或其他权限。不得统一entitlements覆盖框架/扩展。
-- `--timestamp=none`，不用网络时间戳。签后核每个MachO架构/SHA、精确叶证书SHA、实际Team、完整DR及strict/all-architectures，主bundle再deep严格验证（仅验证可deep）。记录全库存与实际ZIP展开恢复核验；旧正式程序的原对象/安全备份仍由安装协调流程保留。安装器只复制/验签，不再deep重签。
+- `--timestamp=none`，不用网络时间戳。签后核每个MachO架构/SHA、精确叶证书SHA、实际Team、完整DR及strict/all-architectures，主bundle再deep严格验证（仅验证可deep）。记录全库存与实际ZIP展开恢复核验；旧正式程序在候选和现用资料核验通过后精确删除，不保留原对象或安全备份。安装器只复制/验签，不再deep重签。
 - 旧V1.09及Organizer阶段候选是ad-hoc且DR绑定cdhash，新代码不能等价沿用旧TCC身份。本次用户需在实际系统流程正常确认权限，不承诺自动转授；稳定Development用于减少今后反复改变身份，不代表已公证。
 
 ## 整理来源退役后的现用数据（2026-11-03）

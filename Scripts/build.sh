@@ -1,6 +1,7 @@
 #!/bin/zsh
 set -euo pipefail
 PROJECT_DIR=${0:A:h:h}
+source "$PROJECT_DIR/Scripts/require-build-lease.sh"
 validate_app_destination() {
   python3 - "$1" <<'PY'
 import os
@@ -21,6 +22,7 @@ print(destination)
 PY
 }
 APP_ONLY_DESTINATION=''
+APP_ONLY_CREATED=0
 if [[ "${1:-}" == '--app-only' ]]; then
   [[ $# == 2 ]] || { print -u2 '需要 --app-only 和一个目标路径'; exit 1; }
   APP_ONLY_DESTINATION=$(validate_app_destination "$2")
@@ -36,11 +38,11 @@ BUILD_NUMBER=$(tr -d '\n' < "$PROJECT_DIR/BUILD")
 STAGING=$(python3 -c 'import os,tempfile; p=tempfile.mkdtemp(prefix="gaowenjian-build.", suffix=".noindex", dir="/private/tmp"); os.chown(p,-1,os.getgid()); print(p)')
 cleanup_build() {
   local result=$?
-  if [[ $result != 0 && "${GAOWENJIAN_RETAIN_FAILED_BUILD:-0}" == 1 ]]; then
-    print -u2 "FAILED_BUILD=$STAGING"
-  else
-    rm -rf "$STAGING"
+  if [[ $result != 0 && "$APP_ONLY_CREATED" == 1 ]]; then
+    rm -rf "$APP_ONLY_DESTINATION"
+    rm -f "$APP_ONLY_DESTINATION.signing.json" "$APP_ONLY_DESTINATION.copy-verification.json"
   fi
+  rm -rf "$STAGING"
 }
 trap cleanup_build EXIT
 APP="$STAGING/搞文件.app"
@@ -66,6 +68,7 @@ plutil -lint "$APP/Contents/Info.plist"
 python3 "$PROJECT_DIR/Scripts/sign_bundle.py" sign --app "$APP" --receipt "$STAGING/SigningReceipt.json"
 if [[ -n "$APP_ONLY_DESTINATION" ]]; then
   APP_ONLY_DESTINATION=$(validate_app_destination "$APP_ONLY_DESTINATION")
+  APP_ONLY_CREATED=1
   ditto "$APP" "$APP_ONLY_DESTINATION"
   cp "$STAGING/SigningReceipt.json" "$APP_ONLY_DESTINATION.signing.json"
   python3 "$PROJECT_DIR/Scripts/sign_bundle.py" verify --app "$APP_ONLY_DESTINATION" --source-receipt "$APP_ONLY_DESTINATION.signing.json" --receipt "$APP_ONLY_DESTINATION.copy-verification.json"
@@ -74,22 +77,13 @@ fi
 mkdir -p "$STAGING/disk" "$PROJECT_DIR/Release"
 ditto "$APP" "$STAGING/disk/搞文件.app"
 if ! python3 "$PROJECT_DIR/Scripts/sign_bundle.py" verify --app "$STAGING/disk/搞文件.app" --source-receipt "$STAGING/SigningReceipt.json" --receipt "$STAGING/CopyVerification.json"; then
-  # Keep mismatch evidence before the normal staging cleanup; never fix a copy
-  # to make it match or package an unverified disk source.
-  FAILED_COPY_PREFIX="$PROJECT_DIR/Release/GaoWenJian-$APP_VERSION-copy-failed-${STAGING:t}"
-  cp "$STAGING/SigningReceipt.json" "$FAILED_COPY_PREFIX-signing.json"
-  if [[ -f "$STAGING/CopyVerification.json" ]]; then
-    cp "$STAGING/CopyVerification.json" "$FAILED_COPY_PREFIX-copy-verification.json"
-  fi
-  print -u2 "导出副本核验失败，已保留签名及可用差异收据：$FAILED_COPY_PREFIX"
+  print -u2 '导出副本核验失败；停止打包并清除中间构建。'
   exit 1
 fi
 ln -s /Applications "$STAGING/disk/Applications"
 [[ ! -f "$PROJECT_DIR/使用说明.txt" ]] || cp "$PROJECT_DIR/使用说明.txt" "$STAGING/disk/使用说明.txt"
 hdiutil create -quiet -volname "搞文件 V$APP_VERSION" -srcfolder "$STAGING/disk" -format UDZO "$STAGING/GaoWenJian-$APP_VERSION.dmg"
 hdiutil verify -quiet "$STAGING/GaoWenJian-$APP_VERSION.dmg"
-cp "$STAGING/SigningReceipt.json" "$PROJECT_DIR/Release/GaoWenJian-$APP_VERSION-signing.json"
-cp "$STAGING/CopyVerification.json" "$PROJECT_DIR/Release/GaoWenJian-$APP_VERSION-copy-verification.json"
 mv "$STAGING/GaoWenJian-$APP_VERSION.dmg" "$PROJECT_DIR/Release/GaoWenJian-$APP_VERSION.dmg"
 (cd "$PROJECT_DIR/Release" && shasum -a 256 "GaoWenJian-$APP_VERSION.dmg" > "GaoWenJian-$APP_VERSION.dmg.sha256")
 print "完成：$PROJECT_DIR/Release/GaoWenJian-$APP_VERSION.dmg"

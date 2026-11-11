@@ -57,12 +57,10 @@ import Foundation
     expect(reopened.isDirty && reopened.flush(), "metadata flush failed")
     let metadata = StickyNotesStore(rootURL: root).notes[0]
     expect(metadata.title == "已整理" && metadata.group == "研究" && metadata.color == .purple && metadata.isPinned && metadata.isTranslucent && metadata.isCollapsed && metadata.isOnDesktop && metadata.frame.x == -120, "metadata was lost")
-    let snapshots = try manager.contentsOfDirectory(at: root.appendingPathComponent("History"), includingPropertiesForKeys: nil)
-    expect(try snapshots.contains { try Data(contentsOf: $0) == firstArchive }, "verified original snapshot missing")
+    expect(!manager.fileExists(atPath: root.appendingPathComponent("History").path), "note save created an automatic backup")
     expect(reopened.setDefaults(from: id), "default style save failed")
     expect(try manager.contentsOfDirectory(at: root.appendingPathComponent("Contents"), includingPropertiesForKeys: nil).count == initialBlobs.count, "metadata changes duplicated attachment blobs")
-    let metadataHistory = try manager.contentsOfDirectory(at: root.appendingPathComponent("History"), includingPropertiesForKeys: nil)
-    expect(try metadataHistory.allSatisfy { try Data(contentsOf: $0).count < 16_384 }, "metadata history copied full attachment packages")
+    expect(!manager.fileExists(atPath: root.appendingPathComponent("History").path), "metadata edit created a backup")
     guard let blank = reopened.create() else { throw FileIssue.message("empty note creation failed") }
     expect(reopened.content(for: blank)?.string == "" && reopened.notes.first(where: { $0.id == blank })?.color == .purple && reopened.defaults.fontSize == 19, "default style copied content or lost style")
     expect(reopened.updateContent(id: id, content: NSAttributedString(string: "")) && reopened.flush(), "empty replacement failed")
@@ -99,8 +97,7 @@ import Foundation
     let rtfdDigest = try StickyNotesStore.destinationDigest(at: rtfdURL)
     try reopened.exportNote(id: id, to: rtfdURL, format: .rtfd, expectedDigest: rtfdDigest)
     expect(try StickyNotesStore.destinationDigest(at: rtfdURL) == rtfdDigest, "approved directory replacement changed attachment bytes")
-    let exports = try manager.contentsOfDirectory(at: root.appendingPathComponent("History/Exports"), includingPropertiesForKeys: nil)
-    expect(try exports.contains { try StickyNotesStore.destinationDigest(at: $0) == changedDigest }, "original export target snapshot missing")
+    expect(!manager.fileExists(atPath: root.appendingPathComponent("History").path), "note export created a backup")
 
     let simple = NSAttributedString(string: "中文样式", attributes: [.font: NSFont.systemFont(ofSize: 17), .underlineStyle: NSUnderlineStyle.single.rawValue])
     guard let simpleID = reopened.create(title: "简单文本", content: simple) else { throw FileIssue.message("simple note failed") }
@@ -217,5 +214,5 @@ import Foundation
     let invalidAttachment = NSMutableAttributedString(string: "附件未加载")
     invalidAttachment.append(NSAttributedString(attachment: NSTextAttachment()))
     expect(!concurrent.updateContent(id: simpleID, content: invalidAttachment), "unreadable attachment accepted")
-    print("PASS: sticky notes rich text, PNG/PDF attachments, lightweight metadata history, immutable blobs, checked schema migration, defaults, empty text, recycle bin, TXT/RTF/RTFD import/export, snapshots, conflicts, corruption and symlink protection (\(count) assertions).")
+    print("PASS: sticky notes rich text, PNG/PDF attachments, metadata-only edits, immutable blobs, checked schema migration, defaults, empty text, recycle bin, TXT/RTF/RTFD import/export, no automatic backups, conflicts, corruption and symlink protection (\(count) assertions).")
 }

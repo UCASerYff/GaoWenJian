@@ -153,9 +153,9 @@ import UniformTypeIdentifiers
             var overwrite = HandoffSafeExport.Overwrite.rejectExisting
             if FileManager.default.fileExists(atPath: destination.path) {
                 let reviewed = try fingerprint(destination)
-                let alert = NSAlert(); alert.messageText = "覆盖所选目标并保留快照？"
-                alert.informativeText = "目标：\(HandoffNames.display(destination.lastPathComponent))\n仅覆盖刚核对的版本；原内容先写入本地历史快照。原件或入站副本不能作为目标。"
-                alert.addButton(withTitle: "保留快照并覆盖"); alert.addButton(withTitle: "取消")
+                let alert = NSAlert(); alert.messageText = "覆盖所选目标？"
+                alert.informativeText = "目标：\(HandoffNames.display(destination.lastPathComponent))\n仅覆盖刚核对的版本；不另存原内容备份。原件或入站副本不能作为目标。"
+                alert.addButton(withTitle: "确认覆盖"); alert.addButton(withTitle: "取消")
                 guard alert.runModal() == .alertFirstButtonReturn else { return }
                 overwrite = .replace(expectedSHA256: reviewed.1)
             }

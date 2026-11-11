@@ -783,11 +783,10 @@ final class PDFWorkspaceModel: ObservableObject {
                     throw PDFWorkspaceError.message("原 PDF 已被其他程序修改。为避免覆盖，请另存新文件或重新打开。")
                 }
             }
-            _ = try FileSafety.snapshot(url: target)
         }
         try data.write(to: target, options: .atomic)
         let written = try Data(contentsOf: target)
-        guard written == data else { throw PDFWorkspaceError.message("写入后的文件校验失败；原件快照已保留。") }
+        guard written == data else { throw PDFWorkspaceError.message("写入后的文件校验失败，请保留当前编辑内容并检查保存位置。") }
         if target.standardizedFileURL == sourceURL.standardizedFileURL {
             sourceDigest = Self.digest(written)
             dirty = false
@@ -874,7 +873,6 @@ final class PDFWorkspaceModel: ObservableObject {
         guard let data = output.dataRepresentation(), let validation = PDFDocument(data: data), validation.pageCount == output.pageCount else {
             throw PDFWorkspaceError.message("无法生成有效 PDF，操作已取消。")
         }
-        if FileManager.default.fileExists(atPath: target.path) { _ = try FileSafety.snapshot(url: target) }
         try data.write(to: target, options: .atomic)
         status = "已导出 \(target.lastPathComponent)"
     }

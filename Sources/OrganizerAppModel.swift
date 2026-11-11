@@ -28,7 +28,6 @@ enum OFAppSection: Hashable { case search, favorites, roots, associations, moves
     @Published var movePlan: OFMovePlan?
     @Published var moveHistory: [OFMovePlan] = []
     @Published var moving = false
-    @Published var backingUp = false
     @Published var incomingScopeNote = ""
     @Published var dataRevision = UUID()
     var index: OFIndexStore?
@@ -84,11 +83,10 @@ enum OFAppSection: Hashable { case search, favorites, roots, associations, moves
         if let wakeObserver { NSWorkspace.shared.notificationCenter.removeObserver(wakeObserver) }
         if ownsRootLock { OFAppLocations.release() }
     }
-    var hasActiveOperation: Bool { moving || scanning || backingUp || associations?.busy == true }
-    func stopForBackup() { pendingScanRoots.removeAll(); scanFlag?.cancel(); monitor?.stop() }
+    var hasActiveOperation: Bool { moving || scanning || associations?.busy == true }
     func shutdown() { pendingScanRoots.removeAll(); scanFlag?.cancel(); monitor?.stop(); searchTask?.cancel(); if let id = movePlan?.id { mover?.requestCancel(id: id) }; if !moving { releaseMoveScopes() } }
     func saveConfig() {
-        guard fatalError == nil, !backingUp else { return }
+        guard fatalError == nil else { return }
         do { try configDocument?.save(config); dataRevision = UUID() } catch { fatalError = error.localizedDescription }
     }
     func refreshRoots() { do { roots = try index?.roots() ?? [] } catch { status = error.localizedDescription } }
@@ -102,7 +100,7 @@ enum OFAppSection: Hashable { case search, favorites, roots, associations, moves
         do { try monitor?.start() } catch { status = error.localizedDescription }
     }
     func addRoot(suggested: URL? = nil) {
-        guard fatalError == nil, !backingUp, !moving, let index else { return }
+        guard fatalError == nil, !moving, let index else { return }
         let panel = NSOpenPanel(); panel.title = "选择要索引的目录"; panel.message = "只读取所选范围的元数据；不读取正文、不搬动原文件。"; panel.canChooseDirectories = true; panel.canChooseFiles = false; panel.allowsMultipleSelection = true; panel.directoryURL = suggested
         guard panel.runModal() == .OK else { return }
         for url in panel.urls {
@@ -116,7 +114,7 @@ enum OFAppSection: Hashable { case search, favorites, roots, associations, moves
         startNextScan()
     }
     private func startNextScan() {
-        guard !scanning, !backingUp, !moving, let id = pendingScanRoots.first, let index, fatalError == nil else { return }
+        guard !scanning, !moving, let id = pendingScanRoots.first, let index, fatalError == nil else { return }
         pendingScanRoots.remove(id); scanning = true
         let flag = OFCancellationFlag(); scanFlag = flag
         scanMessage = "正在扫描授权目录…"
@@ -139,7 +137,7 @@ enum OFAppSection: Hashable { case search, favorites, roots, associations, moves
     }
     func cancelScan() { pendingScanRoots.removeAll(); scanFlag?.cancel() }
     func pause(_ root: OFIndexRoot) {
-        guard !moving, !backingUp else { return }
+        guard !moving else { return }
         do { try index?.setPaused(rootID: root.id, paused: !root.isPaused); refreshRoots(); configureMonitor() } catch { status = error.localizedDescription }
     }
     func removeRoot(_ root: OFIndexRoot) {
@@ -199,7 +197,6 @@ enum OFAppSection: Hashable { case search, favorites, roots, associations, moves
         do { try index?.updateAnnotations(fileID: file.id, tags: tags, favorite: file.favorite); refreshSearch(resetPage: false); dataRevision = UUID() } catch { status = error.localizedDescription }
     }
     func createWorkspace() {
-        guard !backingUp else { return }
         guard let name = ofAskText(title: "新建虚拟工作区", message: "工作区组合目录、查询和收藏；不会移动原件。") else { return }
         let workspace = OFVirtualWorkspace(name: name); config.workspaces.append(workspace); saveConfig(); section = .workspace(workspace.id)
     }
@@ -232,7 +229,6 @@ enum OFAppSection: Hashable { case search, favorites, roots, associations, moves
         config.workspaces[i].panels.removeAll { $0.id == panelID }; saveConfig()
     }
     func saveQuery() {
-        guard !backingUp else { return }
         guard let name = ofAskText(title: "保存当前查询", message: "保存筛选、排序和授权范围。", initial: filter.query) else { return }
         let f = filter
         config.savedQueries.append(OFSavedQuery(name: name, query: f.query, rootID: f.rootID, extensionName: f.extensionName, pathContains: f.pathContains, typeIdentifier: f.typeIdentifier, kind: f.kind.rawValue, minSize: f.minSize, maxSize: f.maxSize, modifiedAfter: f.modifiedAfter, modifiedBefore: f.modifiedBefore, sort: f.sort.rawValue, ascending: f.ascending, filter: f)); saveConfig()
@@ -249,7 +245,7 @@ enum OFAppSection: Hashable { case search, favorites, roots, associations, moves
         catch { leases.forEach { $0.release() }; throw error }
     }
     func previewMove(rename: Bool = false) async {
-        guard !moving, !backingUp, !scanning, !selectedFiles.isEmpty else { return }
+        guard !moving, !scanning, !selectedFiles.isEmpty else { return }
         do {
             releaseMoveScopes()
             let (urls, leases) = try acquireSelected(selectedFiles); moveLeases = leases
@@ -325,7 +321,7 @@ extension OFAppModel {
 extension OFAppModel {
     /// A bounded metadata query; leases remain alive through the provider's explicit review/send.
     func providerSearch(query: String, scope: URL?) throws -> OrganizerSearchLease {
-        guard fatalError == nil, !backingUp, let index else { throw OFAppFailure("文件索引当前不可用。") }
+        guard fatalError == nil, let index else { throw OFAppFailure("文件索引当前不可用。") }
         var filter = OFSearchFilter(query: query)
         var scopedRootID: UUID?
         var leases: [OFIndexAccessLease] = []
@@ -363,7 +359,7 @@ extension OFAppModel {
         } catch { leases.forEach { $0.release() }; throw error }
     }
     @discardableResult func requestAssociation(uti: String, completion: @escaping @MainActor (OrganizerProviderResult) -> Void) -> Bool {
-        guard fatalError == nil, !backingUp, !hasPendingAssociation, let associations, !associations.busy else { return false }
+        guard fatalError == nil, !hasPendingAssociation, let associations, !associations.busy else { return false }
         let effectiveUTI: String
         if uti.isEmpty {
             if let current = UTType(associations.identifier), !current.isDynamic { effectiveUTI = current.identifier }
@@ -382,13 +378,13 @@ extension OFAppModel {
         callback?(.cancelled)
     }
     func commitAssociation(to application: URL) async {
-        guard !backingUp, let controller = associations, !controller.busy else { return }
+        guard let controller = associations, !controller.busy else { return }
         let mode = controller.mode, identifier = controller.identifier
         let success = await controller.change(to: application)
         completeAssociation(mode: mode, identifier: identifier, success: success, detail: controller.message)
     }
     func restoreAssociation(_ record: OFAssociationRecord) async {
-        guard !backingUp, let controller = associations, !controller.busy else { return }
+        guard let controller = associations, !controller.busy else { return }
         let success = await controller.restore(record)
         completeAssociation(mode: record.mode, identifier: record.identifier, success: success, detail: controller.message)
     }

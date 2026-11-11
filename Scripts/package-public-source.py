@@ -14,6 +14,7 @@ PRIVATE_COMPONENTS={'.git','安全备份','Safety','Reports','Backups','keys','R
 PRIVATE_COMPONENT_NAMES={item.casefold() for item in PRIVATE_COMPONENTS}
 PRIVATE_SUFFIXES={'.p12','.p8','.key','.mobileprovision','.sqlite','.sqlite3','.db','.pyc','.dmg'}
 DATABASE_SIDECAR=re.compile(r'\.(?:sqlite3?|db)-(?:wal|shm|journal)$',re.IGNORECASE)
+PRIVATE_RECEIPT=re.compile(r'(?:gaowenjian-install-.*|.*[.-](?:signing|copy-verification))\.json$',re.IGNORECASE)
 
 def need(value,message):
     if not value:raise RuntimeError(message)
@@ -25,6 +26,7 @@ def public_path(name):
             and (name in FILES or not any(part.casefold() in PRIVATE_COMPONENT_NAMES
                         or part.casefold().startswith('.env') or part.casefold().endswith(('.app','.app.zip','.noindex','.dsym'))
                         or DATABASE_SIDECAR.search(part) for part in path.parts))
+            and not PRIVATE_RECEIPT.fullmatch(path.name)
             and path.suffix.lower() not in PRIVATE_SUFFIXES)
 def tree():
     result=[]
@@ -48,11 +50,17 @@ def main():
     output.parent.mkdir(exist_ok=True)
     need(output.parent.resolve()==output.parent and output.parent.is_dir(),'Release output parent must be a real local directory')
     prefix='GaoWenJian-'+version+'-source/'
-    with zipfile.ZipFile(output,'x',compression=zipfile.ZIP_DEFLATED) as archive:
-        for mode,object_id,name in files:
-            data=git('cat-file','blob',object_id);entry=zipfile.ZipInfo(prefix+name,(1980,1,1,0,0,0));entry.compress_type=zipfile.ZIP_DEFLATED
-            entry.external_attr=(int(mode,8)&0o777)<<16;archive.writestr(entry,data)
-    with zipfile.ZipFile(output) as archive:
-        need(archive.testzip() is None and archive.namelist()==[prefix+item[2] for item in files],'Public source ZIP verification failed; preserve output')
+    created=False
+    try:
+        with zipfile.ZipFile(output,'x',compression=zipfile.ZIP_DEFLATED) as archive:
+            created=True
+            for mode,object_id,name in files:
+                data=git('cat-file','blob',object_id);entry=zipfile.ZipInfo(prefix+name,(1980,1,1,0,0,0));entry.compress_type=zipfile.ZIP_DEFLATED
+                entry.external_attr=(int(mode,8)&0o777)<<16;archive.writestr(entry,data)
+        with zipfile.ZipFile(output) as archive:
+            need(archive.testzip() is None and archive.namelist()==[prefix+item[2] for item in files],'Public source ZIP verification failed')
+    except BaseException:
+        if created:output.unlink(missing_ok=True)
+        raise
     print(json.dumps({'sourceZIP':str(output),'sha256':hashlib.sha256(output.read_bytes()).hexdigest(),'commit':commit,'version':version,'build':build,'publicFileCount':len(files),'onlyCommittedPublicBlobs':True},ensure_ascii=False,indent=2))
 if __name__=='__main__':main()

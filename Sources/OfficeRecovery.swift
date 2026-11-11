@@ -31,12 +31,8 @@ enum OfficeRecovery {
     static func persist(package: OfficePackage, original: URL, originalDigest: String) throws {
         let target = documentURL(for: original)
         try FileManager.default.createDirectory(at: target.deletingLastPathComponent(), withIntermediateDirectories: true)
-        if let old = try read(for: original) {
-            let previous = documentURL(for: original, previous: true)
-            try Data(contentsOf: old.url).write(to: previous, options: .atomic)
-            try JSONEncoder().encode(old.record).write(to: metadataURL(previous), options: .atomic)
-        }
-        try package.save(to: target, updateSource: false, createSnapshot: false)
+        _ = try read(for: original) // Refuse to overwrite a corrupt existing recovery draft.
+        try package.save(to: target, updateSource: false)
         let record = OfficeRecoveryRecord(originalPath: original.standardizedFileURL.path, originalDigest: originalDigest, documentDigest: try OfficePackage.digest(target), updatedAt: Date())
         try JSONEncoder().encode(record).write(to: metadataURL(target), options: .atomic)
     }

@@ -9,7 +9,7 @@ enum HandoffSafeExport {
         case rejectExisting
         case replace(expectedSHA256: String)
     }
-    enum Phase { case beforeRead, beforeWrite, afterCopy, afterSnapshot, beforeCommit }
+    enum Phase { case beforeRead, beforeWrite, afterCopy, beforeCommit }
     struct Hooks {
         var check: (Phase, Int64) throws -> Void = { _, _ in }
         static let none = Hooks()
@@ -18,14 +18,13 @@ enum HandoffSafeExport {
         let destination: URL
         let sha256: String
         let byteCount: Int64
-        let snapshotURL: URL?
     }
     enum Failure: LocalizedError {
         case sameFile, conflict, changed, invalidFile, tooLarge, io(Int32), recoveryRequired(URL)
         var errorDescription: String? {
             switch self {
             case .sameFile: return "导出位置与源文件是同一文件，请选择新的文件名。"
-            case .conflict: return "目标文件已存在；请另选名称，或重新确认覆盖并保留原件快照。"
+            case .conflict: return "目标文件已存在；请另选名称，或重新确认覆盖。"
             case .changed: return "文件或目标目录在导出期间发生变化，已停止提交。"
             case .invalidFile: return "导出仅支持可读取的本机普通文件，目标不能是别名、符号链接或目录。"
             case .tooLarge: return "文件超过交接副本的大小限制，请分批处理。"
@@ -36,10 +35,8 @@ enum HandoffSafeExport {
     }
 
     /// `hooks` injects failures into the real streaming/commit path in isolated tests.
-    /// Snapshot folders are private and retained even when a later commit fails.
     static func copy(source: URL, to destination: URL, protectedOriginal: URL? = nil,
                      overwrite: Overwrite = .rejectExisting,
-                     snapshotRoot: URL = FileSafety.root.appendingPathComponent("History/HandoffExports", isDirectory: true),
                      maximumBytes: Int64 = 2 * 1_024 * 1_024 * 1_024,
                      hooks: Hooks = .none) throws -> Receipt {
         guard source.isFileURL, destination.isFileURL, maximumBytes >= 0,
@@ -101,12 +98,6 @@ enum HandoffSafeExport {
         guard copied == staged, try state(sourceFD.value) == sourceState else { throw Failure.changed }
         try hooks.check(.afterCopy, copied.bytes)
 
-        var snapshotURL: URL?
-        if let targetFD, let oldState, let oldDigest {
-            snapshotURL = try snapshot(fd: targetFD.value, state: oldState, digest: oldDigest,
-                                       name: name, root: snapshotRoot, maximumBytes: maximumBytes)
-            try hooks.check(.afterSnapshot, copied.bytes)
-        }
         try hooks.check(.beforeCommit, copied.bytes)
         try verifyParent(requestedDestination: requestedDestination, expectedURL: parentURL, expectedState: parentState)
         guard try state(sourceFD.value) == sourceState,
@@ -149,9 +140,9 @@ enum HandoffSafeExport {
             guard renameatx_np(parentFD.value, stageName, parentFD.value, name, UInt32(RENAME_EXCL)) == 0 else { throw Failure.io(errno) }
         }
         // Directory durability is best effort; after a successful rename there is no destructive
-        // rollback on an fsync error, and the verified old snapshot remains available.
+        // rollback on an fsync error.
         _ = fsync(parentFD.value)
-        return Receipt(destination: targetURL, sha256: copied.digest, byteCount: copied.bytes, snapshotURL: snapshotURL)
+        return Receipt(destination: targetURL, sha256: copied.digest, byteCount: copied.bytes)
     }
 
     private final class Handle {
@@ -261,21 +252,5 @@ enum HandoffSafeExport {
         let handle = try Handle(openat(parent, name, O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK))
         guard try state(handle.value).isRegular else { throw Failure.invalidFile }
         return try hash(handle.value, maximumBytes: maximumBytes)
-    }
-    private static func snapshot(fd: Int32, state expected: State, digest: String, name: String, root: URL, maximumBytes: Int64) throws -> URL {
-        let manager = FileManager.default
-        try manager.createDirectory(at: root, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
-        let folder = root.appendingPathComponent(UUID().uuidString, isDirectory: true)
-        try manager.createDirectory(at: folder, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
-        let url = folder.appendingPathComponent(name)
-        var completed = false
-        defer { if !completed { try? manager.removeItem(at: folder) } }
-        let output = try Handle(open(url.path, O_CREAT | O_EXCL | O_RDWR | O_CLOEXEC | O_NOFOLLOW, 0o600))
-        let copied = try stream(from: fd, to: output.value, maximumBytes: maximumBytes, hooks: .none)
-        guard fsync(output.value) == 0 else { throw Failure.io(errno) }
-        guard copied.digest == digest, try hash(output.value, maximumBytes: maximumBytes) == copied,
-              try state(fd) == expected else { throw Failure.changed }
-        completed = true
-        return url
     }
 }

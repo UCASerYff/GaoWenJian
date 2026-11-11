@@ -60,7 +60,6 @@ enum StickyNoteExportFormat: String, CaseIterable { case txt, rtf, rtfd }
     private var loaded = false
     private var saveTask: Task<Void, Never>?
     private var archiveURL: URL { rootURL.appendingPathComponent("notes.json") }
-    private var historyURL: URL { rootURL.appendingPathComponent("History", isDirectory: true) }
     private var contentsURL: URL { rootURL.appendingPathComponent("Contents", isDirectory: true) }
     private let manager = FileManager.default
 
@@ -78,7 +77,7 @@ enum StickyNoteExportFormat: String, CaseIterable { case txt, rtf, rtfd }
             if !manager.fileExists(atPath: archiveURL.path) {
                 if expectedDigest != nil { throw FileIssue.message("便笺资料文件已被移动或删除。已保留当前便笺，不能按空白资料重新创建。") }
                 if manager.fileExists(atPath: rootURL.path), !((try manager.contentsOfDirectory(at: rootURL, includingPropertiesForKeys: nil)).isEmpty) {
-                    throw FileIssue.message("便笺目录已有资料，但主记录缺失。请从安全备份恢复，不能用空白资料覆盖。")
+                    throw FileIssue.message("便笺目录已有资料，但主记录缺失。已停止保存，不能用空白资料覆盖。")
                 }
                 notes = []; contents = [:]; defaults = StickyNoteDefaults(); loaded = true
                 saveStatus = "已保存"; error = nil
@@ -189,7 +188,7 @@ enum StickyNoteExportFormat: String, CaseIterable { case txt, rtf, rtfd }
         saveStatus = "正在保存…"
         do {
             try rejectSymbolicLink(rootURL); try rejectSymbolicLink(archiveURL)
-            let original = try checkedOriginal()
+            _ = try checkedOriginal()
             try verifyBaselineBlobs()
             var persisted = notes
             for index in persisted.indices where dirtyContents.contains(persisted[index].id) {
@@ -199,23 +198,45 @@ enum StickyNoteExportFormat: String, CaseIterable { case txt, rtf, rtfd }
                 persisted[index].plainText = content.string
             }
             try manager.createDirectory(at: rootURL, withIntermediateDirectories: true)
-            // Body packages are immutable and shared by current records and historical metadata.
-            // Moving/colouring a note therefore never duplicates its attachments in History.
+            // Body packages are immutable and shared by current records.
+            // Metadata-only edits never duplicate attachments.
             var prepared: Set<String> = []
             for note in persisted where prepared.insert(note.rtfdDigest).inserted { try ensureBlob(note.rtfd, digest: note.rtfdDigest) }
             let lightweight = persisted.map { note -> StickyNote in var record = note; record.rtfd = Data(); return record }
             let payload = Payload(notes: lightweight, defaults: defaults)
             let archive = Archive(version: 2, payload: payload, payloadDigest: FileSafety.digest(try encode(payload)))
             let data = try encode(archive)
-            if let original { try snapshot(original, named: "notes.json") }
-            // Recheck after the snapshot so an external update during backup is never knowingly overwritten.
+            // Recheck after preparing the archive so an external update is never knowingly overwritten.
             _ = try checkedOriginal()
             try verifyBaselineBlobs()
             try data.write(to: archiveURL, options: .atomic)
-            guard try Data(contentsOf: archiveURL) == data else { throw FileIssue.message("便笺写入后校验失败，请保留当前窗口并从安全备份检查资料。") }
+            guard try Data(contentsOf: archiveURL) == data else { throw FileIssue.message("便笺写入后校验失败，请保留当前窗口并检查资料目录。") }
+            let currentDigests = Set(persisted.map(\.rtfdDigest)) // Includes recycled notes.
+            let obsoleteDigests = baselineBlobDigests.subtracting(currentDigests)
             expectedDigest = FileSafety.digest(data); notes = persisted; dirtyContents.removeAll()
-            baselineBlobDigests = Set(persisted.map(\.rtfdDigest))
-            isDirty = false; error = nil; saveStatus = "已保存"; return true
+            baselineBlobDigests = currentDigests
+            isDirty = false; error = nil; saveStatus = "已保存"
+            do {
+                // Only remove verified former live bodies after the new archive is durable.
+                // Unknown files and failed/uncommitted edits are never cleanup candidates.
+                for digest in obsoleteDigests {
+                    let url = try blobURL(digest: digest)
+                    let before = try manager.attributesOfItem(atPath: url.path)
+                    _ = try readBlob(digest: digest)
+                    let after = try manager.attributesOfItem(atPath: url.path)
+                    guard let inode = before[.systemFileNumber] as? NSNumber,
+                          let device = before[.systemNumber] as? NSNumber,
+                          inode == after[.systemFileNumber] as? NSNumber,
+                          device == after[.systemNumber] as? NSNumber else {
+                        throw FileIssue.message("旧正文包在清理期间发生变化，已保留该文件。")
+                    }
+                    try manager.removeItem(at: url)
+                }
+            } catch {
+                self.error = "便笺已保存；旧正文清理未完成：" + error.localizedDescription
+                saveStatus = "已保存 · 旧正文需检查"
+            }
+            return true
         } catch { return fail("便笺尚未保存：\(error.localizedDescription)") }
     }
 
@@ -279,11 +300,9 @@ enum StickyNoteExportFormat: String, CaseIterable { case txt, rtf, rtfd }
             }
         }
         guard try Self.destinationDigest(at: destination) == initial else { throw FileIssue.message("导出目标在准备期间发生变化，已取消覆盖。") }
-        if initial != nil { try snapshotExport(destination) }
-        guard try Self.destinationDigest(at: destination) == initial else { throw FileIssue.message("导出目标在备份期间发生变化，已取消覆盖。") }
         if initial != nil { _ = try manager.replaceItemAt(destination, withItemAt: staging) }
         else { try manager.moveItem(at: staging, to: destination) }
-        guard try Self.destinationDigest(at: destination) == stagedDigest else { throw FileIssue.message("导出后的文件校验失败，原件快照已保留，请检查保存位置。") }
+        guard try Self.destinationDigest(at: destination) == stagedDigest else { throw FileIssue.message("导出后的文件校验失败，请检查保存位置。") }
     }
 
     static func destinationDigest(at url: URL) throws -> String? {
@@ -339,7 +358,7 @@ enum StickyNoteExportFormat: String, CaseIterable { case txt, rtf, rtfd }
     private func readBlob(digest: String) throws -> Data {
         try rejectSymbolicLink(contentsURL)
         let url = try blobURL(digest: digest); try rejectSymbolicLink(url)
-        guard manager.fileExists(atPath: url.path) else { throw FileIssue.message("便笺正文或附件包缺失，请从安全备份恢复；不能按空白内容保存。") }
+        guard manager.fileExists(atPath: url.path) else { throw FileIssue.message("便笺正文或附件包缺失，已停止写入；不能按空白内容保存。") }
         let data = try Data(contentsOf: url)
         guard FileSafety.digest(data) == digest else { throw FileIssue.message("便笺正文或附件包摘要校验失败，原资料已保留且不会被覆盖。") }
         return data
@@ -369,22 +388,6 @@ enum StickyNoteExportFormat: String, CaseIterable { case txt, rtf, rtfd }
         if let values = try? url.resourceValues(forKeys: [.isSymbolicLinkKey]), values.isSymbolicLink == true {
             throw FileIssue.message("便笺资料或附件指向符号链接，已停止操作以保护原文件。")
         }
-    }
-    private func snapshot(_ data: Data, named name: String) throws {
-        try rejectSymbolicLink(historyURL)
-        try manager.createDirectory(at: historyURL, withIntermediateDirectories: true)
-        let target = historyURL.appendingPathComponent(Date().ISO8601Format().replacingOccurrences(of: ":", with: "-") + "-" + UUID().uuidString + "-" + name)
-        try data.write(to: target, options: .atomic)
-        guard try Data(contentsOf: target) == data else { throw FileIssue.message("便笺原件快照核验失败，已中止保存。") }
-    }
-    private func snapshotExport(_ source: URL) throws {
-        try rejectSymbolicLink(historyURL)
-        let folder = historyURL.appendingPathComponent("Exports", isDirectory: true)
-        try rejectSymbolicLink(folder); try manager.createDirectory(at: folder, withIntermediateDirectories: true)
-        let digest = try Self.destinationDigest(at: source)
-        let target = folder.appendingPathComponent(UUID().uuidString + "-" + source.lastPathComponent)
-        try manager.copyItem(at: source, to: target)
-        guard try Self.destinationDigest(at: target) == digest else { throw FileIssue.message("导出原目标快照核验失败，已中止覆盖。") }
     }
     private func validateMetadata(_ note: StickyNote) throws {
         let frame = note.frame

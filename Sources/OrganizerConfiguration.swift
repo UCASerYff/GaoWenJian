@@ -26,7 +26,7 @@ final class OFProtectedDocument<Value: Codable> {
     func load(initial: @autoclosure () -> Value) throws -> Value {
         let fm = FileManager.default
         if !fm.fileExists(atPath: url.path) {
-            guard !fm.fileExists(atPath: marker.path) else { throw OFAppFailure("资料文件缺失：\(url.lastPathComponent)。请从核验备份恢复，未建立空白资料。") }
+            guard !fm.fileExists(atPath: marker.path) else { throw OFAppFailure("资料文件缺失：\(url.lastPathComponent)。已停止写入，未建立空白资料。") }
             let value = initial(); creating = true; defer { creating = false }; try save(value); try Data("schema=1\n".utf8).write(to: marker, options: .atomic)
             try fm.setAttributes([.posixPermissions: 0o600], ofItemAtPath: marker.path)
             return value
@@ -116,7 +116,6 @@ enum OFAppLocations {
     private static var lockFD: Int32 = -1
     static let bundleID = "com.gaoseries.GaoWenJian"
     static var directory: URL { FileSafety.root.appendingPathComponent("Organizer", isDirectory: true) }
-    static var backups: URL { FileSafety.root.appendingPathComponent("OrganizerBackups", isDirectory: true) }
     static var initializationMarker: URL { FileSafety.root.appendingPathComponent("Organizer.initialized") }
     static let markerBytes = Data("schema=1\n".utf8)
     static let expectedDocuments = ["configuration.json", "configuration.initialized", "metadata.sqlite", "index-initialized.json", "associations_history.json", "associations_history.initialized", "MovePlans/initialized.json", "MovePlans/ledger.json", "MovePlans.initialized"]
@@ -135,14 +134,14 @@ enum OFAppLocations {
         let initialized = fm.fileExists(atPath: marker.path)
         if initialized {
             try validateMarker()
-            guard fm.fileExists(atPath: dir.path) else { throw OFAppFailure("已初始化整理目录缺失，请从完整核验备份恢复。") }
+            guard fm.fileExists(atPath: dir.path) else { throw OFAppFailure("已初始化整理目录缺失，已停止写入以保护现有资料。") }
             for name in expectedDocuments where !fm.fileExists(atPath: dir.appendingPathComponent(name).path) {
                 throw OFAppFailure("已初始化整理资料缺失：\(name)。停止写入，请恢复。")
             }
         } else if fm.fileExists(atPath: dir.path) {
             let children = try fm.contentsOfDirectory(atPath: dir.path)
             guard children.allSatisfy({ $0 == ".app.lock" }) else {
-                throw OFAppFailure("整理目录已有资料但缺少初始化依据；须完成迁移收据核验或从备份恢复，不会建立空白资料。")
+                throw OFAppFailure("整理目录已有资料但缺少初始化依据；须完成迁移收据核验并检查资料完整性，不会建立空白资料。")
             }
         }
         try fm.createDirectory(at: dir, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])

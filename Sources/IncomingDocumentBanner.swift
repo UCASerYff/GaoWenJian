@@ -15,7 +15,7 @@ struct IncomingDocumentBanner: View {
             if expanded {
                 ScrollView {
                     VStack(alignment:.leading,spacing:5){
-                        Text(incoming.opensOriginal == true ? "来源声明未经身份认证。当前打开你选择的原件；保存会写回原文件，并保留历史快照。" : "来源声明未经身份认证。接收内容独立打开；原件和已有编辑内容保留。")
+                        Text(incoming.opensOriginal == true ? "来源声明未经身份认证。当前打开你选择的原件；保存会写回原文件，覆盖前核对外部修改。" : "来源声明未经身份认证。接收内容独立打开；原件和已有编辑内容保留。")
                         Text("接收文件："+HandoffNames.display(incoming.originalName))
                         if let name=incoming.sourceDisplayName {Text("对应输入："+HandoffNames.display(name))}
                         ForEach(Array(incoming.notes.enumerated()),id:\.offset){_,note in Text(HandoffNames.display(note,limit:1024)).foregroundStyle(.orange)}

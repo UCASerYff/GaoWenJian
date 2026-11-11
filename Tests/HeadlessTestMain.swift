@@ -12,10 +12,6 @@ import Darwin
     }
     @MainActor private static func run() throws {
         guard CommandLine.arguments.contains("--data-dir"), FileSafety.root.path.hasPrefix("/private/tmp/gaowenjian-headless.") else { throw FileIssue.message("Headless regression requires its own isolated temporary data root") }
-        if let index = CommandLine.arguments.firstIndex(of: "--verify-data-copy"), index + 1 < CommandLine.arguments.count {
-            try DataCopyVerification.run(backup: URL(fileURLWithPath: CommandLine.arguments[index + 1], isDirectory: true))
-            return
-        }
         let parent = FileSafety.root.deletingLastPathComponent()
         var suites = 0
         func suite(_ name: String, _ run: () throws -> Void) throws {
@@ -23,6 +19,15 @@ import Darwin
             try run()
             guard NSApp == nil else { throw FileIssue.message("Application initialized by headless suite " + name) }
             suites += 1
+        }
+        if CommandLine.arguments.contains("--backup-removal-only") {
+            try suite("saving without backups") { try CoreTests.run() }
+            try suite("Office save/recovery without previous backups") { try runOfficeRoundTripTests() }
+            try suite("PDF save without backups") { try PDFModuleTests.run(in: FileSafety.root.appendingPathComponent("PDFModelTests")) }
+            try suite("safe export without retained backups") { try HandoffSafeExportTests.run(in: parent.appendingPathComponent("SafeExports")) }
+            try suite("sticky body lifecycle without backups") { try BackupRemovalTests.run(in: FileSafety.root.appendingPathComponent("BackupRemovalTests")) }
+            print("PASS: focused backup-removal regression; NSApp remained nil; no App, windows or smoke test.")
+            return
         }
         if CommandLine.arguments.contains("--ocr-provider-routing-only") {
             var assertions = 0

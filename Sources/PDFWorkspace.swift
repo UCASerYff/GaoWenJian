@@ -274,7 +274,7 @@ struct PDFWorkspace: View {
         .confirmationDialog("删除第 \(model.currentPage) 页？", isPresented: $showDeleteConfirmation, titleVisibility: .visible) {
             Button("删除页面", role: .destructive) { perform { try model.deleteCurrentPage() } }
             Button("取消", role: .cancel) { }
-        } message: { Text("可通过 PDF 工具栏撤销。保存时会先保留原文件快照。") }
+        } message: { Text("可通过 PDF 工具栏撤销。保存前会核对原文件是否被其他程序修改。") }
         .alert("修改将影响已有数字签名", isPresented: $showSignatureConfirmation) {
             Button("另存副本") { performSave(asNew: true) }
             Button("取消", role: .cancel) { }
@@ -287,7 +287,7 @@ struct PDFWorkspace: View {
             Text("输入 PDF 密码").font(.title2.weight(.semibold))
             SecureField("密码", text: $password).textFieldStyle(.roundedBorder).frame(width: 260)
                 .onSubmit { perform { try model.unlock(password: password) }; password = "" }
-            Button("解锁阅读") { perform { try model.unlock(password: password) }; password = "" }.buttonStyle(.borderedProminent)
+            Button("解锁阅读") { perform { try model.unlock(password: password) }; password = "" }.buttonStyle(.borderedProminent).foregroundStyle(WorkspaceStyle.onAccent)
             Text("加密文件在此版本中只读，以保留原有加密设置。").font(.caption).foregroundStyle(.secondary)
         }.frame(maxWidth: .infinity, maxHeight: .infinity)
     }

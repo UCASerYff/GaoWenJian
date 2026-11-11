@@ -490,7 +490,7 @@ typealias PreparedOCRHandoff = PreparedDocumentHandoff
                 var overwrite=HandoffSafeExport.Overwrite.rejectExisting
                 if FileManager.default.fileExists(atPath:destination.path){overwrite = .replace(expectedSHA256:FileSafety.digest(try GaoPrivateIO.read(GaoPrivateIO.regularURL(destination),maximum:GaoActionContract.maximumPayloadBytes)))}
                 _ = try exportCopy(prepared,itemID:source.item.id,to:destination,overwrite:overwrite)
-                store.status="文档副本已安全导出；已有目标的原件快照保留"
+                store.status="文档副本已安全导出"
             }catch {store.error=error.localizedDescription}
         case .alertSecondButtonReturn:NSWorkspace.shared.activateFileViewerSelecting([prepared.packageURL])
         default:break

@@ -6,6 +6,12 @@
 /dist/
 /tmp/
 *.app/
+*.noindex/
+gaowenjian-install-*.json
+*.signing.json
+*.copy-verification.json
+*-signing.json
+*-copy-verification.json
 .DS_Store
 __pycache__/
 *.py[cod]

@@ -9,31 +9,11 @@ enum FileSafety {
         return FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support/GaoSeries/GaoWenJian", isDirectory: true)
     }
     static func digest(_ data: Data) -> String { SHA256.hash(data: data).map { String(format:"%02x", $0) }.joined() }
-    @discardableResult static func snapshot(url: URL) throws -> URL? {
-        guard FileManager.default.fileExists(atPath:url.path) else { return nil }
-        let original = try Data(contentsOf:url, options:.mappedIfSafe)
-        let key = digest(Data(url.standardizedFileURL.path.utf8)).prefix(24)
-        let folder = root.appendingPathComponent("History/" + key, isDirectory:true)
-        try FileManager.default.createDirectory(at:folder, withIntermediateDirectories:true)
-        let time = ISO8601DateFormatter().string(from:Date()).replacingOccurrences(of:":",with:"-")
-        let destination = folder.appendingPathComponent(time + "-" + UUID().uuidString.prefix(8) + "-" + url.lastPathComponent)
-        try original.write(to:destination,options:.atomic)
-        guard try Data(contentsOf:destination) == original else { throw FileIssue.message("原件快照校验失败，已中止保存。") }
-        try Data(url.path.utf8).write(to:folder.appendingPathComponent("origin.txt"),options:.atomic)
-        return destination
-    }
-    static func snapshots(for url: URL) throws -> [URL] {
-        let key = digest(Data(url.standardizedFileURL.path.utf8)).prefix(24)
-        let folder = root.appendingPathComponent("History/" + key)
-        guard FileManager.default.fileExists(atPath:folder.path) else { return [] }
-        return try FileManager.default.contentsOfDirectory(at:folder,includingPropertiesForKeys:[.creationDateKey]).filter { $0.lastPathComponent != "origin.txt" }.sorted { $0.lastPathComponent > $1.lastPathComponent }
-    }
     static func write(_ data: Data, to url: URL, expectedDigest: String? = nil) throws {
         if let expectedDigest {
             guard FileManager.default.fileExists(atPath:url.path) else {throw FileIssue.message("原文件已被移动或删除，请另存为，避免在旧位置静默重建文件。")}
             if digest(try Data(contentsOf:url)) != expectedDigest {throw FileIssue.message("文件已被其他程序修改。请重新打开或另存为，避免覆盖外部修改。")}
         }
-        try snapshot(url:url)
         try data.write(to:url,options:.atomic)
     }
 }

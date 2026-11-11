@@ -30,7 +30,7 @@ enum HandoffSafeExportTests {
         func export(_ target: URL, _ overwrite: HandoffSafeExport.Overwrite = .rejectExisting,
                     hooks: HandoffSafeExport.Hooks = .none) throws -> HandoffSafeExport.Receipt {
             try HandoffSafeExport.copy(source: original, to: target, overwrite: overwrite,
-                                       snapshotRoot: history, hooks: hooks)
+                                       hooks: hooks)
         }
         func noStages(_ folder: URL = root) throws {
             let found = try fm.contentsOfDirectory(at: folder, includingPropertiesForKeys: nil)
@@ -42,7 +42,7 @@ enum HandoffSafeExportTests {
         let receipt = try export(output)
         try check(try Data(contentsOf: output) == bytes, "完整Unicode/换行/页分隔按原字节复制")
         try check(receipt.sha256 == FileSafety.digest(bytes) && receipt.byteCount == Int64(bytes.count), "回执摘要与长度正确")
-        try check(receipt.snapshotURL == nil, "新文件无伪造快照")
+        try check(!fm.fileExists(atPath: history.path), "新文件无备份副本")
         try check(try mode(output) == 0o600, "副本0600")
         try noStages()
 
@@ -60,7 +60,7 @@ enum HandoffSafeExportTests {
         try URL.writeBookmarkData(bookmark, to: alias)
         try rejects("Finder别名指向源拒绝") { _ = try export(alias) }
         let aliasCopy = root.appendingPathComponent("从别名读取.txt")
-        _ = try HandoffSafeExport.copy(source: alias, to: aliasCopy, snapshotRoot: history)
+        _ = try HandoffSafeExport.copy(source: alias, to: aliasCopy)
         try check(try Data(contentsOf: aliasCopy) == bytes, "作为源的Finder别名解析到普通文件")
         let directoryLink = root.appendingPathComponent("目录符号链接")
         try fm.createSymbolicLink(at: directoryLink, withDestinationURL: root)
@@ -74,12 +74,12 @@ enum HandoffSafeExportTests {
                                      directoryAlias.appendingPathComponent(original.lastPathComponent)] {
             try rejects("私有快照导出仍拒绝原件位置/链接：\(protectedDestination.lastPathComponent)") {
                 _ = try HandoffSafeExport.copy(source: privateSourceCopy, to: protectedDestination, protectedOriginal: original,
-                                               overwrite: .replace(expectedSHA256: FileSafety.digest(bytes)), snapshotRoot: history)
+                                               overwrite: .replace(expectedSHA256: FileSafety.digest(bytes)))
             }
             try check(try Data(contentsOf: original) == bytes, "独立快照导出不能改写受保护原件")
         }
         let protectedCopyOutput = root.appendingPathComponent("受保护导出新文件.txt")
-        _ = try HandoffSafeExport.copy(source: privateSourceCopy, to: protectedCopyOutput, protectedOriginal: original, snapshotRoot: history)
+        _ = try HandoffSafeExport.copy(source: privateSourceCopy, to: protectedCopyOutput, protectedOriginal: original)
         try check(try Data(contentsOf: protectedCopyOutput) == bytes, "受保护原件不阻止导出独立新副本")
         let deletedOriginal = try write("已删除原件.txt", "deleted original")
         let deletedOriginalCopy = try write("已删除原件的私有快照.txt", "deleted original")
@@ -87,7 +87,7 @@ enum HandoffSafeExportTests {
         for oldLocation in [deletedOriginal, directoryLink.appendingPathComponent(deletedOriginal.lastPathComponent),
                             directoryAlias.appendingPathComponent(deletedOriginal.lastPathComponent)] {
             try rejects("原件删除后仍拒绝在其旧位置导出") {
-                _ = try HandoffSafeExport.copy(source: deletedOriginalCopy, to: oldLocation, protectedOriginal: deletedOriginal, snapshotRoot: history)
+                _ = try HandoffSafeExport.copy(source: deletedOriginalCopy, to: oldLocation, protectedOriginal: deletedOriginal)
             }
             try check(!fm.fileExists(atPath: deletedOriginal.path), "已删除原件不被静默重建")
         }
@@ -96,13 +96,13 @@ enum HandoffSafeExportTests {
         if (try? root.resourceValues(forKeys: [.volumeSupportsCaseSensitiveNamesKey]).volumeSupportsCaseSensitiveNames) != true {
             let variant = root.appendingPathComponent("DELETED-CASE-ORIGINAL.TXT")
             try rejects("大小写不敏感卷保护已删除原件的大小写等价旧位置") {
-                _ = try HandoffSafeExport.copy(source: deletedOriginalCopy, to: variant, protectedOriginal: deletedCase, snapshotRoot: history)
+                _ = try HandoffSafeExport.copy(source: deletedOriginalCopy, to: variant, protectedOriginal: deletedCase)
             }
             try check(!fm.fileExists(atPath: variant.path), "大小写变体旧位置仍不存在")
         }
         let fifo = root.appendingPathComponent("命名管道.txt")
         guard mkfifo(fifo.path, 0o600) == 0 else { throw FileIssue.message("无法创建隔离FIFO") }
-        try rejects("FIFO快速拒绝且不阻塞") { _ = try HandoffSafeExport.copy(source: fifo, to: root.appendingPathComponent("fifo-out.txt"), snapshotRoot: history) }
+        try rejects("FIFO快速拒绝且不阻塞") { _ = try HandoffSafeExport.copy(source: fifo, to: root.appendingPathComponent("fifo-out.txt")) }
 
         let existing = try write("已有目标.txt", "original target\n")
         let oldBytes = try Data(contentsOf: existing)
@@ -112,10 +112,8 @@ enum HandoffSafeExportTests {
         try rejects("覆盖摘要不符拒绝") { _ = try export(existing, .replace(expectedSHA256: String(repeating: "0", count: 64))) }
         try check(try Data(contentsOf: existing) == oldBytes, "摘要冲突保留目标")
         let overwritten = try export(existing, .replace(expectedSHA256: oldHash))
-        guard let snapshot = overwritten.snapshotURL else { throw FileIssue.message("缺原件快照") }
         try check(try Data(contentsOf: existing) == bytes, "显式覆盖以完整副本原子提交")
-        try check(try Data(contentsOf: snapshot) == oldBytes, "覆盖前原件完整快照校验")
-        try check(try mode(snapshot) == 0o600 && mode(snapshot.deletingLastPathComponent()) == 0o700, "快照及文件夹私有权限")
+        try check(!fm.fileExists(atPath: history.path), "显式覆盖不创建备份副本")
         try noStages()
         let absent = root.appendingPathComponent("已删除目标.txt")
         try rejects("覆盖意图目标已失踪不静默重建") { _ = try export(absent, .replace(expectedSHA256: oldHash)) }
@@ -199,24 +197,21 @@ enum HandoffSafeExportTests {
         try check(try String(contentsOf: movedTarget) == "new directory file", "目录身份变化不写新目录")
         try noStages(movingParent); try noStages(movedParent)
 
-        let failureAfterSnapshot = try write("快照后失败.txt", "snapshot original")
-        let failureHash = FileSafety.digest(Data("snapshot original".utf8))
-        let historyBefore = try snapshotFiles(history)
-        try rejects("快照之后故障停止提交") {
-            _ = try export(failureAfterSnapshot, .replace(expectedSHA256: failureHash), hooks: .init { phase, _ in
-                if phase == .afterSnapshot { throw HandoffSafeExport.Failure.io(EIO) }
+        let failureBeforeCommit = try write("提交前失败.txt", "original target")
+        let failureHash = FileSafety.digest(Data("original target".utf8))
+        try rejects("提交前故障停止覆盖") {
+            _ = try export(failureBeforeCommit, .replace(expectedSHA256: failureHash), hooks: .init { phase, _ in
+                if phase == .beforeCommit { throw HandoffSafeExport.Failure.io(EIO) }
             })
         }
-        try check(try String(contentsOf: failureAfterSnapshot) == "snapshot original", "快照后故障目标保持")
-        let addedSnapshots = try snapshotFiles(history).subtracting(historyBefore)
-        try check(addedSnapshots.count == 1, "提交失败仍保留校验过快照")
-        try check(try Data(contentsOf: addedSnapshots.first!) == Data("snapshot original".utf8), "失败快照内容完整")
+        try check(try String(contentsOf: failureBeforeCommit) == "original target", "提交前故障保持目标")
+        try check(!fm.fileExists(atPath: history.path), "提交失败也不创建备份")
         try noStages()
 
         let sourceChanging = try write("可变源.txt", "original")
         let sourceChangingTarget = root.appendingPathComponent("源变化不导出.txt")
         try rejects("源在暂存后修改时拒绝") {
-            _ = try HandoffSafeExport.copy(source: sourceChanging, to: sourceChangingTarget, snapshotRoot: history, hooks: .init { phase, _ in
+            _ = try HandoffSafeExport.copy(source: sourceChanging, to: sourceChangingTarget, hooks: .init { phase, _ in
                 if phase == .afterCopy { try Data("new source content".utf8).write(to: sourceChanging) }
             })
         }
@@ -224,7 +219,7 @@ enum HandoffSafeExportTests {
         try check(try String(contentsOf: sourceChanging) == "new source content", "保留外部更新源")
         let sourceReplaced = try write("同名换源.txt", "original")
         try rejects("源被同名换inode时拒绝") {
-            _ = try HandoffSafeExport.copy(source: sourceReplaced, to: root.appendingPathComponent("不导出换源.txt"), snapshotRoot: history,
+            _ = try HandoffSafeExport.copy(source: sourceReplaced, to: root.appendingPathComponent("不导出换源.txt"),
                                            hooks: .init { phase, _ in if phase == .beforeCommit { try Data("replacement".utf8).write(to: sourceReplaced, options: .atomic) } })
         }
         try check(try String(contentsOf: sourceReplaced) == "replacement", "同名换源保持外部新内容")
@@ -249,12 +244,12 @@ enum HandoffSafeExportTests {
         try fm.removeItem(at: replacementStage!)
         try noStages()
         try rejects("有界复制在打开普通文件后检查体积") {
-            _ = try HandoffSafeExport.copy(source: original, to: root.appendingPathComponent("超限不导出.txt"), snapshotRoot: history, maximumBytes: 1)
+            _ = try HandoffSafeExport.copy(source: original, to: root.appendingPathComponent("超限不导出.txt"), maximumBytes: 1)
         }
         try check(try Data(contentsOf: original) == bytes, "所有导出和失败不改写源")
         try check(try original.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate == beforeDate, "源修改时间保持")
         try noStages()
-        print("PASS: safe handoff export \(checks) checks; source/alias/hard-link identity, atomic new/overwrite, verified snapshots, directory/target/source races, EACCES/ENOSPC/EIO and partial-copy preservation")
+        print("PASS: safe handoff export \(checks) checks; source/alias/hard-link identity, atomic new/overwrite, no retained backups, directory/target/source races, EACCES/ENOSPC/EIO and partial-copy preservation")
     }
 
     private static func mode(_ url: URL) throws -> Int {

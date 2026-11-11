@@ -15,10 +15,7 @@ import Foundation
         let original = Data("原始文档与附件索引 😀".utf8)
         try original.write(to:file)
         try FileSafety.write(Data("新内容".utf8),to:file,expectedDigest:FileSafety.digest(original))
-        let snapshots = try FileSafety.snapshots(for:file)
-        guard let first=snapshots.first else {throw FileIssue.message("missing history")}
-        let backedUp = try Data(contentsOf:first)
-        try require(backedUp == original,"history bytes read back exactly")
+        try require(!FileManager.default.fileExists(atPath:root.appendingPathComponent("History").path), "saving creates no automatic backup")
         var rejected = false
         do {try FileSafety.write(original,to:file,expectedDigest:FileSafety.digest(original))} catch {rejected=true}
         try require(rejected,"external mutation rejected")
@@ -71,6 +68,6 @@ import Foundation
             }
             store.tabs=[];store.checkpoint()
         }
-        print("Core: PASS (CSV/TSV, exact history, external mutation/deletion, corrupt-state preservation, empty-draft recovery)")
+        print("Core: PASS (CSV/TSV, no automatic backups, external mutation/deletion, corrupt-state preservation, empty-draft recovery)")
     }
 }

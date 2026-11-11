@@ -12,7 +12,7 @@ import SwiftUI
     @Published private(set) var migrationSummary: String?
     var validateMoveSources: (([URL]) throws -> Void)?
     var isMoving: Bool { model?.moving ?? false }
-    var blocksQuit: Bool { model.map{$0.moving || $0.backingUp || $0.associations?.busy == true} ?? false }
+    var blocksQuit: Bool { model.map{$0.moving || $0.associations?.busy == true} ?? false }
     private var opener: ((URL) -> Void)?
     static var directory: URL { FileSafety.root.appendingPathComponent("Organizer", isDirectory:true) }
 
@@ -55,7 +55,7 @@ import SwiftUI
     }
     func importSnapshotPanel() {
         guard model == nil, !importing else { error="整理资料库已打开。导入不会覆盖现有资料；请先保留并核验完整资料库，再由迁移流程处理。";return }
-        let panel=NSOpenPanel();panel.title="导入搞整理核验快照";panel.message="选择由快照导出工具生成的完整目录。不会修改来源，也不会自动继承目录权限或重新应用默认关联。";panel.canChooseDirectories=true;panel.canChooseFiles=false;panel.allowsMultipleSelection=false
+        let panel=NSOpenPanel();panel.title="导入搞整理核验快照";panel.message="选择已存在的完整核验迁移目录。不会修改来源，也不会自动继承目录权限或重新应用默认关联。";panel.canChooseDirectories=true;panel.canChooseFiles=false;panel.allowsMultipleSelection=false
         guard panel.runModal() == .OK,let url=panel.url else{return}
         importing=true;error=nil
         let destination=Self.directory
@@ -92,10 +92,10 @@ struct OrganizerHostView: View {
                 VStack(alignment:.leading,spacing:18) {
                     Text("建立本地整理资料库").font(.title2)
                     Text("索引文件名与元数据，在虚拟工作区中分类；物理整理另有预览和确认。写作标签和未保存稿会继续保留。")
-                    Text("已有搞整理资料时，先导出完整核验快照再导入。导入包括工作区、收藏、查询、关联历史和移动恢复记录；不会自动转授旧目录权限。")
+                    Text("如有既存的完整核验迁移资料，可选择后导入。导入包括工作区、收藏、查询、关联历史和移动恢复记录；不会自动转授旧目录权限。")
                         .foregroundStyle(.secondary)
                     HStack {
-                        Button("导入搞整理快照…",action:host.importSnapshotPanel).buttonStyle(.borderedProminent)
+                        Button("导入搞整理快照…",action:host.importSnapshotPanel).buttonStyle(.borderedProminent).foregroundStyle(WorkspaceStyle.onAccent)
                         Button("新建整理资料库"){_=host.start()}.disabled(host.requiresMigrationResume)
                     }.disabled(host.importing)
                     if host.importing {ProgressView("正在校验和迁移，请保留来源与快照…")}

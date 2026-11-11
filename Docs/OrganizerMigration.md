@@ -4,7 +4,7 @@
 
 ## 导出契约
 
-`Scripts/export-organizer-snapshot.py --source <完整资料根> --preferences <源偏好plist> --output <不存在的快照.noindex> [--retiring-path <将退役路径>]`
+生产快照导出入口已删除。`Tests/OrganizerMigrationFixture.py` 仅为迁移回归生成合成测试材料，拒绝 `/private/tmp/gaowenjian-*` 隔离测试容器以外的资料。以下保留既有迁移格式和恢复中断的技术约定，不用于新增真实用户资料备份。
 
 调用者须明确传入源偏好文件，独立初始化键 `GaoZhengLi.initialized.v1` 必须为真。缺库、缺初始化记录、摘要冲突、过新版本、符号链接、特殊对象、硬链接、异主对象或未下载占位文件均停止；不当空库处理。源应用已有 `.app.lock` 以只读文件描述符取得非阻塞排他锁；不创建或改写源锁。导出前后完整源文件、目录身份和偏好清单必须相同，外部待恢复实物也需前后相同。
 

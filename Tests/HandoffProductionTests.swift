@@ -147,7 +147,7 @@ import PDFKit
         try collisionBytes.write(to: collision)
         try rejects("Actual fallback existing target needs explicit conflict approval") { _ = try OCRHandoffDispatcher.exportCopy(current, itemID: currentSource.item.id, to: collision) }
         let replaced = try OCRHandoffDispatcher.exportCopy(current, itemID: currentSource.item.id, to: collision, overwrite: .replace(expectedSHA256: FileSafety.digest(collisionBytes)))
-        try check(try Data(contentsOf: replaced.snapshotURL!) == collisionBytes && FileSafety.digest(Data(contentsOf: collision)) == currentSource.item.sha256, "Actual fallback replacement snapshots old target before atomic copy")
+        try check(FileSafety.digest(Data(contentsOf: collision)) == currentSource.item.sha256 && !FileManager.default.fileExists(atPath: FileSafety.root.appendingPathComponent("History/HandoffExports").path), "Actual fallback replacement uses atomic copy without retained backup")
 
         store.select(existing)
         let researchText = try CurrentDocumentDispatcher.prepare(store: store, registry: registry, chooseVersion: { _ in .currentEdits }, now: clock)

@@ -29,7 +29,7 @@ import UniformTypeIdentifiers
         case "pptx": presentation = try OfficePresentation(package: package)
         default: throw OfficeFailure.message("本编辑器支持 .docx、.xlsx、.pptx。旧格式请用 LibreOffice 转换后打开。")
         }
-        self.package = package; dirty = false; revision += 1; message = "本地打开 · 保存前自动备份原件"
+        self.package = package; dirty = false; revision += 1; message = "本地打开 · 保存前核对外部修改"
         savedDigest = try OfficePackage.digest(url); draftFailure = nil; recoveryCandidate = nil
         do { recoveryCandidate = try OfficeRecovery.read(for: url) }
         catch { draftFailure = error.localizedDescription; recoveryCandidate = try? OfficeRecovery.read(for: url, previous: true) }
@@ -79,7 +79,7 @@ import UniformTypeIdentifiers
         guard !recoveryAvailable else { throw OfficeFailure.message("请先选择恢复草稿，或保留草稿并编辑原件。") }
         draftTask?.cancel(); try apply(); try package.save(to: url)
         savedDigest = try OfficePackage.digest(url); OfficeRecovery.cleanValidDrafts(for: url); recoveryAvailable = false; draftFailure = nil
-        dirty = false; revision += 1; message = "已保存 · 原件快照已保留"
+        dirty = false; revision += 1; message = "已保存"
         NotificationCenter.default.post(name: Notification.Name("GaoWenJian.moduleDirty"), object: url.path, userInfo: ["dirty": false])
     }
     func discardDraft() {
@@ -182,7 +182,7 @@ struct OfficeWorkspace: View {
             Button("删除", role: .destructive) {
                 if let id = paragraphID { session.word?.removeParagraph(id: id); paragraphID = session.word?.paragraphs.first?.id; session.changed() }
             }
-        } message: { Text("该段落及其包含的图片、字段或其他对象会一并删除。覆盖保存前会保留原件快照。") }
+        } message: { Text("该段落及其包含的图片、字段或其他对象会一并删除。保存前会核对外部修改。") }
         .alert("打开 LibreOffice 高级编辑？", isPresented: $confirmAdvanced) {
             Button("取消", role: .cancel) {}
             Button("保存并打开") { do { try commitCell(); try session.save(); onSaved(); session.advancedEdit(onError: onError) } catch { onError(error.localizedDescription) } }
@@ -192,7 +192,7 @@ struct OfficeWorkspace: View {
         HStack(spacing: 10) {
             Label(url.pathExtension.uppercased(), systemImage: url.pathExtension == "xlsx" ? "tablecells" : url.pathExtension == "pptx" ? "rectangle.on.rectangle" : "doc.richtext").font(.system(size: 12, weight: .semibold))
             Spacer()
-            Button { save() } label: { Label("保存", systemImage: "square.and.arrow.down") }.help("保存当前文件（⌘S）；先保留原件快照")
+            Button { save() } label: { Label("保存", systemImage: "square.and.arrow.down") }.help("保存当前文件（⌘S）；核对外部修改")
             Button("另存副本") { saveCopy() }
             Button { exportPDF() } label: { Label("导出 PDF", systemImage: "doc") }.disabled(session.previewBusy)
             Menu {

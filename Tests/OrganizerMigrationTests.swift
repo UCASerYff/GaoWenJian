@@ -469,7 +469,7 @@ import Darwin
         FileHandle.standardOutput.write(Data(("OrganizerMigrationTests stage: " + name + "\n").utf8))
     }
     private static func export(_ source: URL, preferences: URL, to target: URL) throws {
-        let script = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent("Scripts/export-organizer-snapshot.py")
+        let script = URL(fileURLWithPath: #filePath).deletingLastPathComponent().appendingPathComponent("OrganizerMigrationFixture.py")
         let p = Process(); p.executableURL = URL(fileURLWithPath: "/usr/bin/python3")
         p.arguments = [script.path, "--source", source.path, "--preferences", preferences.path, "--output", target.path]
         let output = Pipe(); p.standardOutput = output; p.standardError = output

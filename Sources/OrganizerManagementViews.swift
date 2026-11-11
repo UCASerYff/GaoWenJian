@@ -34,7 +34,7 @@ struct OFAssociationsView: View {
                                 guard let app = controller.selected else { return }
                                 guard ofConfirm(title: "修改默认打开应用？", message: "范围：\(controller.mode == "type" ? "所有此类型文件" : "此 URL scheme")\n标识：\(controller.identifier)\n旧应用：\(controller.current?.lastPathComponent ?? "无")\n新应用：\(app.lastPathComponent)\n系统可能另行要求确认，最终以读回结果为准。", action: "提交系统确认") else { return }
                                 Task { await model.commitAssociation(to: app) }
-                            }.buttonStyle(.borderedProminent).disabled(controller.selected == nil || controller.busy)
+                            }.buttonStyle(.borderedProminent).foregroundStyle(WorkspaceStyle.onAccent).disabled(controller.selected == nil || controller.busy)
                         }
                     }.padding(8)
                 }
@@ -75,7 +75,7 @@ struct OFMoveView: View {
                             ForEach(plan.operations) { operation in OFOperationRow(operation: operation) }
                             if let failure = plan.failure { Text(failure).foregroundStyle(.orange) }
                             HStack {
-                                Button("执行此预览计划…") { Task { await model.executeMove() } }.buttonStyle(.borderedProminent).disabled(plan.state != .awaitingConfirmation || model.moving)
+                                Button("执行此预览计划…") { Task { await model.executeMove() } }.buttonStyle(.borderedProminent).foregroundStyle(WorkspaceStyle.onAccent).disabled(plan.state != .awaitingConfirmation || model.moving)
                                 Button(model.moving ? "请求取消" : "取消计划") { model.cancelMove() }
                             }
                         }.padding(10)

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Read-only GaoZhengLi -> GaoWenJian export. Explicit source and preferences only.
+"""Synthetic Organizer migration fixture generator. Tests only, private temporary data only.
 Never opens the source SQLite database: raw database/WAL are copied while the
 source app's existing lock is held, and SQLite online backup runs on that copy.
 Only an absent .noindex output is created. No actual export runs on import.
@@ -346,6 +346,15 @@ def backup_private_database(work, data):
 
 
 def export(source, preferences, output, retiring):
+    # A fixture helper must never export actual application or user data.
+    # The first container must be created by a GaoWenJian test harness.
+    paths = [source, preferences, output, *[Path(p) for p in retiring]]
+    for candidate in paths:
+        path = Path(candidate)
+        need(path.is_absolute() and len(path.parts) > 4 and path.parts[:3] == ('/', 'private', 'tmp')
+             and path.parts[3].startswith('gaowenjian-') and '..' not in path.parts,
+             'Only synthetic data in an isolated /private/tmp/gaowenjian-* test container is allowed')
+        need(path.parent.resolve() == path.parent, 'Fixture paths cannot resolve through symbolic links')
     source, preferences = safe(source), safe(preferences)
     safe(output.parent)
     need(not os.path.lexists(output) and output.name.endswith('.noindex'), 'Output must be a NEW .noindex container')

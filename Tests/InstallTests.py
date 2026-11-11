@@ -1,176 +1,166 @@
-#!/usr/bin/python3
-"""Installer regression tests use only a fresh unindexed temporary directory."""
+"""Isolated installation policy checks. Never launches an app or touches real data."""
+import argparse
+import contextlib
+import importlib.util
+import io
 import json
+import os
 from pathlib import Path
 import plistlib
-import subprocess
-import tempfile
 import shutil
-import importlib.util
-from unittest import mock
-
+import subprocess
+import sys
+import tempfile
+import unittest
+from unittest.mock import patch
+sys.dont_write_bytecode = True
 PROJECT = Path(__file__).resolve().parent.parent
-INSTALL = PROJECT / "Scripts/install.sh"
-FINALIZE = PROJECT / "Scripts/finalize-install.sh"
-BUNDLE = "com.gaoseries.GaoWenJian"
+spec = importlib.util.spec_from_file_location("install_safety", PROJECT / "Scripts/install_safety.py")
+installer = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(installer)
 
 
-def invoke(command, expected=0):
-    result = subprocess.run([str(item) for item in command], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-    assert result.returncode == expected, result.stdout + result.stderr
-    return result.stdout
-
-
-def fixture(path, version, payload, bundle=BUNDLE):
+def fixture(path, version, payload, bundle=installer.BUNDLE):
     (path / "Contents/MacOS").mkdir(parents=True)
-    (path / "Contents/Info.plist").write_bytes(plistlib.dumps({
-        "CFBundleIdentifier": bundle, "CFBundleExecutable": "GaoWenJian",
-        "CFBundleShortVersionString": version, "CFBundleVersion": str(int(round(float(version) * 100)) - 99)
-    }))
-    (path / "Contents/MacOS/GaoWenJian").write_bytes(payload)
-    (path / "Contents/MacOS/GaoWenJian").chmod(0o755)
+    (path / "Contents/Info.plist").write_bytes(plistlib.dumps({"CFBundleIdentifier": bundle,
+        "CFBundleExecutable": "GaoWenJian", "CFBundleShortVersionString": version, "CFBundleVersion": "12"}))
+    executable = path / "Contents/MacOS/GaoWenJian"
+    executable.write_bytes(payload)
+    executable.chmod(0o755)
 
 
-def main():
-    spec = importlib.util.spec_from_file_location("install_safety", PROJECT / "Scripts/install_safety.py")
-    installer = importlib.util.module_from_spec(spec); spec.loader.exec_module(installer)
-    registered_fixture = "/tmp/GaoFiles-RegistryFixture.noindex/previous.app"
-    own = "bundle id: fixture\npath: " + registered_fixture + " (0x123)\nidentifier: " + BUNDLE + "\n"
-    other = "bundle id: other\npath: /tmp/GaoFiles-RegistryFixture.noindex/other.app (0x124)\nidentifier: com.example.Other\n"
-    assert installer.registered_paths(own + other) == {registered_fixture}
-    with mock.patch.object(installer, "run", return_value=other) as command:
-        installer.register(Path(registered_fixture), False, remove=True)
-        assert command.call_count == 1  # Unregistered transaction copy: query only.
-    with mock.patch.object(installer, "run", side_effect=[own, ""]) as command:
-        installer.register(Path(registered_fixture), False, remove=True)
-        assert command.call_args_list[-1].args[0] == [installer.LSREGISTER, "-u", registered_fixture]
-    with mock.patch.object(installer, "run", side_effect=[own, RuntimeError("cannot unregister")]):
-        try: installer.register(Path(registered_fixture), False, remove=True)
-        except RuntimeError: pass
-        else: raise AssertionError("A real registration failure must stop cleanup")
-    try: installer.registered_paths("")
-    except RuntimeError: pass
-    else: raise AssertionError("Unreadable registry must not become empty")
-    root = Path(tempfile.mkdtemp(prefix="GaoFiles-InstallTests-", suffix=".noindex", dir="/private/tmp")).resolve()
-    try:
-        source = root / "new/搞文件.app"
-        fixture(source, "1.00", b"initial candidate")
-        target = root / "Applications/搞文件.app"
-        data = root / "UserData"
-        preferences = root / "Preferences.plist"
-        backups = root / "Backups"
-        args = [INSTALL, "--app", source, "--target", target, "--data-root", data,
-                "--preferences", preferences, "--backup-root", backups, "--defer-cleanup", "--simulate"]
+class InstallTests(unittest.TestCase):
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory(prefix="gaowenjian-install-tests-", suffix=".noindex", dir="/private/tmp")
+        self.root = Path(self.temporary.name).resolve()
+        self.target = self.root / "Applications/搞文件.app"
+        self.source = self.root / "New/搞文件.app"
+        fixture(self.target, "1.10", b"old program")
+        fixture(self.source, "1.11", b"new program")
+        self.data = self.root / "UserData"
+        (self.data / "StickyNotes/Attachments/nested").mkdir(parents=True)
+        (self.data / "workspace.json").write_bytes(b'{"recovery":"unsaved"}')
+        (self.data / "StickyNotes/Attachments/nested/image.png").write_bytes(bytes(range(256)))
+        self.preferences = self.root / "Preferences.plist"
+        self.preferences.write_bytes(plistlib.dumps({"fontSize": 17}))
+        self.record = self.root / "installation.json"
+        self.args = argparse.Namespace(app=str(self.source), target=str(self.target), data_root=str(self.data),
+            preferences=str(self.preferences), record=str(self.record), simulate=True)
+        self.before = installer.inventory(self.data)
 
-        def install():
-            output = invoke(args)
-            path = Path(next(line[len("MANIFEST="):] for line in output.splitlines() if line.startswith("MANIFEST=")))
-            record = json.loads(path.read_text())
-            stage = Path(record["stage_dir"])
-            assert stage == target.parent / (".gaowenjian-install-" + record["nonce"] + ".noindex")
-            assert stage.is_dir()
-            before = path.read_bytes()
-            assert installer.load_manifest(path) == record and path.read_bytes() == before
-            return path
+    def tearDown(self):
+        self.temporary.cleanup()
 
-        def legacy_stage_fixture(path):
-            # Convert only this fresh simulated transaction into the historical
-            # directory spelling. Production must read old pointers in place.
-            record = json.loads(path.read_text())
-            stage = Path(record["stage_dir"])
-            legacy_stage = stage.with_name(".gaowenjian-install-" + record["nonce"])
-            stage.rename(legacy_stage)
-            record["stage_dir"] = str(legacy_stage)
-            path.write_text(json.dumps(record))
-            before = path.read_bytes()
-            assert installer.load_manifest(path) == record
-            assert path.read_bytes() == before  # No pointer rewrite on load.
-            return record
+    def install(self):
+        with contextlib.redirect_stdout(io.StringIO()):
+            installer.install(self.args)
+        return installer.load_manifest(self.record)
 
-        # First install explicitly records missing data and preferences.
-        manifest_path = install()
-        manifest = json.loads(manifest_path.read_text())
-        assert manifest["state"] == "installed_pending_verification"
-        assert manifest["backups"]["data"]["inventory"]["state"] == "missing"
-        assert manifest["backups"]["preferences"]["inventory"]["state"] == "missing"
-        original_manifest = manifest_path.read_bytes()
-        for invalid_nonce in (None, "", "../outside", "g" * 32):
-            invalid = dict(manifest, nonce=invalid_nonce)
-            manifest_path.write_text(json.dumps(invalid))
-            invoke([FINALIZE, "--manifest", manifest_path, "--verified"], expected=1)
-            assert target.exists() and Path(manifest["stage_dir"]).is_dir()
-        manifest_path.write_bytes(original_manifest)
-        invoke([FINALIZE, "--manifest", manifest_path, "--rollback"])
-        assert not target.exists()
-        assert not Path(manifest["stage_dir"]).exists()
-        assert manifest_path.exists()
+    def finalize(self):
+        args = argparse.Namespace(manifest=str(self.record), verified=True, verification_note="isolated installation test; no app launch")
+        with contextlib.redirect_stdout(io.StringIO()):
+            installer.finalize(args)
 
-        # A historical pending install can still finalize without moving pointers.
-        manifest_path = install()
-        manifest = legacy_stage_fixture(manifest_path)
-        invoke([FINALIZE, "--manifest", manifest_path, "--verified"])
-        assert target.exists() and not Path(manifest["stage_dir"]).exists()
-        finalized = json.loads(manifest_path.read_text())
-        assert finalized["state"] == "verified" and finalized["stage_dir"] == manifest["stage_dir"]
-        assert finalized["backups"] == manifest["backups"]
+    def test_update_preserves_real_data_and_removes_old_program_and_stage(self):
+        record = self.install()
+        self.assertEqual((self.target / "Contents/MacOS/GaoWenJian").read_bytes(), b"new program")
+        self.assertEqual(installer.inventory(self.data), self.before)
+        self.assertFalse(Path(record["stage_dir"]).exists())
+        self.assertTrue(record["no_backups"])
+        self.assertNotIn("backups", record)
+        self.assertNotIn("retained_previous_program", record)
+        self.assertEqual(sorted(p.name for p in self.root.iterdir()), ["Applications", "New", "Preferences.plist", "UserData", "installation.json"])
+        self.assertNotIn(b"unsaved", self.record.read_bytes())
+        self.finalize()
+        final = installer.load_manifest(self.record)
+        self.assertEqual(final["state"], "verified")
+        self.assertTrue(final["unchanged_data_verified"])
+        self.assertTrue(final["uniqueness"]["not_a_real_uniqueness_verification"])
 
-        # An update backs up attachments and preferences byte-for-byte.
-        (data / "attachments/nested").mkdir(parents=True)
-        (data / "database.sqlite").write_bytes(b"actual database\x00\x01")
-        (data / "attachments/nested/图片.png").write_bytes(bytes(range(256)))
-        prefs = plistlib.dumps({"fontSize": 17, "privateSetting": "kept local"})
-        preferences.write_bytes(prefs)
-        shutil.rmtree(source)
-        fixture(source, "1.01", b"updated candidate")
-        manifest_path = install()
-        manifest = legacy_stage_fixture(manifest_path)
-        previous = Path(manifest["stage_dir"]) / "previous.app"
-        assert previous.exists()
-        assert (previous / "Contents/MacOS/GaoWenJian").read_bytes() == b"initial candidate"
-        backup_data = Path(manifest["backups"]["data"]["backup_path"])
-        assert (backup_data / "database.sqlite").read_bytes() == (data / "database.sqlite").read_bytes()
-        assert (backup_data / "attachments/nested/图片.png").read_bytes() == bytes(range(256))
-        assert Path(manifest["backups"]["preferences"]["backup_path"]).read_bytes() == prefs
-        invoke([FINALIZE, "--manifest", manifest_path, "--rollback"])
-        assert (target / "Contents/MacOS/GaoWenJian").read_bytes() == b"initial candidate"
-        assert preferences.read_bytes() == prefs and (data / "database.sqlite").exists()
-        rolled_back = json.loads(manifest_path.read_text())
-        assert rolled_back["stage_dir"] == manifest["stage_dir"] and rolled_back["backups"] == manifest["backups"]
+    def test_first_install_records_missing_data_without_creating_blank_data(self):
+        shutil.rmtree(self.target)
+        shutil.rmtree(self.data)
+        self.preferences.unlink()
+        record = self.install()
+        self.assertEqual(record["data_checks"]["data"]["inventory"]["state"], "missing")
+        self.finalize()
+        self.assertFalse(self.data.exists())
+        self.assertFalse(self.preferences.exists())
 
-        # Verification is explicit; a non-GUI update can require unchanged real data.
-        manifest_path = install()
-        manifest = json.loads(manifest_path.read_text())
-        (data / "database.sqlite").write_bytes(b"concurrent data change")
-        invoke([FINALIZE, "--manifest", manifest_path, "--verified", "--require-unchanged-data"], expected=1)
-        assert (Path(manifest["stage_dir"]) / "previous.app").exists()
-        (data / "database.sqlite").write_bytes(b"actual database\x00\x01")
-        invoke([FINALIZE, "--manifest", manifest_path, "--verified", "--require-unchanged-data", "--verification-note", "isolated tests and static install verification; no smoke test"])
-        checked = json.loads(manifest_path.read_text())
-        assert checked["unchanged_data_verified"] is True and "no smoke test" in checked["verification_note"]
-        assert (Path(manifest["stage_dir"]) / "previous.app").exists()
-        assert checked["retained_previous_program"]["program_path"] == str(Path(manifest["stage_dir"]) / "previous.app")
-        assert Path(manifest["backups"]["data"]["backup_path"]).exists()
-        assert (target / "Contents/MacOS/GaoWenJian").read_bytes() == b"updated candidate"
+    def test_unresolved_attachment_refuses_before_old_program_changes(self):
+        (self.data / "lost-attachment").symlink_to(self.root / "missing")
+        with self.assertRaisesRegex(RuntimeError, "符号链接"):
+            self.install()
+        self.assertEqual((self.target / "Contents/MacOS/GaoWenJian").read_bytes(), b"old program")
+        self.assertFalse(any(self.target.parent.glob("*.noindex")))
 
-        # Wrong bundle IDs, damaged backups and unresolved attachments cannot be cleared.
-        bad = root / "bad/搞文件.app"
-        fixture(bad, "1.02", b"unrelated", bundle="com.example.OtherApp")
-        bad_args = list(args); bad_args[bad_args.index("--app") + 1] = bad
-        invoke(bad_args, expected=1)
-        assert (target / "Contents/MacOS/GaoWenJian").read_bytes() == b"updated candidate"
-        (data / "unresolved-attachment").symlink_to(root / "missing-attachment")
-        invoke(args, expected=1)
-        assert (target / "Contents/MacOS/GaoWenJian").read_bytes() == b"updated candidate"
-        (data / "unresolved-attachment").unlink()
-        manifest_path = install()
-        manifest = json.loads(manifest_path.read_text())
-        (Path(manifest["backups"]["data"]["backup_path"]) / "database.sqlite").write_bytes(b"damaged backup")
-        invoke([FINALIZE, "--manifest", manifest_path, "--verified"], expected=1)
-        assert (Path(manifest["stage_dir"]) / "previous.app").exists()
-        print("Install tests passed: unindexed staging, historical manifest finalize/rollback without pointer rewrites, invalid transaction rejection, missing records, initial install, update backups, nested attachments, preferences, rollback, verified cleanup, wrong bundle rejection, unresolved data rejection and damaged backup protection; no App launch or system registration.")
-    finally:
-        shutil.rmtree(root)
+    def test_changed_data_refuses_finalize_without_restoring_or_overwriting(self):
+        self.install()
+        changed = self.data / "workspace.json"
+        changed.write_bytes(b"legitimate later edits")
+        with self.assertRaisesRegex(RuntimeError, "摘要发生变化"):
+            self.finalize()
+        self.assertEqual(changed.read_bytes(), b"legitimate later edits")
+        self.assertEqual(installer.load_manifest(self.record)["state"], "installed_pending_verification")
+        self.assertEqual((self.target / "Contents/MacOS/GaoWenJian").read_bytes(), b"new program")
+
+    def test_failure_after_replacement_keeps_candidate_without_rollback_copy(self):
+        actual = installer.verify_candidate
+        def verification(path, simulate):
+            if path == self.target:
+                raise RuntimeError("synthetic installed verification failure")
+            actual(path, simulate)
+        with patch.object(installer, "verify_candidate", side_effect=verification), self.assertRaisesRegex(RuntimeError, "synthetic installed"):
+            self.install()
+        self.assertEqual((self.target / "Contents/MacOS/GaoWenJian").read_bytes(), b"new program")
+        self.assertEqual(installer.inventory(self.data), self.before)
+        self.assertEqual(installer.load_manifest(self.record)["state"], "failed")
+        self.assertFalse(any(self.target.parent.glob("*.noindex")))
+        self.assertFalse(any(p.name in {"previous.app", "ProgramRecovery.noindex", "Backups"} for p in self.root.rglob("*")))
+
+    def test_partial_copy_failure_cleans_only_exact_private_stage(self):
+        def failed_copy(source, destination, **kwargs):
+            destination.mkdir()
+            (destination / "partial-resource").write_bytes(b"incomplete")
+            raise RuntimeError("synthetic partial copy failure")
+        with patch.object(installer.shutil, "copytree", side_effect=failed_copy), self.assertRaisesRegex(RuntimeError, "partial copy"):
+            self.install()
+        self.assertEqual((self.target / "Contents/MacOS/GaoWenJian").read_bytes(), b"old program")
+        self.assertEqual(installer.inventory(self.data), self.before)
+        self.assertFalse(any(self.target.parent.glob("*.noindex")))
+
+    def test_wrong_bundle_and_indexed_source_refuse_without_modification(self):
+        bad = self.root / "Bad/搞文件.app"
+        fixture(bad, "1.11", b"other", bundle="com.example.Other")
+        self.args.app = str(bad)
+        with self.assertRaisesRegex(RuntimeError, "Bundle ID"):
+            self.install()
+        self.assertEqual((self.target / "Contents/MacOS/GaoWenJian").read_bytes(), b"old program")
+        with self.assertRaisesRegex(RuntimeError, "noindex"):
+            installer.require_private_noindex(Path("/Applications/Other.app"))
+
+    def test_legacy_backup_record_cannot_execute(self):
+        self.record.write_text(json.dumps({"format": 1, "bundle_id": installer.BUNDLE}))
+        with self.assertRaisesRegex(RuntimeError, "历史记录不可"):
+            installer.load_manifest(self.record)
+
+    def test_unique_entry_requires_real_formal_path_in_both_sources(self):
+        dump = "bundle id: 123\nidentifier: " + installer.BUNDLE + "\npath: /Applications/搞文件.app (0x123)\n"
+        target = Path("/Applications/搞文件.app")
+        with patch.object(installer, "run", side_effect=[dump, ""]), self.assertRaisesRegex(RuntimeError, "不能有重复或空结果"):
+            installer.session_uniqueness(target)
+        with patch.object(installer, "run", side_effect=[dump, str(target) + "\n/private/tmp/Other.app\n"]), self.assertRaisesRegex(RuntimeError, "不能有重复或空结果"):
+            installer.session_uniqueness(target)
+        with patch.object(installer, "run", side_effect=[dump, str(target) + "\n"]), patch.object(Path, "is_dir", return_value=True):
+            self.assertEqual(installer.session_uniqueness(target)["spotlight"], [str(target)])
+
+    def test_removed_backup_and_rollback_cli_options_refuse(self):
+        for args in (["install", "--app", str(self.source), "--backup-root", str(self.root / "Backups")],
+                     ["finalize", "--manifest", str(self.record), "--rollback"]):
+            result = subprocess.run([sys.executable, str(PROJECT / "Scripts/install_safety.py"), *args], capture_output=True)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertEqual((self.target / "Contents/MacOS/GaoWenJian").read_bytes(), b"old program")
 
 
 if __name__ == "__main__":
-    main()
+    unittest.main(verbosity=2)

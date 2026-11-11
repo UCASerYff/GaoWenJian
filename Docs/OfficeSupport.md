@@ -39,6 +39,6 @@ Excel 显示的是文件中已有的公式缓存，它可能已过期；没有�
 
 - 旧版活动草稿和上一份副本：`~/Library/Application Support/GaoSeries/GaoWenJian/Recovery/Office`。
 - 旧版手动保留的草稿：上述目录内的 `Retained`。
-- 原件历史快照：`~/Library/Application Support/GaoSeries/GaoWenJian/History`。
+新版不创建原件历史快照或恢复稿的上一版备份；已有尚未恢复的 Office 草稿继续保留。
 
 使用 `--data-dir` 运行隔离测试时，上述资料位于指定的隔离目录中。新查看器不产生编辑草稿。

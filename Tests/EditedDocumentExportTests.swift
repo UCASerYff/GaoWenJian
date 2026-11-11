@@ -37,7 +37,7 @@ enum EditedDocumentExportTests {
         try existing.write(to: output)
         try rejects("Existing output requires explicit approval") { _ = try EditedDocumentExporter.export(prepared, to: output) }
         let replaced = try EditedDocumentExporter.export(prepared, to: output, overwrite: .replace(expectedSHA256: FileSafety.digest(existing)))
-        try check(try replaced.snapshotURL.map { try Data(contentsOf: $0) } == existing, "Overwriting keeps verified destination snapshot")
+        try check(!FileManager.default.fileExists(atPath: FileSafety.root.appendingPathComponent("History/HandoffExports").path), "Overwriting creates no retained backup")
         try rejects("Extension changes are not silent conversions") { _ = try EditedDocumentExporter.export(prepared, to: directory.appendingPathComponent("错误转换.pdf")) }
 
         let inbound = directory.appendingPathComponent("最初收到的副本.md")
@@ -127,7 +127,7 @@ enum EditedDocumentExportTests {
         try check(longOfficeExport.title.hasSuffix(".docm") && longOfficeExport.title.utf8.count <= 220 && (try Data(contentsOf: longOfficeCopy)) == officeBytes, "Long Office basenames retain the complete original format and macro bytes")
         model.discardDraft()
         try check(NSApp == nil, "Export tests never create app or windows")
-        print("Edited document export: current UTF8/PDF snapshots, read-only byte preservation, target snapshots, inbound/current/hardlink/symlink protection, cancellation and failure state passed")
+        print("Edited document export: current UTF8/PDF snapshots, read-only byte preservation, no retained target backups, inbound/current/hardlink/symlink protection, cancellation and failure state passed")
     }
 
     private static func fixture() throws -> Data {

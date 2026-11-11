@@ -9,63 +9,116 @@ struct OFMainView: View {
         Group {
             if let error = model.fatalError {
                 VStack(spacing: 18) {
-                    Image(systemName: "externaldrive.badge.exclamationmark").font(.system(size: 52)).foregroundStyle(.orange)
-                    Text("资料需要恢复").font(.title2.bold())
+                    Image(systemName: "externaldrive.badge.exclamationmark").font(.system(size: 48, weight: .light)).foregroundStyle(.orange)
+                    Text("资料暂时无法读取").font(.title2.weight(.semibold))
                     Text(error).textSelection(.enabled).frame(maxWidth: 620)
-                    Text("已停止写入。保留现有资料和初始化记录，从已核验备份恢复后重新打开应用。").foregroundStyle(.secondary)
-                    HStack { Button("显示资料位置") { NSWorkspace.shared.selectFile(nil, inFileViewerRootedAtPath: OFAppLocations.directory.deletingLastPathComponent().path) }; Button("显示备份位置") { NSWorkspace.shared.selectFile(nil, inFileViewerRootedAtPath: OFAppLocations.backups.path) } }
-                }.padding(40)
-            } else {
-                NavigationSplitView {
-                    List(selection: $model.section) {
-                        Section("文件") {
-                            Label("快速查找", systemImage: "magnifyingglass").tag(OFAppSection.search)
-                            Label("收藏", systemImage: "star").tag(OFAppSection.favorites)
-                            Label("授权目录", systemImage: "folder.badge.plus").tag(OFAppSection.roots)
-                        }
-                        Section("虚拟工作区") {
-                            ForEach(model.config.workspaces) { workspace in
-                                Label(workspace.name, systemImage: "rectangle.3.group").tag(OFAppSection.workspace(workspace.id))
-                                    .contextMenu { Button("重命名…") { model.renameWorkspace(workspace.id) }; Button("删除配置…", role: .destructive) { model.removeWorkspace(workspace.id) } }
-                            }
-                            Button { model.createWorkspace() } label: { Label("新建工作区…", systemImage: "plus") }.buttonStyle(.plain)
-                        }
-                        if !model.config.savedQueries.isEmpty {
-                            Section("保存的查询") {
-                                ForEach(model.config.savedQueries) { query in
-                                    Button { model.applyQuery(query) } label: { Label(query.name, systemImage: "line.3.horizontal.decrease.circle") }
-                                        .buttonStyle(.plain)
-                                        .contextMenu { Button("删除查询配置", role: .destructive) { model.config.savedQueries.removeAll { $0.id == query.id }; model.saveConfig() } }
-                                }
-                            }
-                        }
-                        Section("管理") {
-                            Label("默认打开方式", systemImage: "app.badge.checkmark").tag(OFAppSection.associations)
-                            Label("物理整理计划", systemImage: "arrow.triangle.branch").tag(OFAppSection.moves)
-                            Label("整理设置", systemImage: "slider.horizontal.3").tag(OFAppSection.settings)
-                        }
-                    }.listStyle(.sidebar).navigationSplitViewColumnWidth(min: 190, ideal: 215)
-                } detail: {
-                    VStack(spacing: 0) {
-                        detail
-                        Divider()
-                        HStack(spacing: 8) {
-                            if model.scanning { ProgressView().controlSize(.mini) }
-                            Text(model.scanning ? model.scanMessage : model.status.isEmpty ? model.scanMessage : model.status).lineLimit(2).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
-                            Spacer()
-                            if model.scanning { Button("取消扫描") { model.cancelScan() }.controlSize(.small) }
-                        }.padding(.horizontal, 14).padding(.vertical, 9)
+                    Text("已停止写入，现有资料与初始化记录保持原样。请先检查资料完整性后重新打开。")
+                        .foregroundStyle(.secondary)
+                    Button("显示资料位置") {
+                        NSWorkspace.shared.selectFile(nil, inFileViewerRootedAtPath: OFAppLocations.directory.deletingLastPathComponent().path)
                     }
+                }.padding(40).frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                VStack(spacing: 0) {
+                    navigationBar
+                    Divider()
+                    detail.frame(maxWidth: .infinity, maxHeight: .infinity)
+                    Divider()
+                    HStack(spacing: 8) {
+                        if model.scanning { ProgressView().controlSize(.mini) }
+                        Text(model.scanning ? model.scanMessage : model.status.isEmpty ? model.scanMessage : model.status)
+                            .lineLimit(2).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
+                        Spacer()
+                        if model.scanning { Button("取消扫描") { model.cancelScan() }.controlSize(.small) }
+                    }.padding(.horizontal, 18).padding(.vertical, 9).background(WorkspaceStyle.canvas)
                 }
-                .onChange(of: model.section) { _, section in if section == .search || section == .favorites { model.refreshSearch() } }
+                .onChange(of: model.section) { _, section in
+                    if section == .search || section == .favorites { model.refreshSearch() }
+                }
                 .onChange(of: model.filter) { _, _ in model.refreshSearch() }
-                .disabled(model.backingUp)
-                .toolbar {
-                    ToolbarItem { Button { model.addRoot() } label: { Label("添加授权目录", systemImage: "folder.badge.plus") }.help("通过系统面板授权一个目录") }
-                }
             }
-        }.environmentObject(model)
-            .preferredColorScheme(model.config.appearance == "light" ? .light : model.config.appearance == "dark" ? .dark : nil)
+        }
+        .environmentObject(model)
+        .background(WorkspaceStyle.canvas)
+        .tint(WorkspaceStyle.accent)
+        .preferredColorScheme(model.config.appearance == "light" ? .light : model.config.appearance == "dark" ? .dark : nil)
+    }
+
+    private var navigationBar: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 12) {
+                ScrollView(.horizontal) {
+                    HStack(spacing: 5) {
+                        sectionButton("查找", symbol: "magnifyingglass", section: .search)
+                        sectionButton("收藏", symbol: "star", section: .favorites)
+                        sectionButton("授权目录", symbol: "folder", section: .roots)
+                        Menu {
+                            ForEach(model.config.workspaces) { workspace in
+                                Button(workspace.name) { model.section = .workspace(workspace.id) }
+                            }
+                            if !model.config.workspaces.isEmpty { Divider() }
+                            Button("新建工作区…") { model.createWorkspace() }
+                            if case .workspace(let id) = model.section {
+                                Divider()
+                                Button("重命名当前工作区…") { model.renameWorkspace(id) }
+                                Button("删除当前工作区配置…", role: .destructive) { model.removeWorkspace(id) }
+                            }
+                        } label: {
+                            Label(workspaceTitle, systemImage: "rectangle.3.group")
+                                .font(.system(size: 12, weight: workspaceSelected ? .semibold : .regular))
+                        }
+                        .menuStyle(.borderlessButton).fixedSize()
+                        .padding(.horizontal, 10).frame(height: 31)
+                        .background(workspaceSelected ? WorkspaceStyle.accent.opacity(0.12) : Color.clear, in: RoundedRectangle(cornerRadius: 7))
+                        sectionButton("整理计划", symbol: "arrow.triangle.branch", section: .moves)
+                    }
+                }.scrollIndicators(.hidden)
+                Menu {
+                    Button("默认打开方式") { model.section = .associations }
+                    Button("整理设置") { model.section = .settings }
+                } label: { Image(systemName: "slider.horizontal.3") }
+                    .menuStyle(.borderlessButton).fixedSize().help("整理设置与默认打开方式")
+                Button { model.addRoot() } label: { Label("添加目录", systemImage: "folder.badge.plus") }
+                    .controlSize(.regular).help("通过系统面板授权一个目录")
+            }.padding(.horizontal, 17).padding(.vertical, 11)
+            if !model.config.savedQueries.isEmpty {
+                HStack(spacing: 8) {
+                    Text("常用查询").font(.caption2).foregroundStyle(.secondary)
+                    ScrollView(.horizontal) {
+                        HStack(spacing: 6) {
+                            ForEach(model.config.savedQueries) { query in
+                                Button { model.applyQuery(query) } label: {
+                                    Label(query.name, systemImage: "line.3.horizontal.decrease.circle").font(.caption)
+                                        .padding(.horizontal, 9).padding(.vertical, 5)
+                                        .background(WorkspaceStyle.surface, in: Capsule())
+                                }.buttonStyle(.plain)
+                                    .contextMenu {
+                                        Button("删除查询配置", role: .destructive) {
+                                            model.config.savedQueries.removeAll { $0.id == query.id }; model.saveConfig()
+                                        }
+                                    }
+                            }
+                        }
+                    }.scrollIndicators(.hidden)
+                }.padding(.horizontal, 20).padding(.bottom, 10)
+            }
+        }.background(WorkspaceStyle.canvas)
+    }
+
+    private var workspaceSelected: Bool { if case .workspace = model.section { return true }; return false }
+    private var workspaceTitle: String {
+        if case .workspace(let id) = model.section {
+            return model.config.workspaces.first { $0.id == id }?.name ?? "工作区"
+        }
+        return "工作区"
+    }
+    private func sectionButton(_ title: String, symbol: String, section: OFAppSection) -> some View {
+        Button { model.section = section } label: {
+            Label(title, systemImage: symbol).font(.system(size: 12, weight: model.section == section ? .semibold : .regular))
+                .padding(.horizontal, 10).frame(height: 31).contentShape(Rectangle())
+        }.buttonStyle(.plain)
+            .foregroundStyle(model.section == section ? WorkspaceStyle.accent : WorkspaceStyle.muted)
+            .background(model.section == section ? WorkspaceStyle.accent.opacity(0.12) : Color.clear, in: RoundedRectangle(cornerRadius: 7))
     }
     @ViewBuilder var detail: some View {
         switch model.section {
@@ -105,7 +158,7 @@ struct OFSearchView: View {
             }.padding(.horizontal, 18).padding(.bottom, 12)
             Divider()
             if model.roots.isEmpty {
-                ContentUnavailableView { Label("先选择一个目录", systemImage: "folder.badge.plus") } description: { Text("只索引你明确授权的范围。虚拟整理不改变原件位置。") } actions: { Button("添加授权目录…") { model.addRoot() }.buttonStyle(.borderedProminent) }
+                ContentUnavailableView { Label("先选择一个目录", systemImage: "folder.badge.plus") } description: { Text("只索引你明确授权的范围。虚拟整理不改变原件位置。") } actions: { Button("添加授权目录…") { model.addRoot() }.buttonStyle(.borderedProminent).foregroundStyle(WorkspaceStyle.onAccent) }
             } else if model.result.files.isEmpty && !model.searching {
                 ContentUnavailableView("没有匹配项目", systemImage: "magnifyingglass", description: Text("调整筛选条件，或到授权目录检查扫描状态。"))
             } else {

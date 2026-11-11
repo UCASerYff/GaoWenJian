@@ -1,25 +1,9 @@
 #!/bin/zsh
-# Narrow source-retirement checks only. The caller must supply its build lease.
+# Narrow source-retirement checks, under the canonical workspace build lease.
 set -euo pipefail
 PROJECT_DIR=${0:A:h:h}
+source "$PROJECT_DIR/Scripts/require-build-lease.sh"
 [[ $# == 0 ]] || { print -u2 '此入口仅运行新退役门禁专项，不接收通用测试参数'; exit 2; }
-python3 - "$PROJECT_DIR" <<'PY'
-import json
-import os
-from pathlib import Path
-import sys
-lease_name=os.environ.get('GAOWENJIAN_BUILD_LEASE_FILE')
-owner=os.environ.get('GAOWENJIAN_BUILD_LEASE_OWNER')
-if not lease_name or not owner:
-    raise SystemExit('必须显式设置GAOWENJIAN_BUILD_LEASE_FILE和GAOWENJIAN_BUILD_LEASE_OWNER；不自行申请或抢锁')
-lease=Path(lease_name)
-if not lease.is_absolute() or lease.resolve()!=lease or not lease.is_file():
-    raise SystemExit('构建租约必须是现有、无路径别名的绝对文件')
-value=json.loads(lease.read_text())
-if value.get('owner')!=owner:
-    raise SystemExit('构建租约持有者不匹配；不自行申请或抢锁')
-print('Verified caller-owned build lease; token not displayed')
-PY
 STAGING=$(python3 -c 'import tempfile; print(tempfile.mkdtemp(prefix="gaowenjian-organizer-retirement.", suffix=".noindex", dir="/private/tmp"))')
 trap 'rm -rf "$STAGING"' EXIT
 mkdir -p "$STAGING/Sources" "$STAGING/Tests" "$STAGING/Scripts"
@@ -30,7 +14,7 @@ for name in $CORE; do
   SOURCE_FILES+=("$STAGING/Sources/$name.swift")
 done
 cp "$PROJECT_DIR/Tests/OrganizerMigrationTests.swift" "$STAGING/Tests/OrganizerMigrationTests.swift"
-cp "$PROJECT_DIR/Scripts/export-organizer-snapshot.py" "$STAGING/Scripts/export-organizer-snapshot.py"
+cp "$PROJECT_DIR/Tests/OrganizerMigrationFixture.py" "$STAGING/Tests/OrganizerMigrationFixture.py"
 cat > "$STAGING/RetirementMain.swift" <<'SWIFT'
 import AppKit
 import Foundation

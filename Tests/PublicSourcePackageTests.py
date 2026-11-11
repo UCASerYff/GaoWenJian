@@ -8,11 +8,11 @@ spec=importlib.util.spec_from_file_location('public_source_package',SCRIPTS/'pac
 
 class PublicSourcePackageTests(unittest.TestCase):
     def test_public_code_resources_and_licenses_allowed(self):
-        for name in ['VERSION','BUILD','README.md','使用说明.txt','Sources/App.swift','Scripts/receiver_native_state.py','Tests/ReceiverProgramRetentionTests.py','Docs/Licenses/Organizer-MIT.txt','Resources/Fonts/font.woff2','Assets/AppIcon.svg','Tools/OrganizerMigrationCLI.swift']:
+        for name in ['VERSION','BUILD','README.md','使用说明.txt','Sources/App.swift','Scripts/install_safety.py','Tests/InstallTests.py','Docs/Licenses/Organizer-MIT.txt','Resources/Fonts/font.woff2','Assets/AppIcon.svg','Tools/OrganizerMigrationCLI.swift']:
             with self.subTest(name=name):self.assertTrue(module.public_path(name))
 
     def test_private_runtime_program_and_generated_paths_refuse(self):
-        for name in ['安全备份/manifest.json','Release/package.zip','.git/config','Sources/.env','Sources/private.key','Resources/Previous.APP/Info.plist','Docs/previous.app.zip','Tools/cache.noindex/data.json','Sources/workspace.json','Docs/Recovery.json','Tests/private.sqlite','Tests/Progress.db','Scripts/__pycache__/x.pyc','Sources/../private.json','/absolute/file','Sources/runtime.dSYM/Contents/Info.plist']:
+        for name in ['安全备份/manifest.json','Release/package.zip','.git/config','Sources/.env','Sources/private.key','Resources/Previous.APP/Info.plist','Docs/previous.app.zip','Tools/cache.noindex/data.json','Sources/workspace.json','Docs/Recovery.json','Tests/private.sqlite','Tests/Progress.db','Scripts/__pycache__/x.pyc','Sources/../private.json','/absolute/file','Sources/runtime.dSYM/Contents/Info.plist','Docs/gaowenjian-install-private.json','Scripts/candidate.app.signing.json','Docs/GaoWenJian-1.11-copy-verification.json']:
             with self.subTest(name=name):self.assertFalse(module.public_path(name))
 
     def test_private_directory_names_refuse_at_any_depth(self):

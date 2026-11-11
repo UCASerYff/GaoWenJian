@@ -276,6 +276,5 @@ private struct RecoveryItem:Codable { var id:UUID;var path:String?;var kind:Stri
             try scan(folder,0);entries=result
         } catch{self.error="读取文件夹失败：\(error.localizedDescription)"}
     }
-    func showHistory(){if let url=active?.url {do {_=try FileSafety.snapshot(url:url);let key=FileSafety.digest(Data(url.standardizedFileURL.path.utf8)).prefix(24);NSWorkspace.shared.open(FileSafety.root.appendingPathComponent("History/"+key))}catch{self.error=error.localizedDescription}}}
     func moduleDidSave(_ url:URL){status="已完成保存操作 · \(url.lastPathComponent)";refreshFolder()}
 }

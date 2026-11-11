@@ -140,10 +140,6 @@ private func sqlite(_ url:URL,_ sql:String) throws {
             try FileManager.default.moveItem(at:moved,to:roots.appendingPathComponent("nested"))
             try store.discardScanCheckpoint(rootID:root.id)
             _ = try store.scan(rootID:root.id)
-            let backup = base.appendingPathComponent("backup.sqlite")
-            try store.backupDatabase(to:backup)
-            try expectFailure("backup refuses overwrite") {try store.backupDatabase(to:backup)}
-            try expect(try Data(contentsOf:backup).count > 0,"online database backup exists")
             print("INDEX sqlite=\(store.sqliteVersion) FTS5=\(store.supportsFTS5); functional assertions passed")
         }
         do {

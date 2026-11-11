@@ -50,8 +50,7 @@ enum PDFModuleTests {
         try require(reopened?.page(at: 0)?.annotations.contains(where: { $0.contents == "Visible local text" }) == true, "FreeText persists")
         try require(reopened?.page(at: 1)?.annotations.contains(where: { $0.contents == "Local note" }) == true, "Note persists")
         try require(reopened?.page(at: 1)?.annotations.first(where: { $0.fieldName == "Author" })?.widgetStringValue == "Gao Files", "Form value persists")
-        let backups = try FileSafety.snapshots(for: originalURL)
-        try require(!backups.isEmpty && (try Data(contentsOf: backups[0])) == originalBytes, "Overwrite original backup is byte exact")
+        try require(!FileManager.default.fileExists(atPath: FileSafety.root.appendingPathComponent("History").path), "PDF overwrite creates no backup")
         try require(!PDFWorkspaceModel(url: originalURL).dirty, "Saved recovery draft cleared")
 
         try require(try PDFWorkspaceModel.parsePages("1, 3-3,1", count: 3) == [0, 2], "Page expression and deduplication")
@@ -134,7 +133,7 @@ enum PDFModuleTests {
             try require(annotation.font?.pointSize == 22, "Edited font size survives saving")
             try require(annotation.fontColor?.usingColorSpace(.deviceRGB)?.redComponent ?? 0 > 0.6, "Edited text color survives saving")
             try require(reopened.page(at: 1)!.annotations.contains(where: { $0.fieldName == "Author" }), "Image insertion preserves unrelated form")
-            try require((try FileSafety.snapshots(for: sourceURL)).contains(where: { (try? Data(contentsOf: $0)) == original }), "Image save keeps byte-exact original")
+            try require(!FileManager.default.fileExists(atPath: FileSafety.root.appendingPathComponent("History").path), "Image save creates no backup")
             let extracted = try model.extractedDocument(pages: [0])
             let extractedBytes = extracted.dataRepresentation()!
             try requireImageRendering(PDFDocument(data: extractedBytes)!, "Extracted image appearance persists")

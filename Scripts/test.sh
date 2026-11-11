@@ -1,6 +1,7 @@
 #!/bin/zsh
 set -euo pipefail
 PROJECT_DIR=${0:A:h:h}
+source "$PROJECT_DIR/Scripts/require-build-lease.sh"
 STAGING=$(mktemp -d /private/tmp/gaowenjian-tests.XXXXXX)
 trap 'rm -rf "$STAGING"' EXIT
 ditto "$PROJECT_DIR/Sources" "$STAGING/Sources"

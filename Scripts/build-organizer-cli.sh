@@ -1,7 +1,8 @@
 #!/bin/zsh
-# Thin production migration CLI; caller must already own Master's build lease.
+# Thin production migration CLI, under the canonical workspace build lease.
 set -euo pipefail
 PROJECT_DIR=${0:A:h:h}
+source "$PROJECT_DIR/Scripts/require-build-lease.sh"
 [[ $# == 1 ]] || { print -u2 '需要一个不存在的 CLI 绝对输出路径'; exit 2; }
 python3 - "$1" <<'PY'
 from pathlib import Path

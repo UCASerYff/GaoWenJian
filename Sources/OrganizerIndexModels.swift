@@ -81,7 +81,7 @@ enum OFIndexError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .database(let s): return "索引数据库：\(s)"
-        case .recovery(let s): return "需要恢复资料：\(s)；已停止写入。请从备份恢复完整资料，勿删除初始化记录。"
+        case .recovery(let s): return "需要恢复资料：\(s)；已停止写入。请检查资料完整性，勿删除初始化记录。"
         case .permission(let s): return "授权不可用：\(s)；请重新选择该目录授权。"
         case .unavailable(let s): return "文件不可用：\(s)"
         case .unsafe(let s): return "为保护原件已停止：\(s)"

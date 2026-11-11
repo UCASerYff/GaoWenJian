@@ -87,7 +87,6 @@ import UniformTypeIdentifiers
                     else if store.showingNotes{NSApp.keyWindow?.makeFirstResponder(nil);store.showingNotes=false}
                     else if let active=store.active{store.close(active)}
                 }.keyboardShortcut("w")
-                Button("文件历史…",action:store.showHistory).disabled(store.showingOrganizer || store.active?.url==nil)
                 Button("在 Finder 显示"){if let url=store.active?.url{NSWorkspace.shared.activateFileViewerSelecting([url])}}.disabled(store.showingOrganizer || store.active?.url==nil)
                 Divider();Button("显示主窗口"){openWindow(id:"main");NSApp.activate(ignoringOtherApps:true)}.keyboardShortcut("0")
             }
@@ -103,7 +102,7 @@ import UniformTypeIdentifiers
         }
         Settings{FileSettings(store:store,stickyNotes:stickyNotes).frame(width:720,height:550)}
     }
-    private func showStickyNotes(){NSApp.keyWindow?.makeFirstResponder(nil);store.showingNotes=true;openWindow(id:"main");NSApp.activate(ignoringOtherApps:true)}
+    private func showStickyNotes(){NSApp.keyWindow?.makeFirstResponder(nil);store.showingOrganizer=false;store.showingNotes=true;openWindow(id:"main");NSApp.activate(ignoringOtherApps:true)}
     private func newStickyNote(){NSApp.keyWindow?.makeFirstResponder(nil);if let id=stickyNotes.create(){AppHub.stickyWindows?.show(noteID:id)}}
 }
 final class FindSender:NSObject { @objc var tag:Int {Int(NSFindPanelAction.showFindPanel.rawValue)} }
@@ -128,7 +127,7 @@ final class FindSender:NSObject { @objc var tag:Int {Int(NSFindPanelAction.showF
             receiveFiles([URL(fileURLWithPath:args[i+1])])
         }
         AppHub.stickyWindows?.restoreDesktopWindows()
-        if args.contains("--show-notes"){(store ?? AppHub.store)?.showingNotes=true}
+        if args.contains("--show-notes"), let target=store ?? AppHub.store {target.showingOrganizer=false;target.showingNotes=true}
     }
     func application(_ sender:NSApplication,openFiles filenames:[String]){
         receiveFiles(filenames.map{URL(fileURLWithPath:$0)})
@@ -144,7 +143,7 @@ final class FindSender:NSObject { @objc var tag:Int {Int(NSFindPanelAction.showF
     func applicationShouldTerminate(_ sender:NSApplication)->NSApplication.TerminateReply{
         sender.keyWindow?.makeFirstResponder(nil)
         if (store ?? AppHub.store)?.organizerHost.blocksQuit == true {
-            let alert=NSAlert();alert.messageText="整理资料操作尚未结束";alert.informativeText="请等待本次物理整理、核验备份或系统关联修改结束，再核对记录并退出。";alert.addButton(withTitle:"返回整理");alert.runModal()
+            let alert=NSAlert();alert.messageText="整理资料操作尚未结束";alert.informativeText="请等待本次物理整理或系统关联修改结束，再核对记录并退出。";alert.addButton(withTitle:"返回整理");alert.runModal()
             return .terminateCancel
         }
         guard (store ?? AppHub.store)?.prepareToQuit() != false else{return .terminateCancel}

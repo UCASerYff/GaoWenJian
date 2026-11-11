@@ -133,7 +133,7 @@ final class OfficePackage {
         guard try Self.digest(url) == expectedDigest else { throw OfficeFailure.message("原件在草稿生成后发生了变化。请保留草稿，避免覆盖新版原件。") }
         source = url.standardizedFileURL; sourceDigest = expectedDigest
     }
-    func save(to destination: URL, updateSource: Bool = true, createSnapshot: Bool = true) throws {
+    func save(to destination: URL, updateSource: Bool = true) throws {
         let target = destination.standardizedFileURL
         if target == source, let expected = sourceDigest {
             guard try Self.digest(target) == expected else {
@@ -145,16 +145,11 @@ final class OfficePackage {
         try Self.run("/usr/bin/zip", ["-q", "-r", output.path, "."], cwd: directory)
         try Self.run("/usr/bin/unzip", ["-tq", output.path])
         let bytes = try Data(contentsOf: output)
-        if createSnapshot, Self.fm.fileExists(atPath: target.path) { try Self.backup(target) }
         try bytes.write(to: target, options: .atomic)
         if updateSource { source = target; sourceDigest = Self.hash(bytes) }
     }
     static func hash(_ data: Data) -> String { SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined() }
     static func digest(_ url: URL) throws -> String { hash(try Data(contentsOf: url)) }
-    @discardableResult static func backup(_ source: URL) throws -> URL {
-        guard let target = try FileSafety.snapshot(url: source) else { throw OfficeFailure.message("无法读取原件并创建备份，已停止覆盖保存。") }
-        return target
-    }
     @discardableResult static func run(_ path: String, _ arguments: [String], cwd: URL? = nil) throws -> String {
         let process = Process(); process.executableURL = URL(fileURLWithPath: path)
         process.arguments = arguments; process.currentDirectoryURL = cwd
