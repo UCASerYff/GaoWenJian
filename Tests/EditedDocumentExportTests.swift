@@ -36,7 +36,7 @@ enum EditedDocumentExportTests {
         let existing = Data("目标旧版本\n".utf8)
         try existing.write(to: output)
         try rejects("Existing output requires explicit approval") { _ = try EditedDocumentExporter.export(prepared, to: output) }
-        let replaced = try EditedDocumentExporter.export(prepared, to: output, overwrite: .replace(expectedSHA256: FileSafety.digest(existing)))
+        _ = try EditedDocumentExporter.export(prepared, to: output, overwrite: .replace(expectedSHA256: FileSafety.digest(existing)))
         try check(!FileManager.default.fileExists(atPath: FileSafety.root.appendingPathComponent("History/HandoffExports").path), "Overwriting creates no retained backup")
         try rejects("Extension changes are not silent conversions") { _ = try EditedDocumentExporter.export(prepared, to: directory.appendingPathComponent("错误转换.pdf")) }
 

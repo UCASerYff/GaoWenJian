@@ -7,7 +7,6 @@ enum PDFModuleTests {
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         let originalURL = folder.appendingPathComponent("pdf-module-original.pdf")
         try makeFixture().write(to: originalURL)
-        let originalBytes = try Data(contentsOf: originalURL)
         let model = PDFWorkspaceModel(url: originalURL)
         try require(model.pageCount == 3, "PDF load: three pages")
         try require(model.permitsAnnotations && model.permitsAssembly && model.permitsForms, "PDF permissions")
@@ -79,7 +78,7 @@ enum PDFModuleTests {
         try require(conflict.recoveryConflict, "Conflicting recovery is not applied over external file")
         try imageEditingTests(in: folder)
         try textAppearanceTests(in: folder)
-        print("PDF: load, selection markup, free text, notes, form persistence, undo/redo, rotation, crop, recovery, byte-exact backup, extraction, merge, ordering, delete and external change protection passed")
+        print("PDF: load, selection markup, free text, notes, form persistence, undo/redo, rotation, crop, recovery, no automatic backups, extraction, merge, ordering, delete and external change protection passed")
     }
 
     @MainActor private static func imageEditingTests(in folder: URL) throws {
@@ -145,7 +144,7 @@ enum PDFModuleTests {
             try requireImageRendering(savedModel.document!, "Undo image delete restores appearance")
             savedModel.discardDraft()
         }
-        print("PDF image editing: PNG embed, rendered appearance after save/reopen, undo/redo/recovery/extraction, four rotations, nonzero crop, move/resize/delete, text size/color and exact backups passed")
+        print("PDF image editing: PNG embed, rendered appearance after save/reopen, undo/redo/recovery/extraction, four rotations, nonzero crop, move/resize/delete, text size/color and no automatic backups passed")
     }
 
     private static func requireImageRendering(_ document: PDFDocument, _ label: String) throws {

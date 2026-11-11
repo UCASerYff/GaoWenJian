@@ -111,7 +111,7 @@ enum HandoffSafeExportTests {
         try check(try Data(contentsOf: existing) == oldBytes, "冲突不删除已有目标")
         try rejects("覆盖摘要不符拒绝") { _ = try export(existing, .replace(expectedSHA256: String(repeating: "0", count: 64))) }
         try check(try Data(contentsOf: existing) == oldBytes, "摘要冲突保留目标")
-        let overwritten = try export(existing, .replace(expectedSHA256: oldHash))
+        _ = try export(existing, .replace(expectedSHA256: oldHash))
         try check(try Data(contentsOf: existing) == bytes, "显式覆盖以完整副本原子提交")
         try check(!fm.fileExists(atPath: history.path), "显式覆盖不创建备份副本")
         try noStages()

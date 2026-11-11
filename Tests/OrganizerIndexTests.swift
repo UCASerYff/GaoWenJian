@@ -207,6 +207,6 @@ private func sqlite(_ url:URL,_ sql:String) throws {
             let cpu = Double(usage.ru_utime.tv_sec)+Double(usage.ru_utime.tv_usec)/1e6+Double(usage.ru_stime.tv_sec)+Double(usage.ru_stime.tv_usec)/1e6
             print(String(format:"INDEX TEST PROCESS cpu=%.3fs peakRSS=%.2fMiB (includes fixtures/all assertions, not scan-only)",cpu,Double(usage.ru_maxrss)/1048576))
         }
-        print("PASS IndexTests: Unicode, literal SQL/FTS input, filters/pages, inode rename+hardlinks, symlink/package/hidden boundaries, interruption/resume, path swap, annotations, pause, online backup, migration, future schema/missing/corrupt initialization")
+        print("PASS IndexTests: Unicode, literal SQL/FTS input, filters/pages, inode rename+hardlinks, symlink/package/hidden boundaries, interruption/resume, path swap, annotations, pause, migration, future schema/missing/corrupt initialization")
     }
 }
