@@ -32,8 +32,8 @@ Office：Word、Excel、PowerPoint 作为只读查看器，不再新建或编辑
 内部资料：~/Library/Application Support/GaoSeries/GaoWenJian
 恢复草稿、工作区记录、便笺正文与附件继续保存在原资料路径。已移除自动快照、工作区备份导出和整理核验备份功能。
 
-安装：打开 DMG，将搞文件拖入 Applications。本版要求 Apple Silicon / macOS 14+，使用固定 Apple Development 身份签名，未进行 Apple 公证。
-源码与最新版安装包保存在桌面“搞app/搞文件”；不保留旧程序、旧安装包、备份或中间构建。正式更新每次版本加 0.01、构建号加 1，验证成功后清理旧程序和中间构建。本轮已批准发布公开 GitHub 仓库：github.com/UCASerYff/GaoWenJian。仅上传程序、源码、资源与许可，不上传个人资料、便笺、附件、设置、备份或凭据。
+安装：从 GitHub Release v1.11 下载 GaoWenJian-1.11.dmg（https://github.com/UCASerYff/GaoWenJian/releases/download/v1.11/GaoWenJian-1.11.dmg），并用 GaoWenJian-1.11.dmg.sha256（https://github.com/UCASerYff/GaoWenJian/releases/download/v1.11/GaoWenJian-1.11.dmg.sha256）核对。打开 DMG，将搞文件拖入 Applications。本版要求 Apple Silicon / macOS 14+，使用固定 Apple Development 身份签名，未进行 Apple 公证。
+源码在公开仓库 https://github.com/UCASerYff/GaoWenJian 。正式更新每次版本加 0.01、构建号加 1。公开内容只含程序、源码、资源与许可，不含个人资料、便笺、附件、设置、备份或凭据。
 
 验证范围：未运行通用冒烟测试。历史文档交接、PDF 表单及草稿恢复等指定专项 GUI 验收见 Docs/Verification-V1.07.md 和 Docs/Acceptance-20261018.txt；各版本实际往返与缺条件项分别记录，不把无窗口检查或历史版本结果当作当前完整通过。
 

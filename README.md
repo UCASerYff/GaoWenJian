@@ -53,7 +53,7 @@ Office 版式预览取决于 macOS 对具体格式的支持；内容阅读模式
 
 ## 安装与运行
 
-安装包在 `Release/GaoWenJian-1.11.dmg`，也可从 [GitHub Releases](https://github.com/UCASerYff/GaoWenJian/releases) 下载。打开后将“搞文件”拖入 Applications。当前版本采用本地签名，未公证。默认安装位置 `/Applications/搞文件.app`。
+安装包是 GitHub Release [v1.11](https://github.com/UCASerYff/GaoWenJian/releases/tag/v1.11) 上的 [GaoWenJian-1.11.dmg](https://github.com/UCASerYff/GaoWenJian/releases/download/v1.11/GaoWenJian-1.11.dmg)，校验文件是 [GaoWenJian-1.11.dmg.sha256](https://github.com/UCASerYff/GaoWenJian/releases/download/v1.11/GaoWenJian-1.11.dmg.sha256)。打开后将“搞文件”拖入 Applications。当前版本采用本地签名，未公证。默认安装位置 `/Applications/搞文件.app`。
 
 快捷键：⌘1 首页、⌘O 打开、⌘N 新 Markdown、⇧⌘N 新桌面便笺、⌘2 便笺中心、⌘S 保存、⇧⌘S 文本另存 UTF-8、⌘F 文本查找、⌘B 当前 LaTeX 编译、⌘W 关闭当前标签或浮窗、⌘, 设置。
 
