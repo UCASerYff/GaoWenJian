@@ -70,7 +70,9 @@ Linux / macOS 上同样可以跑单元测试和 `python3 launch.py --data-dir /t
 
 ## CI
 
-`.github/workflows/windows.yml` 在 `windows-latest` 上执行 `windows/build.ps1`：安装依赖、`pytest`、打出两个 exe，然后启动 `GaoWenJian.exe`，确认本机页面返回含会话令牌的 HTTP 200，写入并读回一份 Markdown，再请求退出。产物 artifact 名为 `GaoWenJian-Windows-1.11`。不创建 GitHub Release，不安装到运行器以外的机器。
+`.github/workflows/windows.yml` 在 `windows-latest` 上执行 `windows/build.ps1`：安装依赖、`pytest`、打出两个 exe，然后启动 `GaoWenJian.exe`，确认本机页面返回含会话令牌的 HTTP 200，写入并读回一份 Markdown，再请求退出。产物 artifact 名为 `GaoWenJian-Windows-1.11`。
+
+触发范围是拉取请求，以及推送到 `main`。功能分支上的同一次提交不再同时跑 push 和 pull_request。同一 ref 上的新运行会取消尚未结束的旧运行。不创建 GitHub Release，不安装到运行器以外的机器。
 
 ## 需要作者决定的事
 
