@@ -78,3 +78,7 @@ Scripts/build.sh
 安全安装使用 `Scripts/install.sh --app /绝对路径/私有.noindex/搞文件.app`。安装器先逐文件读取现用资料和设置摘要，核验候选签名及版本；应用仍在运行时停止安装，避免丢弃未保存内容。核验通过后替换正式程序，不保留旧程序，不创建或恢复资料备份。安装后核对资料摘要和签名，并在实际用户会话验证 Spotlight 与 LaunchServices 只指向 `/Applications/搞文件.app`。安装器不会自动启动应用。
 
 冒烟测试和应用窗口操作只在用户明确要求时进行，未运行的项目须如实列出。后续正式版本每次 **+0.01**、构建号 **+1**。只保留最新本地发行包、源码和现用用户资料；只处理本应用系统登记。公开源码包由 `Scripts/package-public-source.py` 从已审阅提交的公共Git blobs生成，工作树未提交时拒绝打包，不包含安全备份、原程序或个人资料。
+
+## Windows 10/11
+
+Windows 版在 `windows/`，构建和测试不走 Mac 的 `Scripts/build.sh`。说明见 [windows/README.md](windows/README.md)。Mac 源码、签名和安装路径保持不变。
