@@ -1,0 +1,94 @@
+:root {
+  color-scheme: light;
+  --paper: #f6f1e8;
+  --ink: #1c1b19;
+  --muted: #5e584f;
+  --line: #e2d8c8;
+  --panel: #fffaf3;
+  --green: #1f6b45;
+  --green-soft: #e5f2ea;
+  --warn: #8a4b16;
+  --danger: #8d2f2f;
+  --shadow: 0 12px 40px rgba(60, 42, 20, 0.08);
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --paper: #16181c;
+  --ink: #e7e1d6;
+  --muted: #b1aa9e;
+  --line: #2c3138;
+  --panel: #1e2228;
+  --green: #7dcea0;
+  --green-soft: #1d3328;
+  --warn: #e2b07a;
+  --danger: #f0a8a0;
+  --shadow: none;
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  font: 15px/1.5 "Segoe UI", "PingFang SC", sans-serif;
+  background: var(--paper);
+  color: var(--ink);
+}
+button, input, textarea, select { font: inherit; color: inherit; }
+button {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 6px 10px;
+  cursor: pointer;
+}
+button.primary { background: var(--green); color: white; border-color: transparent; }
+button:disabled { opacity: 0.5; cursor: default; }
+#app { min-height: 100vh; display: grid; grid-template-rows: auto auto 1fr auto; }
+header {
+  display: flex; align-items: center; gap: 12px;
+  padding: 12px 18px; border-bottom: 1px solid var(--line); background: var(--panel);
+}
+header strong { font-size: 18px; }
+header span { color: var(--muted); }
+nav.tabs { display: flex; gap: 6px; padding: 8px 12px; overflow: auto; border-bottom: 1px solid var(--line); }
+nav.tabs button { white-space: nowrap; }
+nav.tabs button.active { border-color: var(--green); background: var(--green-soft); }
+main { display: grid; grid-template-columns: 280px 1fr; min-height: 0; }
+aside, section { min-height: 0; }
+aside { border-right: 1px solid var(--line); padding: 14px; overflow: auto; background: rgba(255,255,255,.25); }
+section { padding: 16px 18px; overflow: auto; }
+.cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 12px; }
+.card { text-align: left; padding: 14px; border-radius: 14px; background: var(--panel); box-shadow: var(--shadow); }
+.card b { display: block; margin-bottom: 4px; }
+.card span, .muted { color: var(--muted); }
+.row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+input[type="text"], input[type="search"], select, textarea {
+  width: 100%; border: 1px solid var(--line); background: var(--panel); border-radius: 8px; padding: 8px;
+}
+textarea.editor { min-height: 62vh; resize: vertical; font-family: Consolas, "Sarasa Mono SC", monospace; line-height: 1.45; }
+.split { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; min-height: 62vh; }
+.preview { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 16px 18px; overflow: auto; }
+.preview pre { background: var(--paper); padding: 10px; overflow: auto; }
+.preview table { border-collapse: collapse; }
+.preview td, .preview th { border: 1px solid var(--line); padding: 4px 8px; }
+.banner { padding: 8px 12px; border-radius: 8px; background: var(--green-soft); margin-bottom: 10px; }
+.banner.warn { background: color-mix(in srgb, var(--warn) 15%, var(--panel)); color: var(--warn); }
+footer { padding: 8px 16px; color: var(--muted); border-top: 1px solid var(--line); }
+.list { list-style: none; padding: 0; margin: 8px 0; }
+.list button { width: 100%; text-align: left; margin-bottom: 4px; }
+.note {
+  border-radius: 16px; padding: 12px; margin-bottom: 10px; background: #f6e7a4; color: #241f12;
+}
+.note.blue { background: #d7e7f7; }
+.note.green { background: #d9efdf; }
+.note.pink { background: #f8d7e4; }
+.note.purple { background: #e6dff6; }
+.note.gray { background: #e6e2da; }
+.note.translucent { opacity: 0.78; }
+.note header { background: transparent; border: 0; padding: 0 0 8px; }
+table.grid { border-collapse: collapse; width: 100%; }
+table.grid input { border: 0; }
+table.grid td { border: 1px solid var(--line); }
+.pages { display: grid; grid-template-columns: 180px 1fr; gap: 12px; }
+.page-text { white-space: pre-wrap; background: var(--panel); border-radius: 12px; padding: 16px; min-height: 240px; }
+.two { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+h1, h2, h3 { font-weight: 650; }
+a { color: var(--green); }

@@ -1,0 +1,82 @@
+name: Windows
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+concurrency:
+  group: windows-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  package:
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: windows
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Test and build executables
+        run: powershell -ExecutionPolicy Bypass -File .\build.ps1
+      - name: Smoke-test the packaged exe
+        run: |
+          $ErrorActionPreference = "Stop"
+          $root = Join-Path $env:TEMP ("gaowenjian-smoke-" + [guid]::NewGuid().ToString("n"))
+          $dest = Join-Path $root "data"
+          New-Item -ItemType Directory -Force -Path $dest | Out-Null
+          $port = 18767
+          $exe = Join-Path (Get-Location) "dist\GaoWenJian.exe"
+          $proc = Start-Process -FilePath $exe -ArgumentList @(
+            "--data-dir", $dest, "--serve", "--no-browser", "--port", "$port"
+          ) -PassThru -WindowStyle Hidden
+          try {
+            $page = $null
+            $deadline = (Get-Date).AddSeconds(90)
+            do {
+              if ($proc.HasExited) { throw "GaoWenJian.exe exited early with code $($proc.ExitCode)" }
+              try {
+                $response = Invoke-WebRequest -Uri "http://127.0.0.1:$port/" -UseBasicParsing -TimeoutSec 3 -NoProxy
+                if ($response.StatusCode -eq 200) { $page = $response; break }
+              } catch {}
+              Start-Sleep -Seconds 1
+            } while ((Get-Date) -lt $deadline)
+            if (-not $page) { throw "packaged exe did not return HTTP 200" }
+            $token = [regex]::Match($page.Content, 'name="gao-token" content="([^"]+)"').Groups[1].Value
+            if (-not $token) { throw "HTTP 200 page did not include a session token" }
+            $headers = @{ "X-Gao-Token" = $token }
+            $created = Invoke-RestMethod -Method POST -Uri "http://127.0.0.1:$port/api/tabs/new" -Headers $headers -ContentType "application/json; charset=utf-8" -Body '{"kind":"markdown","text":"CI smoke document"}' -NoProxy
+            if (-not $created.result.id) { throw "creating a markdown tab did not return an id" }
+            $target = Join-Path $root "smoke.md"
+            $saveBody = @{ id = $created.result.id; path = $target } | ConvertTo-Json -Compress
+            Invoke-RestMethod -Method POST -Uri "http://127.0.0.1:$port/api/tabs/save" -Headers $headers -ContentType "application/json; charset=utf-8" -Body $saveBody -NoProxy | Out-Null
+            if (-not (Test-Path $target)) { throw "saving the tab did not write smoke.md" }
+            $saved = Get-Content -Raw -Encoding UTF8 $target
+            if ($saved -notmatch "CI smoke document") { throw "smoke.md does not contain the written text" }
+            $listed = Invoke-RestMethod -Uri "http://127.0.0.1:$port/api/state" -Headers $headers -NoProxy
+            $found = $false
+            foreach ($tab in @($listed.tabs)) {
+              if ($tab.text -match "CI smoke document") { $found = $true }
+            }
+            if (-not $found) { throw "reading the workspace did not return the written document" }
+            Write-Output "smoke ok: HTTP 200, wrote and read smoke.md"
+            try {
+              Invoke-RestMethod -Method POST -Uri "http://127.0.0.1:$port/api/shutdown" -Headers $headers -ContentType "application/json; charset=utf-8" -Body "{}" -NoProxy | Out-Null
+            } catch {}
+            $exitDeadline = (Get-Date).AddSeconds(20)
+            while (-not $proc.HasExited -and (Get-Date) -lt $exitDeadline) { Start-Sleep -Milliseconds 500 }
+          } finally {
+            if (-not $proc.HasExited) { & taskkill.exe /PID $proc.Id /T /F | Out-Null }
+            if (Test-Path $root) { Remove-Item -Recurse -Force $root }
+          }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: GaoWenJian-Windows-1.11
+          if-no-files-found: error
+          path: |
+            windows/dist/GaoWenJian.exe
+            windows/dist/GaoWenJian-cli.exe
