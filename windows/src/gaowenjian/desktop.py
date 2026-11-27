@@ -154,11 +154,12 @@ class Desktop:
             tab = workspace._tab(tab_id)
             workspace.latex_pdf(tab_id)
             title = tab.title.rsplit(".", 1)[0] + ".pdf"
+            appearance = workspace.settings["appearance"]
         if window := self.readers.get(tab_id):
             window.show()
             return
-        query = urlencode({"tab": tab_id, "token": self.server.token})
-        window = self._create(title, "api/latex/document?" + query, width=850, height=900, min_size=(480, 400))
+        query = urlencode({"tab": tab_id, "token": self.server.token, "appearance": appearance})
+        window = self._create(title, "latex-reader.html?" + query, width=1000, height=850, min_size=(550, 450))
         self.readers[tab_id] = window
         window.events.closed += lambda: self.readers.pop(tab_id, None)
 

@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="referrer" content="no-referrer">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self'; connect-src 'self'; frame-src blob:; base-uri 'none'; form-action 'none'">
+  <title>PDF 独立阅读 · 搞文件</title>
+  <link rel="icon" href="/app-icon.png">
+  <link rel="stylesheet" href="/latex-reader.css">
+  <script defer src="/latex-reader.js"></script>
+</head>
+<body>
+  <header class="reader-heading">
+    <div class="reader-identity">
+      <span class="reader-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none"><path d="M13 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V10zM13 3v7h7M8 14h8m-8 3h6"/></svg></span>
+      <div><h1 id="reader-title">PDF 独立阅读</h1><div id="reader-meta">正在载入…</div></div>
+    </div>
+    <div class="reader-actions">
+      <button id="reader-original" type="button" aria-pressed="false" disabled>PDF 原件</button>
+      <button id="reader-export" type="button" class="reader-primary" disabled>导出 PDF…</button>
+    </div>
+  </header>
+  <div class="reader-toolbar" aria-label="PDF 阅读工具">
+    <button id="reader-toggle-pages" type="button" aria-controls="reader-pages" aria-pressed="true">缩略图</button>
+    <div class="reader-actions" role="group" aria-label="页面">
+      <button id="reader-prev" type="button" title="上一页" aria-label="上一页">‹</button>
+      <label class="reader-page-field"><input id="reader-page-number" type="number" min="1" value="1" aria-label="页码"><span id="reader-total">/ 0</span></label>
+      <button id="reader-next" type="button" title="下一页" aria-label="下一页">›</button>
+    </div>
+    <div class="reader-actions" role="group" aria-label="缩放">
+      <button id="reader-zoom-out" type="button" aria-label="缩小">−</button>
+      <button id="reader-actual" type="button" title="实际大小">100%</button>
+      <button id="reader-zoom-in" type="button" aria-label="放大">＋</button>
+      <button id="reader-fit" type="button">适应宽度</button>
+    </div>
+  </div>
+  <main class="reader-workspace" aria-busy="true">
+    <nav id="reader-pages" aria-label="PDF 页面缩略图"></nav>
+    <div id="reader-canvas" aria-label="PDF 页面" tabindex="0"></div>
+    <iframe id="reader-original-view" title="PDF 原件" hidden></iframe>
+  </main>
+  <footer><span id="reader-status" aria-live="polite">正在载入编译结果…</span></footer>
+</body>
+</html>

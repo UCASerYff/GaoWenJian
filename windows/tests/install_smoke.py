@@ -10,6 +10,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from contextlib import contextmanager
 from pathlib import Path
 from urllib.error import URLError
 from urllib.request import ProxyHandler, Request, build_opener
@@ -20,10 +21,31 @@ def run_installer(executable: Path, *options: str) -> None:
                    check=True, timeout=150, creationflags=subprocess.CREATE_NO_WINDOW)
 
 
-def smoke(installer: Path, *, native: bool = False, provider: Path | None = None) -> None:
+def verify_checksum(installer: Path) -> None:
     expected = Path(str(installer) + ".sha256").read_text(encoding="utf-8").split()[0]
     with installer.open("rb") as handle:
         assert hashlib.file_digest(handle, "sha256").hexdigest() == expected
+
+
+@contextmanager
+def running_app(cli: Path, profile: Path):
+    with subprocess.Popen([str(cli), "--no-browser", "--data-dir", str(profile)],
+                          stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                          creationflags=subprocess.CREATE_NO_WINDOW) as child:
+        try:
+            yield child, _connect(child)
+        finally:
+            if child.poll() is None:
+                child.terminate()
+                child.wait(timeout=15)
+
+
+def smoke(installer: Path, *, native: bool = False, provider: Path | None = None,
+          previous: Path | None = None, evidence: Path | None = None) -> None:
+    verify_checksum(installer)
+    target = re.fullmatch(r"GaoWenJian-Windows-(\d+\.\d+)-build(\d+)-x64-Setup\.exe", installer.name)
+    assert target, f"Unexpected setup name: {installer.name}"
+    marketing, build = target.groups()
     with tempfile.TemporaryDirectory(prefix="gao-wenjian-installed-") as temporary:
         root = Path(temporary)
         program = root / "程序"
@@ -33,21 +55,36 @@ def smoke(installer: Path, *, native: bool = False, provider: Path | None = None
         (profile / "settings.json").write_text(json.dumps(old_settings), encoding="utf-8")
         (profile / "workspace.json").write_text(json.dumps({"recent": [], "folder": None, "futureField": 7}), encoding="utf-8")
         (profile / "recovery.json").write_text(json.dumps([{"id": "whats-new", "kind": "markdown", "text": "旧版本恢复稿", "encoding": 4}]), encoding="utf-8")
-        run_installer(installer, "/SP-", "/GAOISOLATED=1", f"/DIR={program}", f"/LOG={root / 'setup.log'}")
         cli = program / "GaoWenJian-cli.exe"
-        assert subprocess.check_output([str(cli), "--version"], text=True, timeout=15).strip() == "1.11+2"
-        with subprocess.Popen([str(cli), "--no-browser", "--data-dir", str(profile)],
-                              stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
-                              creationflags=subprocess.CREATE_NO_WINDOW) as child:
-            try:
-                _check_app(child, root, profile)
-            finally:
-                if child.poll() is None:
-                    child.terminate()
-                    child.wait(timeout=15)
+        note_id = None
+        if previous:
+            verify_checksum(previous)
+            run_installer(previous, "/SP-", "/GAOISOLATED=1", f"/DIR={program}", f"/LOG={root / 'setup-old.log'}")
+            previous_marketing, previous_build = subprocess.check_output([str(cli), "--version"], text=True, timeout=15).strip().split("+")
+            assert previous_marketing == marketing and int(previous_build) < int(build)
+            with running_app(cli, profile) as (child, app):
+                old = app("api/state")
+                assert old["tabs"][0]["text"] == "旧版本恢复稿"
+                note_id = app("api/notes/create", {"title": "上一版便笺"})["result"]["id"]
+                app("api/notes/update", {"id": note_id, "html": "<b>待复核</b>", "plain": "待复核"})
+                attachment = root / "旧便笺附件.txt"
+                attachment.write_text("隔离升级样本", encoding="utf-8")
+                app("api/notes/attach", {"id": note_id, "path": str(attachment)})
+                app("api/shutdown", {"force": True})
+                assert child.wait(timeout=20) == 0
+
+        run_installer(installer, "/SP-", "/GAOISOLATED=1", f"/DIR={program}", f"/LOG={root / 'setup.log'}")
+        assert subprocess.check_output([str(cli), "--version"], text=True, timeout=15).strip() == f"{marketing}+{build}"
+        for selector_resource in ("_tcl_data/init.tcl", "_tk_data/tk.tcl"):
+            assert (program / "_internal" / selector_resource).is_file(), "Browser file picker resources missing"
+        with running_app(cli, profile) as (child, app):
+            _check_app(app, root, profile, note_id)
+            app("api/shutdown", {})
+            assert child.wait(timeout=20) == 0
         scripts = Path(__file__).resolve().parent
         if native:
-            subprocess.run(["node", str(scripts / "native_desktop_smoke.mjs"), str(cli)], check=True, timeout=150)
+            capture = [str(evidence.resolve())] if evidence else []
+            subprocess.run(["node", str(scripts / "native_desktop_smoke.mjs"), str(cli), *capture], check=True, timeout=150)
         if provider:
             subprocess.run([sys.executable, str(scripts / "ocr_interop_smoke.py"), "--provider-setup", str(provider),
                             "--client-cli", str(cli)], check=True, timeout=180)
@@ -55,10 +92,11 @@ def smoke(installer: Path, *, native: bool = False, provider: Path | None = None
         for name in ("GaoWenJian.exe", "GaoWenJian-cli.exe"):
             assert not (program / name).exists(), f"Uninstall did not remove {name}"
         assert (profile / "settings.json").is_file() and (root / "保存后的旧稿.md").is_file()
-    print("installed smoke OK: SHA-256, version, old profile, offline TeX/PDF, save, shutdown, uninstall")
+    print("installed smoke OK: SHA-256, version, old profile, offline TeX/PDF, save, shutdown, uninstall"
+          + (", in-place upgrade with notes and attachments" if previous else ""))
 
 
-def _check_app(child, root: Path, profile: Path) -> None:
+def _connect(child):
     url = child.stdout.readline().strip()
     assert url.startswith("http://127.0.0.1:"), url
     opener = build_opener(ProxyHandler({}))
@@ -78,9 +116,17 @@ def _check_app(child, root: Path, profile: Path) -> None:
         with opener.open(Request(url + path, headers=headers, data=payload), timeout=75) as response:
             return response.read() if binary else json.load(response)
 
+    return app
+
+
+def _check_app(app, root: Path, profile: Path, note_id: str | None) -> None:
     before = app("api/state")
     assert before["tabs"][0]["text"] == "旧版本恢复稿" and before["tabs"][0]["restored"]
     assert before["settings"]["appearance"] == "dark" and before["engines"]["tectonic"]
+    if note_id:
+        note = next(item for item in before["notes"]["notes"] if item["id"] == note_id)
+        assert note["title"] == "上一版便笺" and note["plainText"] == "待复核"
+        assert note["attachments"] == ["旧便笺附件.txt"]
     destination = root / "保存后的旧稿.md"
     app("api/tabs/save", {"id": "whats-new", "path": str(destination)})
     assert destination.read_text(encoding="utf-8") == "旧版本恢复稿"
@@ -105,8 +151,6 @@ def _check_app(child, root: Path, profile: Path) -> None:
     fallback_result = app("api/tabs/compile", {"id": fallback_id})["result"]
     assert fallback_result["success"], fallback_result
     assert app(f"api/latex/document?tab={fallback_id}", binary=True).startswith(b"%PDF")
-    app("api/shutdown", {})
-    assert child.wait(timeout=20) == 0
 
 
 if __name__ == "__main__":
@@ -114,5 +158,8 @@ if __name__ == "__main__":
     parser.add_argument("installer", type=Path)
     parser.add_argument("--native", action="store_true", help="test hidden WebView2 windows using Node.js 24")
     parser.add_argument("--ocr-provider", type=Path)
+    parser.add_argument("--previous", type=Path, help="install the previous build first to verify an in-place upgrade")
+    parser.add_argument("--evidence", type=Path, help="save screenshots of hidden native windows when --native is set")
     args = parser.parse_args()
-    smoke(args.installer.resolve(strict=True), native=args.native, provider=args.ocr_provider)
+    smoke(args.installer.resolve(strict=True), native=args.native, provider=args.ocr_provider,
+          previous=args.previous.resolve(strict=True) if args.previous else None, evidence=args.evidence)

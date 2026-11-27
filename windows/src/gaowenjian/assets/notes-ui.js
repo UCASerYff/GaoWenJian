@@ -28,20 +28,22 @@ function notesPanel() {
   const groups = [...new Set(notes.filter((item) => !item.deletedAt && item.group).map((item) => item.group))].sort();
   const hasDesktop = notes.some((item) => item.isOnDesktop && !item.deletedAt);
   return `<div class="notes-workspace">
-    <div class="row notes-header"><button data-go="home">返回首页</button><strong>${icon("notes")} 便笺</strong><span class="muted">随手记下，留在桌面</span><span class="row-spacer"></span>
-      <button id="notes-arrange" ${hasDesktop ? "" : "disabled"}>排列桌面</button><button id="notes-import" ${readOnly ? "disabled" : ""}>导入…</button><button id="note-new" class="primary" ${readOnly ? "disabled" : ""}>${icon("add")} 新建便笺</button></div>
-    ${blocked ? `<p class="banner warn">${h(blocked)}</p>` : ""}
-    <div class="notes-grid"><div class="notes-browser">
-      <input id="note-search" type="search" aria-label="搜索便笺" placeholder="搜索内容、标题或分组" value="${h(noteFilter.query)}">
-      <div class="notes-filters"><select id="notes-group" aria-label="分组">${noteOptions({"": "全部分组", ...Object.fromEntries(groups.map((group) => [group, group]))}, noteFilter.group)}</select><select id="notes-color" aria-label="颜色">${noteOptions({"": "全部颜色", ...noteColors}, noteFilter.color)}</select></div>
-      <div class="notes-filters"><select id="notes-sort" aria-label="排序">${noteOptions({updated: "最近编辑", created: "新建时间", title: "标题"}, noteFilter.sort)}</select><small id="notes-count">${matches.length} 条</small></div>
+    <header class="notes-header"><h1>便笺</h1><div class="row">
+      <details class="action-menu align-right"><summary>${icon("more")}<span class="visually-hidden">便笺管理</span></summary><div><button id="notes-arrange" ${hasDesktop ? "" : "disabled"}>排列桌面便笺</button><button id="notes-import" ${readOnly ? "disabled" : ""}>导入便笺…</button></div></details>
+      <button id="note-new" class="primary" ${readOnly ? "disabled" : ""}>${icon("add")} 新建便笺</button></div></header>
+    ${blocked ? workspaceNotice(blocked, true) : ""}
+    <div class="notes-grid"><aside class="notes-browser" aria-label="便笺列表">
+      <div class="notes-browser-head"><strong>${noteFilter.trash ? "回收站" : "全部便笺"}</strong><small id="notes-count" aria-live="polite">${matches.length} 条</small></div>
+      <label class="notes-search">${icon("search")}<input id="note-search" type="search" aria-label="搜索便笺" placeholder="搜索便笺" value="${h(noteFilter.query)}"></label>
+      <details class="notes-filter" ${noteFilter.group || noteFilter.color || noteFilter.sort !== "updated" ? "open" : ""}><summary>筛选与排序 ${icon("chevron")}</summary>
+        <div class="notes-filters"><select id="notes-group" aria-label="分组">${noteOptions({"": "全部分组", ...Object.fromEntries(groups.map((group) => [group, group]))}, noteFilter.group)}</select><select id="notes-color" aria-label="颜色">${noteOptions({"": "全部颜色", ...noteColors}, noteFilter.color)}</select><select id="notes-sort" aria-label="排序">${noteOptions({updated: "最近编辑", created: "新建时间", title: "标题"}, noteFilter.sort)}</select></div></details>
       <div id="note-list">${noteCards(matches)}</div>
-      <button id="notes-trash-view" class="plain">${noteFilter.trash ? "返回全部便笺" : `回收站 · ${notes.filter((item) => item.deletedAt).length}`}</button><small>${icon("drive")} 自动保存到本机</small>
-    </div><div id="note-detail" class="note-detail">${active ? noteEditor(active) : noteEmpty(readOnly)}</div></div></div>`;
+      <button id="notes-trash-view" class="plain">${noteFilter.trash ? `${icon("notes")} 返回全部便笺` : `${icon("restore")} 回收站 (${notes.filter((item) => item.deletedAt).length})`}</button>
+    </aside><div id="note-detail" class="note-detail">${active ? noteEditor(active) : noteEmpty(readOnly)}</div></div></div>`;
 }
 
 function noteCards(matches) {
-  return matches.map((note) => `<button class="note-card note-${h(note.color)} ${note.id === noteId ? "selected" : ""}" data-note="${h(note.id)}"><b>${h(note.title || "未命名便笺")}${note.isPinned ? " · 置顶" : note.isOnDesktop ? " · 桌面" : ""}</b><span>${h(note.plainText.trim().slice(0, 115) || "空白便笺")}</span><small>${h(note.group || "未分组")} <time>${h(shortDate(note.updatedAt))}</time></small></button>`).join("") || `<p class="muted note-no-results">${noteFilter.trash ? "回收站为空" : "没有找到便笺"}</p>`;
+  return matches.map((note) => `<button class="note-card note-${h(note.color)} ${note.id === noteId ? "selected" : ""}" data-note="${h(note.id)}" ${note.id === noteId ? 'aria-current="true"' : ""}><span class="note-card-title"><b>${h(note.title || "未命名便笺")}</b>${note.isPinned || note.isOnDesktop ? `<span title="${note.isPinned ? "置顶" : "桌面便笺"}">${icon(note.isPinned ? "pin" : "notes")}</span>` : ""}</span><span class="note-excerpt">${h(note.plainText.trim().slice(0, 115) || "空白便笺")}</span><small><span>${h(note.group || "未分组")}</span><time>${h(shortDate(note.updatedAt))}</time></small></button>`).join("") || `<p class="muted note-no-results">${noteFilter.trash ? "回收站为空" : "没有找到便笺"}</p>`;
 }
 
 function shortDate(value) {
@@ -50,25 +52,30 @@ function shortDate(value) {
 }
 
 function noteEmpty(readOnly) {
-  return `<div class="note-empty">${icon("notes")}<h2>用便笺留住片刻的想法</h2><p>富文本、图片和附件一起保存。<br>可以置顶、透明显示，或收成一条标题。</p>${readOnly ? "" : '<button id="note-empty-new">新建便笺</button>'}</div>`;
+  return `<div class="note-empty">${icon("notes")}<h2>${noteFilter.trash ? "回收站为空" : "未选择便笺"}</h2>${readOnly || noteFilter.trash ? "" : '<button id="note-empty-new">新建便笺</button>'}</div>`;
 }
 
 function noteEditor(note, desktop = false) {
   const draft = noteDraft?.id === note.id ? noteDraft : null;
   const editable = note.editable;
-  return `<div class="note-paper note-${h(note.color)}" data-note-editor="${h(note.id)}">
-    <div class="row note-title-row"><input type="text" id="note-title" maxlength="512" aria-label="便笺标题" placeholder="未命名便笺" value="${h(draft?.changes.title ?? note.title)}" ${editable ? "" : "readonly"}>
-      ${desktop ? "" : `<button id="note-desktop" ${editable ? "" : "disabled"}>${note.isOnDesktop ? "显示桌面便笺" : "放到桌面"}</button>`}
-      ${note.deletedAt && !state.notes.readOnly ? '<button id="note-restore">恢复便笺</button>' : ""}</div>
-    <div class="row note-metadata"><input type="text" id="note-group" maxlength="512" aria-label="便笺分组" value="${h(draft?.changes.group ?? note.group)}" placeholder="分组" ${editable ? "" : "readonly"}>
-      <select id="note-color" aria-label="便笺颜色" ${editable ? "" : "disabled"}>${noteOptions(noteColors, draft?.changes.color ?? note.color)}</select>
-      ${editable ? `<button data-note-toggle="isPinned" aria-pressed="${note.isPinned}">置顶</button><button data-note-toggle="isTranslucent" aria-pressed="${note.isTranslucent}">半透明</button><button data-note-toggle="isCollapsed" aria-pressed="${note.isCollapsed}">收起</button>` : ""}</div>
-    ${editable ? `<div class="row note-format"><button data-note-command="bold" aria-label="粗体"><b>B</b></button><button data-note-command="italic" aria-label="斜体"><i>I</i></button><button data-note-command="underline" aria-label="下划线"><u>U</u></button><button id="note-attach">附加文件…</button></div>` : ""}
+  const title = `<input type="text" id="note-title" maxlength="512" aria-label="便笺标题" placeholder="未命名便笺" value="${h(draft?.changes.title ?? note.title)}" ${editable ? "" : "readonly"}>`;
+  const fields = `<label>分组<input type="text" id="note-group" maxlength="512" value="${h(draft?.changes.group ?? note.group)}" placeholder="无分组" ${editable ? "" : "readonly"}></label>
+         <label>颜色<select id="note-color" ${editable ? "" : "disabled"}>${noteOptions(noteColors, draft?.changes.color ?? note.color)}</select></label>`;
+  const toggles = editable ? `<div class="row note-toggles"><button data-note-toggle="isPinned" aria-pressed="${note.isPinned}">${icon("pin")} 置顶</button><button data-note-toggle="isTranslucent" aria-pressed="${note.isTranslucent}">半透明</button><button data-note-toggle="isCollapsed" aria-pressed="${note.isCollapsed}">折叠</button></div>` : "";
+  const formats = editable ? `<div class="note-format-buttons" aria-label="格式"><button class="symbol-button" data-note-command="bold" aria-label="粗体" title="粗体"><b>B</b></button><button class="symbol-button" data-note-command="italic" aria-label="斜体" title="斜体"><i>I</i></button><button class="symbol-button" data-note-command="underline" aria-label="下划线" title="下划线"><u>U</u></button><button id="note-attach" class="plain">${icon("add")} 附件</button></div>` : "";
+  const options = `<details class="action-menu align-right note-options"><summary title="便笺选项" aria-label="便笺选项">${icon("more")}</summary><div>
+    <div class="note-properties">${desktop ? `<label>标题${title}</label>` : ""}${fields}${toggles}</div><button id="note-md">在 Markdown 打开</button>
+    ${["txt", "rtf", "rtfd"].map((format) => `<button data-note-export="${format}">导出 ${format.toUpperCase()}…</button>`).join("")}
+    ${editable ? '<button class="note-delete" id="note-trash">移到回收站</button>' : ""}</div></details>`;
+  const top = desktop ? "" : `<div class="note-title-row">${title}
+     ${note.deletedAt && !state.notes.readOnly ? '<button id="note-restore">恢复便笺</button>' : ""}
+     ${editable ? `<button id="note-desktop" class="plain">${icon("notes")} ${note.isOnDesktop ? "显示桌面便笺" : "放到桌面"}</button>` : ""}</div>`;
+  return `<article class="note-paper note-${h(note.color)}" data-note-editor="${h(note.id)}">${top}
+    <div class="note-format">${formats}<span class="row-spacer"></span>${options}</div>
     <div id="note-body" class="note-body" role="textbox" aria-label="便笺正文" aria-multiline="true" contenteditable="${editable}" style="--note-size:${Number(state.notes.defaults.fontSize) || 15}px"></div>
     ${note.attachments.length ? `<div class="row note-attachments">${note.attachments.map((name, index) => `<button data-note-attachment="${index}">${h(name)}</button>`).join("")}</div>` : ""}
-    <div id="note-status" role="status"></div>
-    <div class="row note-actions"><button id="note-md">在 Markdown 打开</button><details class="action-menu"><summary>导出…</summary><div>${["txt", "rtf", "rtfd"].map((format) => `<button data-note-export="${format}">${format.toUpperCase()}</button>`).join("")}</div></details><span class="row-spacer"></span>${editable ? '<button id="note-trash">移到回收站</button>' : ""}</div>
-  </div>`;
+    <footer class="note-status"><span id="note-status" role="status">${editable ? "已保存到本机" : "只读"}</span></footer>
+  </article>`;
 }
 
 function sanitizedNoteHTML(fragment) {
@@ -288,7 +295,7 @@ async function setNoteMetadata(note, changes) {
 function renderDesktopNote() {
   const note = state.notes.notes.find((item) => item.id === desktopNoteId && !item.deletedAt);
   if (!note?.isOnDesktop) { window.pywebview?.api.close_note(); return; }
-  app.innerHTML = `<div class="desktop-note note-${h(note.color)}"><header class="desktop-note-title pywebview-drag-region"><button id="desktop-close" aria-label="关闭便笺">${icon("close")}</button><b>${h(note.title || "未命名便笺")}</b><button id="desktop-collapse" aria-label="${note.isCollapsed ? "展开" : "收起"}">${icon("chevron")}</button></header>
+  app.innerHTML = `<div class="desktop-note note-${h(note.color)}" ${note.isCollapsed ? "data-collapsed" : ""}><header class="desktop-note-title pywebview-drag-region">${icon(note.isPinned ? "pin" : "notes")}<b>${h(note.title || "未命名便笺")}</b><button id="desktop-collapse" class="symbol-button" aria-label="${note.isCollapsed ? "展开" : "收起"}">${icon("chevron")}</button><button id="desktop-close" class="symbol-button" aria-label="关闭便笺">${icon("close")}</button></header>
     ${message ? `<p class="banner warn" role="alert">${h(message)}</p>` : ""}${note.isCollapsed ? "" : noteEditor(note, true)}</div>`;
   document.getElementById("desktop-close").onclick = () => hideDesktopNote().catch(fail);
   const collapse = () => setNoteMetadata(note, {isCollapsed: !note.isCollapsed}).catch(fail);

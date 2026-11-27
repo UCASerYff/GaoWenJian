@@ -1,4 +1,5 @@
 let sidebarVisible = true;
+let browserVisible = false;
 let sidebarSearch = "";
 const surface = ({"/settings": "settings", "/note": "note"})[location.pathname] || "workspace";
 const pendingEdits = new Map();
@@ -61,7 +62,8 @@ function closeDocumentChoice(title, quitting = false) {
   return new Promise((resolve) => {
     const dialog = document.createElement("dialog");
     dialog.className = "document-dialog";
-    dialog.innerHTML = `<form method="dialog"><h2>${quitting ? title : `保存对 ${h(title)} 的修改？`}</h2><p>${quitting ? "可以保存后退出，或返回继续编辑。文本草稿已写入本地恢复记录。" : "关闭前可以保存当前修改，或放弃这次修改。"}</p><div class="row">${quitting ? "" : '<button value="discard">不保存</button>'}<span></span><button value="cancel" autofocus>${quitting ? "返回编辑" : "取消"}</button><button class="primary" value="save">${quitting ? "全部保存并退出" : "保存"}</button></div></form>`;
+    dialog.setAttribute("aria-labelledby", "close-document-heading");
+    dialog.innerHTML = `<form method="dialog"><h2 id="close-document-heading">${quitting ? title : `保存对 ${h(title)} 的修改？`}</h2><p>${quitting ? "可以保存后退出，或返回继续编辑。文本草稿已写入本地恢复记录。" : "关闭前可以保存当前修改，或放弃这次修改。"}</p><div class="row">${quitting ? "" : '<button value="discard">不保存</button>'}<span></span><button value="cancel" autofocus>${quitting ? "返回编辑" : "取消"}</button><button class="primary" value="save">${quitting ? "全部保存并退出" : "保存"}</button></div></form>`;
     dialog.addEventListener("close", () => { resolve(dialog.returnValue); dialog.remove(); }, {once: true});
     document.body.append(dialog);
     dialog.showModal();
@@ -88,6 +90,14 @@ const symbols = {
   chevron: '<path d="m7 9 5 5 5-5"/>',
   more: '<circle cx="5" cy="12" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/>',
   restore: '<path d="M3 12a9 9 0 1 1 2.5 6.2M3 5v7h7m2-5v5l3 2"/>',
+  arrow: '<path d="M5 12h14m-6-6 6 6-6 6"/>',
+  clock: '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>',
+  scan: '<path d="M8 4H4v4m12-4h4v4m0 8v4h-4M4 16v4h4m-6-8h20M8 8h8m-8 8h8"/>',
+  open: '<path d="M3.5 7V5a1 1 0 0 1 1-1h5l2 2h7a1 1 0 0 1 1 1v2M3.5 7v12h15l3-9h-15l-3 9"/>',
+  check: '<path d="m5 12 4 4 10-10"/>',
+  alert: '<path d="M12 3 2.5 20h19L12 3Zm0 7v4m0 3h.01"/>',
+  pin: '<path d="m15 4 5 5-3 1-2 2v4l-3 1-5-5 1-3h4l2-2 1-3ZM8 16l-4 4"/>',
+  keyboard: '<rect x="2.5" y="5" width="19" height="14" rx="2"/><path d="M6 9h1m3 0h1m3 0h1m3 0h1M6 12h1m3 0h1m3 0h1m3 0h1M8 15h8"/>',
 };
 
 function icon(name) {
@@ -101,31 +111,53 @@ function fileIcon(kind) {
 function renderWorkspace() {
   const tab = selected();
   const active = view === "editor" ? tab : null;
-  app.innerHTML = `<header class="title-tools">
-      <button class="symbol-button" id="toggle-sidebar" title="显示 / 隐藏侧边栏" aria-label="显示 / 隐藏侧边栏">${icon("sidebar")}</button>
-      <div class="title-actions">
-        <details class="action-menu"><summary>${icon("add")} 新建 ${icon("chevron")}</summary><div>
-          <button data-card="latex">LaTeX 文档</button><button data-card="markdown">Markdown 文档</button>
-          <button data-card="text">纯文本</button><button data-card="csv">CSV 表格</button></div></details>
-        <button id="dialog">${icon("folder")} 打开</button><span class="tool-divider"></span>
-        <button id="main-save" ${(active?.canSave || view === "notes") ? "" : "disabled"}>${icon("save")} 保存</button>
-        <details class="action-menu align-right"><summary title="更多操作" aria-label="更多操作">${icon("more")}</summary><div>
-          <button data-go="handoff">交接</button><button id="manual-open">输入文件路径…</button><button data-settings>设置</button><button id="exit-app">退出搞文件</button>
-        </div></details>
-      </div></header>
-    <main class="main-shell" ${sidebarVisible ? "" : "data-sidebar-hidden"}>
-      ${sidebarVisible ? workspaceSidebar(active) : ""}
+  app.innerHTML = `<div class="main-shell" ${sidebarVisible ? "" : "data-sidebar-hidden"}>
+      ${workspaceSidebar()}
       <div class="work-area">
-        ${state.tabs.length ? `<nav class="tabs" aria-label="已打开文档">${state.tabs.map((item) => `<div class="tab-chip${item.id === active?.id ? " active" : ""}"><button data-tab="${h(item.id)}" title="${h(item.path || item.title)}">${icon(fileIcon(item.kind))}<span>${h(item.title)}</span>${item.dirty ? '<i class="status-dot" title="未保存"></i>' : ""}</button><button data-close="${h(item.id)}" class="tab-close" aria-label="关闭 ${h(item.title)}">${icon("close")}</button></div>`).join("")}</nav>` : ""}
-        <section class="main-panel ${view === "home" ? "home-panel" : ""}">
-          ${message ? `<div class="banner warn workspace-banner" role="status">${h(message)}<button id="dismiss-message" aria-label="关闭提示">${icon("close")}</button></div>` : ""}
-          ${state.error ? `<div class="banner warn workspace-banner" role="alert">${h(state.error)}</div>` : ""}
-          ${panel(tab)}
-        </section>
-        <footer class="work-status"><i class="status-dot"></i><span id="status">${h(view === "files" ? "整理与查找 · 写作标签已保留" : view === "notes" ? (state.notes?.blocked || "便笺自动保存在本机") : state.status)}</span>${active ? `<span class="status-document">${h(documentStatus(active))}</span>` : ""}</footer>
-      </div></main>`;
+        ${workspaceCommands(active)}
+        ${state.tabs.length ? documentTabs(active) : ""}
+        <div class="work-stage">
+          ${fileBrowser(active)}
+          <main class="main-panel ${view === "home" ? "home-panel" : ""}" data-view="${h(view)}" ${active ? `data-kind="${h(active.kind)}"` : ""}>
+            ${message ? workspaceNotice(message, message === errorNotice, true) : ""}
+            ${state.error ? workspaceNotice(state.error, true) : ""}
+            ${panel(tab)}
+          </main>
+        </div>
+        <footer class="work-status"><i class="status-dot"></i><span id="status" role="status">${h(view === "notes" ? (state.notes?.blocked || "便笺已保存在本机") : state.status)}</span>${active ? `<span class="status-document">${h(documentStatus(active))}</span>` : ""}</footer>
+      </div></div>`;
   bind();
   bindWorkspace();
+}
+
+function workspaceCommands(active) {
+  return `<header class="title-tools" aria-label="文件命令">
+    <div class="title-start">
+      <button class="symbol-button" id="toggle-sidebar" title="显示或隐藏导航" aria-label="显示或隐藏导航" aria-expanded="${sidebarVisible}" aria-controls="workspace-nav">${icon("sidebar")}</button>
+      <button class="plain" id="toggle-browser" data-browse title="文件浏览" aria-label="文件浏览" aria-expanded="${browserVisible}" aria-controls="workspace-browser">${icon("folder")}<span>文件浏览</span></button>
+    </div>
+    <div class="title-actions">
+      <button id="dialog" class="plain" title="打开文件 Ctrl+O">${icon("open")}<span>打开文件</span></button>
+      ${active?.canSave ? `<button id="main-save" class="plain" title="保存 Ctrl+S">${icon("save")}<span>保存</span></button>` : ""}
+      <details class="action-menu align-right"><summary class="command-primary">${icon("add")} 新建 ${icon("chevron")}</summary><div>
+        <button data-card="markdown">Markdown 文档</button><button data-card="latex">LaTeX 文档</button>
+        <button data-card="text">纯文本</button><button data-card="csv">CSV 表格</button></div></details>
+      <details class="action-menu align-right"><summary title="更多命令" aria-label="更多命令">${icon("more")}</summary><div>
+        <button data-go="handoff">交接</button><button id="manual-open">输入文件路径…</button><button data-settings>设置</button><button id="exit-app">退出搞文件</button>
+      </div></details>
+    </div></header>`;
+}
+
+function documentTabs(active) {
+  return `<nav class="tabs" aria-label="打开的文档">${state.tabs.map((item) => {
+    const current = item.id === active?.id;
+    const tone = item.kind === "markdown" ? "tone-md" : item.kind === "latex" ? "tone-latex" : item.kind === "pdf" ? "tone-pdf" : "";
+    return `<div class="tab-chip ${tone}${current ? " active" : ""}"><button data-tab="${h(item.id)}" ${current ? 'aria-current="true"' : ""} title="${h(item.path || item.title)}">${icon(fileIcon(item.kind))}<span>${h(item.title)}</span>${item.dirty ? '<i class="status-dot" title="未保存" aria-label="未保存"></i>' : ""}</button><button data-close="${h(item.id)}" class="tab-close" title="关闭" aria-label="关闭 ${h(item.title)}">${icon("close")}</button></div>`;
+  }).join("")}</nav>`;
+}
+
+function workspaceNotice(text, warning, dismiss = false) {
+  return `<div class="banner workspace-banner ${warning ? "warn" : ""}" role="${warning ? "alert" : "status"}">${icon(warning ? "alert" : "check")}<span>${h(text)}</span>${dismiss ? `<button id="dismiss-message" class="symbol-button" aria-label="关闭提示">${icon("close")}</button>` : ""}</div>`;
 }
 
 function documentStatus(tab) {
@@ -135,22 +167,27 @@ function documentStatus(tab) {
   return summary + (tab.dirty ? "有未保存修改" : "已保存");
 }
 
-function workspaceSidebar(active) {
-  const shortcut = (label, symbol, action, selected = false, color = "") => `<button class="side-shortcut ${color}${selected ? " selected" : ""}" ${action} ${selected ? 'aria-current="page"' : ""}>${icon(symbol)}<span>${label}</span>${selected ? '<i class="status-dot"></i>' : ""}</button>`;
-  const folder = state.folder?.split(/[\\/]/).filter(Boolean).at(-1);
-  return `<aside class="workspace-sidebar">
-    <div class="app-brand"><img src="app-icon.png" alt="" width="38" height="38"><div><strong>搞文件</strong><small>你的本地写作台</small></div></div>
-    <div class="shortcuts">
+function workspaceSidebar() {
+  const shortcut = (label, symbol, action, selected = false) => `<button class="side-shortcut${selected ? " selected" : ""}" title="${label}" aria-label="${label}" ${action} ${selected ? 'aria-current="page"' : ""}>${icon(symbol)}<span>${label}</span></button>`;
+  return `<aside class="workspace-sidebar" id="workspace-nav" ${sidebarVisible ? "" : "hidden"}>
+    <div class="app-brand"><img src="/app-icon.png" alt="" width="32" height="32"><strong>搞文件</strong></div>
+    <nav class="shortcuts" aria-label="工作台导航">
       ${shortcut("工作台", "home", 'data-go="home"', view === "home")}
-      <h2>写作</h2>${shortcut("LaTeX", "latex", 'data-pick="latex"', false, "tone-latex")}${shortcut("Markdown", "markdown", 'data-pick="markdown"', false, "tone-md")}
-      <h2>文档工具</h2>${shortcut("PDF 编辑", "doc", 'data-pick="pdf"', false, "tone-pdf")}${shortcut("Office 查看", "office", 'data-pick="office"')}${shortcut("整理与查找", "organize", 'data-go="files"', view === "files")}
-    </div><div class="side-rule"></div>
-    <div class="side-files-heading"><strong>${h(folder || "最近文件")}</strong><button id="folder-dialog" class="symbol-button" title="打开文件夹" aria-label="打开文件夹">${icon("folderPlus")}</button></div>
+      ${shortcut("整理与查找", "organize", 'data-go="files"', view === "files")}
+      ${shortcut("便笺", "notes", 'data-go="notes"', view === "notes")}
+      ${shortcut("OCR 与交接", "scan", 'data-go="handoff"', view === "handoff")}
+    </nav>
+    <div class="side-bottom">${shortcut("设置", "gear", "data-settings", view === "settings")}</div>
+  </aside>`;
+}
+
+function fileBrowser(active) {
+  const folder = state.folder?.split(/[\\/]/).filter(Boolean).at(-1);
+  return `<aside class="workspace-browser" id="workspace-browser" aria-label="文件浏览" ${browserVisible ? "" : "hidden"}>
+    <div class="side-files-heading"><strong title="${h(state.folder || "最近文件")}">${h(folder || "最近文件")}</strong><button id="folder-dialog" class="symbol-button" title="打开文件夹" aria-label="打开文件夹">${icon("folderPlus")}</button><button id="close-browser" class="symbol-button" title="关闭浏览" aria-label="关闭浏览">${icon("close")}</button></div>
     <label class="side-search">${icon("search")}<input id="side-filter" type="search" placeholder="筛选文件名" value="${h(sidebarSearch)}"></label>
     <div class="side-files" id="side-files">${sidebarFileRows(active)}</div>
     ${state.folder ? '<button id="clear-folder" class="side-return">返回最近文件</button>' : ""}
-    <div class="side-bottom">${shortcut("便笺", "notes", 'data-go="notes"', view === "notes")}
-      <div><small>${icon("drive")}本机处理</small><button data-settings class="symbol-button" title="设置 Ctrl+," aria-label="设置">${icon("gear")}</button></div></div>
   </aside>`;
 }
 
@@ -161,27 +198,36 @@ function sidebarFileRows(active) {
 }
 
 function homePanel() {
-  const heading = (label, detail) => `<div class="home-heading"><h2>${label}</h2><span>${detail}</span></div>`;
-  const writingCard = (kind, title, description, detail, color) => `<article class="writing-card ${color}"><div class="writing-mark"><div class="writing-icon">${icon(kind)}</div><code>${kind === "latex" ? ".tex" : ".md"}</code></div><div><h3>${title}</h3><p>${description}</p></div><small>${detail}</small><div class="writing-actions"><button class="tinted" data-card="${kind}">新建文档</button><button class="plain" data-pick="${kind}">打开…</button></div></article>`;
-  const tool = (title, detail, symbol, color, actions) => `<div class="home-tool"><div class="${color}">${icon(symbol)}</div><div><b>${title}</b><small>${detail}</small></div><div class="home-tool-actions">${actions}</div></div>`;
-  const restored = state.tabs.filter((item) => item.restored).length;
+  const writingRow = (kind, title, detail, color) => `<div class="writing-launch ${color}">
+    <button class="launch-main" data-card="${kind}" title="新建 ${title}"><span class="launch-icon">${icon(kind)}</span><span><strong>${title}</strong><small>${detail}</small></span>${icon("add")}</button>
+    <button class="symbol-button" data-pick="${kind}" title="打开 ${title}" aria-label="打开 ${title}">${icon("open")}</button></div>`;
+  const tool = (title, detail, symbol, color, attributes) => `<button class="home-tool ${color}" ${attributes}><span class="launch-icon">${icon(symbol)}</span><span><strong>${title}</strong><small>${detail}</small></span>${icon("arrow")}</button>`;
+  const restored = state.tabs.filter((item) => item.restored);
   return `<div class="welcome">
-    <div class="welcome-header"><div><small class="welcome-kicker">WORKSPACE</small><h1>给想法，一张纸。</h1><p>从写作到成稿，让文件各就其位。</p></div><button data-pick="open">${icon("folder")} 打开文件</button></div>
-    ${restored ? `<div class="banner warn welcome-restore">${icon("restore")} 已恢复 ${restored} 个未保存草稿，请检查后保存。</div>` : ""}
-    <div class="welcome-columns"><div class="launch-area">
-      <div>${heading("开始写作", "从空白到成稿")}<div class="writing-cards">${writingCard("latex", "LaTeX", "让论文与公式井然有序", "离线编译 · 大纲导航 · PDF 联动", "tone-latex")}${writingCard("markdown", "Markdown", "让文字跟上你的想法", "即时预览 · 公式图示 · 多格式导出", "tone-md")}</div></div>
-      <div>${heading("文档工具", "阅读、编辑与整理")}<div class="home-surface tools-list">
-        ${tool("PDF 编辑", "文字与图片批注，表单与页面整理", "doc", "tone-pdf", '<button class="plain" data-card="ocr">识别文字…</button><button data-pick="pdf">打开 PDF</button>')}
-        ${tool("Office 查看", "Word · Excel · PowerPoint", "office", "tone-md", '<details class="action-menu align-right"><summary>打开文档</summary><div><button data-pick="word">Word</button><button data-pick="spreadsheet">Excel</button><button data-pick="presentation">PowerPoint</button></div></details>')}
-        ${tool("整理与查找", "授权目录索引，收藏与虚拟工作区", "organize", "tone-latex", '<button data-go="files">开始整理</button>')}
-      </div></div>
-      <div class="home-notes">${icon("notes")}<div>零散的灵感，也有去处。<small>便笺与桌面便条，随手记下来。</small></div><button class="plain" data-go="notes">打开便笺</button></div>
-    </div><div>${heading("接着上次", "最近打开")}<div class="home-surface recent-surface">
-      ${state.recent.length ? state.recent.slice(0, 7).map((item) => `<button class="recent-row" data-open="${h(item.path)}" title="${h(item.path)}">${icon(fileIcon(item.kind))}<span><b>${h(item.name)}</b><small>${h(item.path.split(/[\\/]/).slice(0, -1).join("\\"))}</small></span></button>`).join("") : `<div class="recent-empty">${icon("doc")}<div>这里等着你的第一份文档。</div><small>打开的文件会在此显示，文档始终留在原来的位置。</small></div>`}
-      <button class="recent-folder" data-pick="folder">${icon("folderPlus")} 打开项目文件夹</button>
-    </div></div></div>
-    <div class="welcome-footer">${icon("save")} 将文件拖到窗口中，直接开始。 <kbd>Ctrl+N 新建 · Ctrl+O 打开</kbd></div>
+    <div class="welcome-header"><h1>工作台</h1><button class="plain home-folder" data-pick="folder">${icon("folderPlus")} 打开文件夹</button></div>
+    ${restored.length ? `<div class="home-recovery" role="status">${icon("restore")}<span>已恢复 ${restored.length} 个未保存草稿</span><button data-tab="${h(restored[0].id)}">查看草稿</button></div>` : ""}
+    <div class="welcome-columns">
+      <section class="home-card recent-surface" aria-labelledby="recent-heading"><div class="home-card-heading"><h2 id="recent-heading">最近打开</h2>${state.recent.length ? '<button class="plain" data-browse aria-controls="workspace-browser">查看文件</button>' : ""}</div>
+        ${state.recent.length ? `<div class="recents">${state.recent.slice(0, 6).map(recentFileRow).join("")}</div>` : `<div class="workspace-empty">${icon("clock")}<div><strong>暂无最近文件</strong><p>打开或拖入一个文件即可开始。</p></div><button data-pick="open">打开文件</button></div>`}
+      </section>
+      <section class="home-card writing-surface" aria-labelledby="writing-heading"><div class="home-card-heading"><h2 id="writing-heading">新建文档</h2></div>
+        ${writingRow("markdown", "Markdown", "笔记与文档", "tone-md")}
+        ${writingRow("latex", "LaTeX", "公式与排版", "tone-latex")}
+        <div class="file-formats"><button data-card="text">${icon("doc")} 纯文本</button><button data-card="csv">${icon("home")} CSV 表格</button></div>
+      </section>
+    </div>
+    <section class="quick-tools" aria-labelledby="tools-heading"><h2 id="tools-heading">文档工具</h2><div class="quick-tools-grid">
+      ${tool("PDF 编辑", "表单、批注与页面整理", "doc", "tone-pdf", 'data-pick="pdf"')}
+      ${tool("Office 查看", "Word、Excel 与 PowerPoint", "office", "tone-office", 'data-pick="office"')}
+      ${tool("识别文字", "交给搞操作处理", "scan", "tone-latex", 'data-card="ocr"')}
+    </div></section>
   </div>`;
+}
+
+function recentFileRow(item) {
+  const folder = item.path.replace(/[/\\][^/\\]+$/, "");
+  const display = folder.split(/[/\\]/).filter(Boolean).slice(-2).join("\\");
+  return `<button class="recent-row" data-open="${h(item.path)}" title="${h(item.path)}"><span class="recent-icon">${icon(fileIcon(item.kind))}</span><span><strong>${h(item.name)}</strong><small>${h(display)}</small></span>${icon("arrow")}</button>`;
 }
 
 async function showSettings() {
@@ -226,12 +272,21 @@ async function workspaceExit() {
 function bindWorkspace() {
   document.querySelectorAll("[data-pick]").forEach((node) => node.onclick = () => pick(node.dataset.pick));
   document.querySelectorAll("[data-settings]").forEach((node) => node.onclick = () => showSettings().catch(fail));
-  document.querySelector("#toggle-sidebar").onclick = () => { sidebarVisible = !sidebarVisible; render(); };
-  document.querySelector("#main-save").onclick = () => workspaceSave().catch(fail);
-  document.querySelector("#manual-open").onclick = () => openPath(prompt("输入文件路径") || "");
+  const nav = document.getElementById("toggle-sidebar");
+  nav.onclick = () => {
+    sidebarVisible = !sidebarVisible;
+    document.querySelector(".main-shell").toggleAttribute("data-sidebar-hidden", !sidebarVisible);
+    document.getElementById("workspace-nav").hidden = !sidebarVisible;
+    nav.setAttribute("aria-expanded", String(sidebarVisible));
+  };
+  document.querySelectorAll("[data-browse]").forEach((node) => node.onclick = () => showBrowser(!browserVisible));
+  document.getElementById("close-browser").onclick = () => showBrowser(false);
+  const save = document.getElementById("main-save");
+  if (save) save.onclick = () => workspaceSave().catch(fail);
+  document.getElementById("manual-open").onclick = chooseOpenPath;
   document.querySelector("#exit-app").onclick = () => workspaceExit().catch(fail);
   const dismiss = document.querySelector("#dismiss-message");
-  if (dismiss) dismiss.onclick = () => { message = ""; render(); };
+  if (dismiss) dismiss.onclick = () => { message = errorNotice = ""; dismiss.closest(".workspace-banner").remove(); };
   const filter = document.querySelector("#side-filter");
   if (filter) filter.oninput = () => {
     sidebarSearch = filter.value;
@@ -241,7 +296,49 @@ function bindWorkspace() {
   };
   const clear = document.querySelector("#clear-folder");
   if (clear) clear.onclick = () => api("/api/folder", {}).then(() => { sidebarSearch = ""; render(); }).catch(fail);
+  document.querySelector(".tab-chip.active")?.scrollIntoView({block: "nearest", inline: "nearest"});
 }
+
+function showBrowser(show) {
+  browserVisible = show;
+  const drawer = document.getElementById("workspace-browser");
+  if (!drawer) return;
+  drawer.hidden = !show;
+  document.querySelectorAll("[data-browse]").forEach((node) => node.setAttribute("aria-expanded", String(show)));
+  document.getElementById(show ? "side-filter" : "toggle-browser")?.focus();
+}
+
+function chooseOpenPath() {
+  const dialog = document.createElement("dialog");
+  dialog.className = "document-dialog path-dialog";
+  dialog.setAttribute("aria-labelledby", "path-dialog-title");
+  dialog.innerHTML = `<form method="dialog"><h2 id="path-dialog-title">打开指定文件</h2><label for="open-path">文件路径</label><input type="text" id="open-path" autocomplete="off" autofocus required><div class="row"><span></span><button value="cancel" formnovalidate>取消</button><button value="open" class="primary">打开</button></div></form>`;
+  dialog.addEventListener("close", () => {
+    const path = dialog.querySelector("input").value.trim();
+    const shouldOpen = dialog.returnValue === "open";
+    dialog.remove();
+    if (shouldOpen && path) openPath(path);
+  }, {once: true});
+  document.body.append(dialog);
+  dialog.showModal();
+}
+
+document.addEventListener("pointerdown", (event) => {
+  document.querySelectorAll("details.action-menu[open]").forEach((menu) => {
+    if (!menu.contains(event.target)) menu.open = false;
+  });
+});
+
+document.addEventListener("keydown", (event) => {
+  if (event.key !== "Escape" || document.querySelector("dialog[open]")) return;
+  const openedMenu = event.target.closest?.("details.action-menu[open]");
+  if (openedMenu) {
+    openedMenu.open = false;
+    openedMenu.querySelector("summary").focus();
+  } else if (browserVisible && document.getElementById("workspace-browser")?.contains(event.target)) {
+    showBrowser(false);
+  }
+});
 
 document.addEventListener("dragover", (event) => {
   if (surface === "workspace" && event.dataTransfer?.types.includes("Files")) event.preventDefault();

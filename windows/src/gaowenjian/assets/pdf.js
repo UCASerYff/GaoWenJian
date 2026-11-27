@@ -1,68 +1,95 @@
 const pdfViews = new Map();
 let pdfResize;
 
+Object.assign(symbols, {
+  previewPrevious: '<path d="m15 6-6 6 6 6"/>', previewNext: '<path d="m9 6 6 6-6 6"/>',
+  previewPlus: '<path d="M12 5v14M5 12h14"/>', previewMinus: '<path d="M5 12h14"/>',
+  previewFit: '<path d="M9 4H4v5m11-5h5v5M4 15v5h5m11-5v5h-5"/><rect x="8" y="7" width="8" height="10" rx="1"/>',
+  previewBook: '<rect x="3" y="5" width="18" height="14" rx="2"/><path d="M12 5v14M6.5 9H9m6 0h2.5"/>',
+  previewPen: '<path d="m4 16-.7 4.7L8 20l12-12-4-4L4 16Zm9.5-9.5 4 4"/>',
+  previewText: '<path d="M5 6V4h14v2M12 4v16m-3 0h6"/>',
+  previewImage: '<rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="8" cy="9" r="1.5"/><path d="m3.5 17 5-4.5 3 2.5 3.5-4 5.5 6"/>',
+  previewScan: '<path d="M9 4H4v5m11-5h5v5M4 15v5h5m11-5v5h-5M8 9h8m-8 3h8m-8 3h5"/>',
+  previewExternal: '<path d="M14 4h6v6m0-6-8 8m7 2v5H5V5h5"/>',
+  previewForm: '<rect x="4" y="3" width="16" height="18" rx="2"/><path d="m7 8 1 1 2-2m3 1h4M7 13h3m3 0h4m-10 4h3m3 0h4"/>',
+  previewLock: '<rect x="5" y="10" width="14" height="11" rx="2"/><path d="M8 10V7a4 4 0 1 1 8 0v3m-4 4v3"/>',
+  previewAlert: '<circle cx="12" cy="12" r="9"/><path d="M12 7v6m0 4h.01"/>',
+  previewUndo: '<path d="m8 6-4 4 4 4m-4-4h10a5 5 0 1 1 0 10h-2"/>',
+  previewRedo: '<path d="m16 6 4 4-4 4m4-4H10a5 5 0 1 0 0 10h2"/>',
+});
+
 function pdfView(tab) {
   if (!pdfViews.has(tab.id)) {
-    pdfViews.set(tab.id, {page: 0, thumbnails: true, spread: false, zoom: 0, inspector: "", query: "",
-      hits: [], hit: 0, pending: new Map(), placement: null, jump: true, scroll: 0, notice: ""});
+    pdfViews.set(tab.id, {page: 0, navigation: null, navigationPane: "pages", spread: false, zoom: 0,
+      inspector: "", editing: false, searchOpen: false, query: "", hits: [], hit: 0, pending: new Map(),
+      placement: null, jump: true, scroll: 0, notice: ""});
   }
   return pdfViews.get(tab.id);
 }
 
 function pdfPanel(tab) {
   const info = tab.preview || {};
-  if (info.locked) {
-    return `<div class="pdf-locked"><form id="pdf-unlock">${icon("doc")}<h2>输入 PDF 密码</h2>
-      <input aria-label="PDF 密码" type="password" autocomplete="off" autofocus><button class="primary">解锁阅读</button>
-      <p class="muted">加密文件仅供阅读，保留原有加密设置。</p></form></div>`;
-  }
   const ui = pdfView(tab);
+  const identification = `<div class="pdf-title"><span class="pdf-title-icon">${icon("doc")}</span><div><h2 title="${h(tab.path)}">${h(tab.title)}</h2><span class="pdf-title-meta">${info.encrypted ? "PDF · 只读" : `${info.pages?.length || 0} 页${tab.dirty ? " · 有未保存修改" : ""}`}</span></div></div>`;
+  if (info.locked) {
+    return `<div class="pdf-workspace pdf-locked"><div class="pdf-document-head">${identification}</div><div class="pdf-empty"><form id="pdf-unlock">
+      <span class="pdf-empty-icon">${icon("previewLock")}</span><h3>此 PDF 需要密码</h3><p>解锁后可阅读，原文件的加密设置会保留。</p>
+      <div class="pdf-unlock-actions"><input aria-label="PDF 密码" placeholder="PDF 密码" type="password" autocomplete="off" autofocus><button class="primary">解锁阅读</button></div><p id="pdf-unlock-status" role="status"></p></form></div></div>`;
+  }
   const pages = info.pages || [];
   ui.page = Math.max(0, Math.min(ui.page, pages.length - 1));
+  if (!pages.length) {
+    return `<div class="pdf-workspace"><div class="pdf-document-head">${identification}</div><div class="pdf-empty"><div><span class="pdf-empty-icon">${icon(info.pages ? "doc" : "previewAlert")}</span><h3>${info.pages ? "此 PDF 没有可阅读的页面" : "无法获取 PDF 预览"}</h3>${tab.message ? `<p>${h(tab.message)}</p>` : ""}<button data-external="${h(tab.path)}">${icon("previewExternal")} 用外部应用打开</button></div></div></div>`;
+  }
   const editable = !info.encrypted;
   const attr = (disabled) => disabled ? "disabled" : "";
-  const menu = (label, items) => `<details class="action-menu pdf-menu"><summary>${label} ${icon("chevron")}</summary><div>${items}</div></details>`;
-  const cmd = (id, label, disabled) => `<button type="button" data-pdf-command="${id}" ${attr(disabled)}>${label}</button>`;
-  const pageTools = menu("页面", [
-    cmd("rotate", "顺时针旋转当前页", !editable), cmd("crop", "裁剪当前页可见区域…", !editable),
-    cmd("up", "当前页前移", !editable || ui.page === 0), cmd("down", "当前页后移", !editable || ui.page === pages.length - 1),
-    cmd("delete", "删除当前页…", !editable || pages.length < 2), cmd("merge", "追加 PDF 合并…", !editable),
-    cmd("extract", "提取指定页面…", !editable), cmd("split", "每页拆分为独立 PDF…", !editable),
+  const btn = (id, label, glyph, {disabled = false, pressed, iconOnly = false} = {}) => `<button type="button" data-pdf-command="${id}" class="${iconOnly ? "pdf-icon-button" : ""}" ${attr(disabled)} ${pressed == null ? "" : `aria-pressed="${pressed}"`} title="${label}" aria-label="${label}">${glyph ? icon(glyph) : ""}${iconOnly ? "" : `<span>${label}</span>`}</button>`;
+  const menu = (label, name, items, className = "") => `<details class="action-menu pdf-menu ${className}"><summary title="${label}" aria-label="${label}">${icon(name)}${className ? "" : `<span>${label}</span>${icon("chevron")}`}</summary><div>${items}</div></details>`;
+  const pageTools = menu("页面操作", "previewBook", [
+    btn("rotate", "顺时针旋转当前页"), btn("crop", "裁剪当前页可见区域…"),
+    btn("up", "当前页前移", "", {disabled: ui.page === 0}), btn("down", "当前页后移", "", {disabled: ui.page === pages.length - 1}),
+    btn("merge", "追加 PDF 合并…"), btn("extract", "提取指定页面…"), btn("split", "每页拆分为独立 PDF…"),
+    btn("delete", "删除当前页…", "", {disabled: pages.length < 2}),
   ].join(""));
-  const findings = ui.hits.length ? `<span class="pdf-find-count">${ui.hit + 1} / ${ui.hits.length}</span>${cmd("find-prev", "↑")}${cmd("find-next", "↓")}` : "";
+  const annotations = menu("批注", "previewPen", [btn("highlight", "高亮文字"), btn("underline", "下划线"), btn("strike", "删除线"), btn("note", "添加便签…"), btn("objects", "对象与批注")].join(""));
+  const more = menu("更多 PDF 操作", "more", `<button data-ocr-current>${icon("previewScan")} 交给搞操作 OCR</button>${btn("objects", "对象与批注", "previewPen")}
+      ${editable ? `<button id="save-as">${icon("save")} 另存为…</button>${!tab.dirty && !ui.editing ? '<button id="save">保存 PDF</button>' : ""}` : ""}
+      ${info.canRecover ? btn("recover", "另存恢复副本…", "restore") : ""}`, "align-right pdf-more");
   const sheets = pages.map((page, index) => pdfSheet(tab, page, index)).join("");
   return `<div class="pdf-workspace" data-pdf-id="${h(tab.id)}">
-    <div class="pdf-bar pdf-reading">
-      <button data-pdf-command="thumbs" aria-label="显示或隐藏缩略图" title="显示或隐藏缩略图" aria-pressed="${ui.thumbnails}">${icon("sidebar")}</button>
-      <button data-pdf-command="prev" aria-label="上一页" ${attr(ui.page === 0)}>‹</button>
-      <input id="pdf-page-number" aria-label="页码" type="number" min="1" max="${pages.length}" value="${ui.page + 1}"><span class="muted pdf-count">/ ${pages.length}</span>
-      <button data-pdf-command="next" aria-label="下一页" ${attr(ui.page >= pages.length - 1)}>›</button>
-      <span class="pdf-divider"></span>
-      <button data-pdf-command="zoom-out" aria-label="缩小" title="缩小">−</button><span id="pdf-zoom-value" class="pdf-count"></span>
-      <button data-pdf-command="zoom-in" aria-label="放大" title="放大">+</button>${cmd("fit", "适合")}
-      <button data-pdf-command="spread" title="双页阅读" aria-pressed="${ui.spread}">双页</button>
-      <form id="pdf-find" class="pdf-find">${icon("search")}<input type="search" aria-label="搜索 PDF 文字" placeholder="搜索 PDF 文字" value="${h(ui.query)}">${findings}</form>
-      <button class="pdf-inspector-toggle" data-pdf-command="inspector" aria-label="批注、表单与目录" aria-pressed="${Boolean(ui.inspector)}">${icon("sidebar")}</button>
-      <button data-ocr-current>交给搞操作 OCR</button>
-    </div><div class="pdf-bar">
-      ${cmd("text", "插入文字", !editable)}${cmd("image", "插入图片", !editable)}
-      ${menu("批注", [cmd("highlight", "高亮文字", !editable), cmd("underline", "下划线", !editable),
-          cmd("strike", "删除线", !editable), cmd("note", "添加便签…", !editable), cmd("objects", "对象与批注")].join(""))}
-      ${pageTools}<button data-pdf-command="undo" title="撤销 PDF 修改" aria-label="撤销 PDF 修改" ${attr(!info.canUndo)}>↶</button>
-      <button data-pdf-command="redo" title="重做 PDF 修改" aria-label="重做 PDF 修改" ${attr(!info.canRedo)}>↷</button>
-      ${ui.placement ? `<span class="pdf-placement">${h(ui.placement.label)}</span>${cmd("cancel", "取消")}` : ""}
-      ${info.canRecover ? cmd("recover", "另存恢复副本…") : ""}<span class="pdf-flex"></span>
-      <button id="save-as" ${attr(!editable)}>另存为…</button><button id="save" ${attr(!editable)}>${icon("save")} ${tab.dirty ? "保存 PDF •" : "保存 PDF"}</button>
+    <div class="pdf-document-head">${identification}<div class="pdf-head-actions">
+      ${editable ? btn("edit", ui.editing ? "完成编辑" : "编辑 PDF", "previewPen", {pressed: ui.editing}) : ""}
+      ${editable && (tab.dirty || ui.editing) ? `<button id="save" aria-label="保存 PDF" title="保存 PDF" ${tab.dirty ? 'class="primary"' : ""}>${icon("save")}<span>保存 PDF</span></button>` : ""}${more}
+    </div></div>
+    <div class="pdf-reading" aria-label="PDF 阅读工具">
+      <div class="pdf-tool-cluster">${btn("thumbs", "页面导航", "sidebar", {pressed: ui.navigation !== false, iconOnly: true})}
+      ${btn("prev", "上一页", "previewPrevious", {disabled: ui.page === 0, iconOnly: true})}<label class="pdf-page-number"><input id="pdf-page-number" aria-label="页码" type="number" min="1" max="${pages.length}" value="${ui.page + 1}"><span>/ ${pages.length}</span></label>
+      ${btn("next", "下一页", "previewNext", {disabled: ui.page === pages.length - 1, iconOnly: true})}</div>
+      <div class="pdf-tool-cluster">${btn("zoom-out", "缩小", "previewMinus", {iconOnly: true})}<output id="pdf-zoom-value" class="pdf-count">—</output>${btn("zoom-in", "放大", "previewPlus", {iconOnly: true})}
+      ${btn("fit", "适合窗口", "previewFit", {iconOnly: true})}${btn("spread", "双页阅读", "previewBook", {pressed: ui.spread, iconOnly: true})}</div>
+      <div class="pdf-tool-cluster pdf-reading-end">${btn("search", "搜索", "search", {pressed: ui.searchOpen})}${btn("forms", "表单", "previewForm", {pressed: ui.inspector === "forms"})}</div>
     </div>
-    <div class="pdf-layout ${ui.thumbnails ? "" : "without-thumbnails"} ${ui.inspector ? "" : "without-inspector"}">
-      ${ui.thumbnails ? `<div class="pdf-thumbnails" aria-label="页面缩略图"><b>页面</b>${pages.map((page, index) => `<button data-pdf-page="${index}" aria-current="${index === ui.page ? "page" : "false"}" aria-label="第 ${index + 1} 页">
-        <img src="${pdfImageURL(tab, index, 180)}" loading="lazy" alt="" style="aspect-ratio:${pdfRatio(page)}"><span>${index + 1}</span></button>`).join("")}</div>` : ""}
+    ${ui.editing ? `<div class="pdf-edit-tools" aria-label="PDF 编辑工具">
+      <div class="pdf-tool-cluster">${btn("text", "插入文字", "previewText")}${btn("image", "插入图片", "previewImage")}${annotations}</div>
+      <div class="pdf-tool-cluster">${pageTools}${btn("undo", "撤销 PDF 修改", "previewUndo", {disabled: !info.canUndo, iconOnly: true})}${btn("redo", "重做 PDF 修改", "previewRedo", {disabled: !info.canRedo, iconOnly: true})}</div>
+    </div>` : ""}
+    ${ui.searchOpen ? `<form id="pdf-find" class="pdf-find" role="search"><label>${icon("search")}<input type="search" maxlength="256" aria-label="搜索 PDF 文字" placeholder="搜索 PDF 文字" value="${h(ui.query)}"></label><button class="pdf-find-submit" type="submit">查找</button><output class="pdf-find-count" aria-live="polite">${ui.hits.length ? `${ui.hit + 1} / ${ui.hits.length}` : ui.query ? "没有匹配" : ""}</output>${btn("find-prev", "上一个结果", "chevron", {disabled: !ui.hits.length, iconOnly: true})}${btn("find-next", "下一个结果", "chevron", {disabled: !ui.hits.length, iconOnly: true})}${btn("search", "关闭搜索", "close", {iconOnly: true})}</form>` : ""}
+    ${ui.placement ? `<div class="pdf-inline-notice pdf-placement" role="status">${icon("previewPen")} ${h(ui.placement.label)}${btn("cancel", "取消放置")}</div>` : ""}
+    ${info.signed || tab.message ? `<div class="pdf-inline-notice pdf-caution" role="status">${icon("previewAlert")}<span>${h(tab.message || "此文件含数字签名字段，修改后请另存副本。")}</span>${info.canRecover ? btn("recover", "另存恢复副本…") : ""}</div>` : ""}
+    <div class="pdf-layout">
+      ${ui.navigation === false ? "" : pdfNavigation(tab, ui)}
       <div class="pdf-canvas ${ui.spread ? "pdf-spread" : ""} ${ui.placement ? "pdf-placing" : ""}" aria-label="PDF 阅读区" tabindex="0">${sheets}</div>
       ${ui.inspector ? pdfInspector(tab) : ""}
     </div>
-    <div class="pdf-footer" role="status"><span class="${tab.dirty ? "pdf-dirty" : ""}">${h(ui.notice || tab.message || (info.encrypted ? "加密 PDF · 只读" : tab.dirty ? "PDF 已修改 · 待保存" : info.xfa ? "XFA 动态表单无法在此工作台填写" : "已打开 PDF"))}</span>
-      ${info.signed ? '<span class="pdf-placement">含数字签名字段 · 修改后请另存副本</span>' : ""}</div>
+    ${ui.notice || info.xfa ? `<div class="pdf-footer" role="status">${h(ui.notice || "XFA 动态表单仅供查看")}</div>` : ""}
     <dialog class="pdf-dialog" aria-labelledby="pdf-dialog-title"></dialog></div>`;
+}
+
+function pdfNavigation(tab, ui) {
+  const pages = tab.preview.pages;
+  const content = ui.navigationPane === "pages" ? `<div class="pdf-thumbnails" aria-label="缩略图">${pages.map((page, index) => `<button data-pdf-page="${index}" aria-current="${index === ui.page ? "page" : "false"}" aria-label="第 ${index + 1} 页"><span class="pdf-thumbnail"><img src="${pdfImageURL(tab, index, 180)}" loading="lazy" alt="" style="aspect-ratio:${pdfRatio(page)}"></span><span>${index + 1}</span></button>`).join("")}</div>`
+    : `<div class="pdf-outline">${tab.preview.outline.map((item) => `<button class="pdf-outline-row" ${item.page == null ? "disabled" : `data-pdf-page="${item.page}"`} style="--outline-indent:${Math.min(5, item.depth) * 12}px" title="${h(item.title)}">${h(item.title)}</button>`).join("") || '<p>此 PDF 没有目录书签。</p>'}</div>`;
+  return `<div class="pdf-navigation" data-navigation="${ui.navigation === null ? "auto" : "open"}" aria-label="页面导航"><div class="pdf-side-head"><strong>页面导航</strong><button type="button" data-pdf-command="thumbs" class="pdf-icon-button" aria-label="关闭页面导航" title="关闭页面导航">${icon("close")}</button></div><div class="pdf-side-tabs"><button data-pdf-nav="pages" aria-pressed="${ui.navigationPane === "pages"}">缩略图</button><button data-pdf-nav="outline" aria-pressed="${ui.navigationPane === "outline"}">目录</button></div>${content}</div>`;
 }
 
 function pdfRatio(page) {
@@ -76,7 +103,7 @@ function pdfImageURL(tab, page, width) {
 function pdfSheet(tab, page, index) {
   const ui = pdfView(tab);
   const info = tab.preview;
-  const match = ui.hits[ui.hit];
+  const match = ui.searchOpen ? ui.hits[ui.hit] : null;
   const highlights = match?.page === index + 1 ? (match.rects || []).map((rect) => `<i class="pdf-search-mark" style="${pdfRectStyle(page, rect)}"></i>`).join("") : "";
   const widgets = (info.fields || []).flatMap((field, fieldIndex) => field.widgets.filter((widget) => widget.page === index).map((widget) => {
     const readonly = field.readonly || info.encrypted;
@@ -88,7 +115,7 @@ function pdfSheet(tab, page, index) {
   const annotations = (info.annotations || []).filter((item) => item.page === index).map((item) =>
     `<button class="pdf-annotation-target" type="button" aria-label="${h(item.title + (item.text ? ' · ' + item.text : ''))}" title="${h(item.text || item.title)}" data-pdf-annotation="${index}:${item.index}" style="${pdfRectStyle(page, item.rect)}"></button>`).join("");
   return `<article class="pdf-sheet" data-pdf-sheet="${index}" data-pdf-width="${page.width}" style="aspect-ratio:${pdfRatio(page)}">
-    <img data-pdf-raster="${index}" loading="lazy" alt="第 ${index + 1} 页">${highlights}${annotations}${widgets}</article>`;
+    <img data-pdf-raster="${index}" loading="lazy" alt="第 ${index + 1} 页"><div class="pdf-raster-state"><span class="pdf-raster-loading">正在载入第 ${index + 1} 页…</span><div class="pdf-raster-error"><p>${icon("previewAlert")} 第 ${index + 1} 页无法预览</p><button type="button" data-pdf-retry>重试</button></div></div>${highlights}${annotations}${widgets}</article>`;
 }
 
 function pdfPoint(page, x, y, toPaper = false) {
@@ -139,7 +166,7 @@ function pdfControl(field, index, pending, readonly, widget = null) {
 
 function pdfInspector(tab) {
   const ui = pdfView(tab), info = tab.preview;
-  const tabs = [["objects", "对象"], ["forms", "表单"], ["outline", "目录"]];
+  const tabs = [["forms", "表单"], ["objects", "对象与批注"]];
   let content;
   if (ui.inspector === "forms") {
     content = info.fields.map((field, i) => {
@@ -147,9 +174,7 @@ function pdfInspector(tab) {
       return `<div class="pdf-inspector-item"><div><b>${h(field.label)}</b>${field.widgets[0] ? `<button data-pdf-page="${field.widgets[0].page}">定位</button>` : ""}</div>
         ${field.type === "signature" ? '<span class="muted">数字签名字段 · 只读</span>' : field.type === "button" ? '<span class="muted">PDF 操作按钮 · 只读</span>' : readonly ? `<span class="muted">${field.password ? "密码字段" : h(field.value)} · 只读</span>` : pdfControl(field, i, ui.pending.get(field.name), false)}
       </div>`;
-    }).join("") || '<p class="muted">无交互表单。扫描表格可使用“插入文字”填写。</p>';
-  } else if (ui.inspector === "outline") {
-    content = info.outline.map((item) => `<button class="pdf-outline-row" style="padding-inline-start:${8 + item.depth * 12}px" ${item.page == null ? "disabled" : `data-pdf-page="${item.page}"`}>${h(item.title)}</button>`).join("") || '<p class="muted">此 PDF 未包含目录书签。</p>';
+    }).join("") || `<div class="pdf-inspector-empty">${icon("previewForm")}<p>此 PDF 没有可填写的表单字段。</p>${info.encrypted ? "" : '<button data-pdf-command="text">插入文字…</button>'}</div>`;
   } else {
     content = info.annotations.map((item) => {
       const id = `${item.page}:${item.index}`;
@@ -159,9 +184,9 @@ function pdfInspector(tab) {
         ${edit && item.canEdit ? `<button data-pdf-object-action="edit" data-object="${id}">编辑</button>` : ""}
         ${edit && item.canMove ? `<button data-pdf-object-action="move" data-object="${id}">移动</button><button data-pdf-object-action="size" data-object="${id}">尺寸</button>` : ""}
         ${edit ? `<button data-pdf-object-action="remove" data-object="${id}">删除</button>` : ""}</div></div>`;
-    }).join("") || '<p class="muted">暂无对象与批注。</p>';
+    }).join("") || `<div class="pdf-inspector-empty">${icon("previewPen")}<p>此 PDF 暂无批注。</p></div>`;
   }
-  return `<div class="pdf-inspector" aria-label="PDF 检查器"><div class="pdf-inspector-tabs">${tabs.map(([id, name]) => `<button data-pdf-pane="${id}" aria-pressed="${ui.inspector === id}">${name}</button>`).join("")}</div><div class="pdf-inspector-body">${content}</div></div>`;
+  return `<div class="pdf-inspector" aria-label="PDF 检查器"><div class="pdf-side-head"><strong>检查器</strong><button type="button" data-pdf-command="close-inspector" class="pdf-icon-button" title="关闭检查器" aria-label="关闭检查器">${icon("close")}</button></div><div class="pdf-side-tabs">${tabs.map(([id, name]) => `<button data-pdf-pane="${id}" aria-pressed="${ui.inspector === id}">${name}</button>`).join("")}</div><div class="pdf-inspector-body">${content}</div></div>`;
 }
 
 function bindPdf() {
@@ -170,30 +195,37 @@ function bindPdf() {
   if (tab?.kind !== "pdf") return;
   const unlock = document.getElementById("pdf-unlock");
   if (unlock) {
-    unlock.onsubmit = (event) => {
+    unlock.onsubmit = async (event) => {
       event.preventDefault();
       const input = unlock.querySelector("input");
+      const submit = unlock.querySelector("button");
       const password = input.value;
       input.value = "";
-      pdfAction(tab, "unlock", {password});
+      submit.disabled = true;
+      document.querySelector("#pdf-unlock-status").textContent = "正在解锁…";
+      await pdfAction(tab, "unlock", {password});
     };
     return;
   }
   const workspace = document.querySelector(".pdf-workspace");
-  if (!workspace) return;
+  const canvas = workspace?.querySelector(".pdf-canvas");
+  if (!canvas) return;
   const ui = pdfView(tab), info = tab.preview;
-  const canvas = workspace.querySelector(".pdf-canvas");
   const sheets = Array.from(canvas.querySelectorAll(".pdf-sheet"));
   const number = workspace.querySelector("#pdf-page-number");
   const thumbs = workspace.querySelector(".pdf-thumbnails");
+  const navigation = workspace.querySelector(".pdf-navigation");
+  const hasNavigation = () => Boolean(navigation && getComputedStyle(navigation).display !== "none");
   const syncControls = () => {
     number.value = ui.page + 1;
     for (const [id, disabled] of [["prev", ui.page === 0], ["next", ui.page === sheets.length - 1], ["up", info.encrypted || ui.page === 0], ["down", info.encrypted || ui.page === sheets.length - 1]]) {
-      workspace.querySelector(`[data-pdf-command="${id}"]`).disabled = disabled;
+      const control = workspace.querySelector(`[data-pdf-command="${id}"]`);
+      if (control) control.disabled = disabled;
     }
     thumbs?.querySelectorAll("[data-pdf-page]").forEach((button) => { button.setAttribute("aria-current", Number(button.dataset.pdfPage) === ui.page ? "page" : "false"); });
     const factor = ui.zoom || (sheets[ui.page]?.offsetWidth || 1) / (info.pages[ui.page]?.width || 1);
     workspace.querySelector("#pdf-zoom-value").textContent = Math.round(factor * 100) + "%";
+    workspace.querySelector(".pdf-reading [data-pdf-command='thumbs']").setAttribute("aria-pressed", String(hasNavigation()));
   };
   const jump = (page) => {
     ui.page = Math.max(0, Math.min(page, info.pages.length - 1));
@@ -207,7 +239,7 @@ function bindPdf() {
   };
   const resize = () => {
     const columns = ui.spread ? 2 : 1;
-    const fit = Math.min(900, Math.max(100, (canvas.clientWidth - (columns === 2 ? 58 : 36)) / columns));
+    const fit = Math.min(920, Math.max(85, (canvas.clientWidth - (columns === 2 ? 56 : 36)) / columns));
     const visible = info.pages[ui.page];
     const scale = ui.zoom || Math.min(1.7, fit / (visible?.width || 595), (canvas.clientHeight - 37) / (visible?.height || 842));
     for (const sheet of sheets) {
@@ -216,15 +248,23 @@ function bindPdf() {
       const resolution = Math.max(200, Math.min(2400, Math.ceil(width * Math.min(devicePixelRatio || 1, 2) / 100) * 100));
       const image = sheet.querySelector("[data-pdf-raster]");
       const url = pdfImageURL(tab, Number(image.dataset.pdfRaster), resolution);
-      if (image.getAttribute("src") !== url) {
-        image.onerror = () => { sheet.classList.add("pdf-image-error"); };
-        image.onload = () => { sheet.classList.remove("pdf-image-error"); };
+      if (image.dataset.source !== url) {
+        image.dataset.source = url;
+        sheet.classList.remove("pdf-image-error", "pdf-image-ready");
+        image.onerror = () => { sheet.classList.remove("pdf-image-ready"); sheet.classList.add("pdf-image-error"); };
+        image.onload = () => { sheet.classList.remove("pdf-image-error"); sheet.classList.add("pdf-image-ready"); };
         image.src = url;
       }
     }
     if (ui.jump) { ui.jump = false; jump(ui.page); }
     else syncControls();
   };
+  workspace.querySelectorAll("[data-pdf-retry]").forEach((button) => { button.onclick = (event) => {
+    event.stopPropagation();
+    const sheet = button.closest(".pdf-sheet"), image = sheet.querySelector("img");
+    sheet.classList.remove("pdf-image-error");
+    image.src = `${image.dataset.source}&retry=${Date.now()}`;
+  }; });
   resize();
   if (ui.scroll && !ui.jump) canvas.scrollTop = ui.scroll;
   if (window.ResizeObserver) {
@@ -247,6 +287,11 @@ function bindPdf() {
     }
   };
   workspace.querySelectorAll("[data-pdf-page]").forEach((node) => { node.onclick = () => jump(Number(node.dataset.pdfPage)); });
+  workspace.querySelectorAll("[data-pdf-nav]").forEach((node) => { node.onclick = () => {
+    ui.navigationPane = node.dataset.pdfNav;
+    render();
+    document.querySelector(`[data-pdf-nav="${ui.navigationPane}"]`)?.focus();
+  }; });
   workspace.querySelectorAll("[data-pdf-pane]").forEach((node) => { node.onclick = () => { ui.inspector = node.dataset.pdfPane; render(); }; });
   number.onchange = () => jump(Number(number.value || 1) - 1);
   workspace.querySelectorAll("[data-pdf-command]").forEach((node) => { node.onclick = () => {
@@ -254,9 +299,25 @@ function bindPdf() {
     if (menu) menu.open = false;
     pdfCommand(tab, node.dataset.pdfCommand, jump, canvas).catch(fail);
   }; });
-  workspace.querySelector("#pdf-find").onsubmit = async (event) => {
+  const finder = workspace.querySelector("#pdf-find");
+  if (finder) finder.onsubmit = async (event) => {
     event.preventDefault();
+    const submit = finder.querySelector('[type="submit"]');
+    submit.disabled = true;
+    finder.querySelector("output").textContent = "正在搜索…";
     await pdfFind(tab, event.target.querySelector("input").value);
+  };
+  workspace.onkeydown = (event) => {
+    if (event.ctrlKey && event.key.toLowerCase() === "f") {
+      event.preventDefault();
+      if (!ui.searchOpen) { ui.searchOpen = true; render(); }
+      const search = document.querySelector("#pdf-find input");
+      search?.focus();
+      search?.select();
+    } else if (ui.searchOpen && event.key === "Escape" && finder?.contains(event.target)) {
+      event.preventDefault();
+      pdfCommand(tab, "search", jump, canvas).catch(fail);
+    }
   };
   workspace.querySelectorAll("[data-pdf-field]").forEach((input) => {
     const field = info.fields[Number(input.dataset.pdfField)];
@@ -356,8 +417,10 @@ async function pdfFind(tab, query) {
     ui.hits = amount?.result?.matches || [];
     ui.hit = 0;
     if (ui.hits.length) { ui.page = ui.hits[0].page - 1; ui.jump = true; }
-    ui.notice = ui.query && !ui.hits.length ? "没有匹配的文字" : "";
-    render();
+    if (selected()?.id === tab.id) {
+      render();
+      document.querySelector("#pdf-find input")?.focus({preventScroll: true});
+    }
   } catch (error) { fail(error); }
 }
 
@@ -365,11 +428,26 @@ async function pdfCommand(tab, command, jump, canvas) {
   const ui = pdfView(tab);
   const page = ui.page, count = tab.preview.pages.length;
   if (command === "prev" || command === "next") return jump(page + (command === "prev" ? -1 : 1));
-  if (["thumbs", "spread", "inspector", "objects", "fit", "zoom-out", "zoom-in", "cancel"].includes(command)) {
-    if (command === "thumbs") ui.thumbnails = !ui.thumbnails;
+  if (command === "search") {
+    ui.searchOpen = !ui.searchOpen;
+    render();
+    document.querySelector(ui.searchOpen ? "#pdf-find input" : '.pdf-reading [data-pdf-command="search"]')?.focus();
+    return;
+  }
+  if (["thumbs", "spread", "forms", "objects", "close-inspector", "edit", "fit", "zoom-out", "zoom-in", "cancel"].includes(command)) {
+    const area = canvas.closest(".pdf-workspace"), compact = area.clientWidth <= 760;
+    if (command === "thumbs") {
+      const visible = area.querySelector(".pdf-navigation");
+      ui.navigation = !visible || getComputedStyle(visible).display === "none";
+      if (compact && ui.navigation) ui.inspector = "";
+    }
     if (command === "spread") ui.spread = !ui.spread;
-    if (command === "inspector") ui.inspector = ui.inspector ? "" : tab.preview.fields.length ? "forms" : "objects";
-    if (command === "objects") ui.inspector = "objects";
+    if (["forms", "objects"].includes(command)) {
+      ui.inspector = command === "forms" && ui.inspector === "forms" ? "" : command;
+      if (compact && ui.inspector) ui.navigation = false;
+    }
+    if (command === "close-inspector") ui.inspector = "";
+    if (command === "edit") { ui.editing = !ui.editing; if (!ui.editing) ui.placement = null; }
     if (command === "fit") ui.zoom = 0;
     if (command.startsWith("zoom-")) {
       const rendered = canvas.querySelector(`[data-pdf-sheet="${page}"]`)?.offsetWidth || 595;
@@ -378,13 +456,18 @@ async function pdfCommand(tab, command, jump, canvas) {
     }
     if (command === "cancel") ui.placement = null;
     ui.jump = true;
-    return render();
+    render();
+    document.querySelector(`[data-pdf-command="${command === "close-inspector" ? "forms" : command}"]`)?.focus({preventScroll: true});
+    return;
   }
   if (command.startsWith("find-")) {
+    if (!ui.hits.length) return;
     ui.hit = (ui.hit + ui.hits.length + (command === "find-prev" ? -1 : 1)) % ui.hits.length;
     ui.page = ui.hits[ui.hit].page - 1;
     ui.jump = true;
-    return render();
+    render();
+    document.querySelector(`[data-pdf-command="${command}"]`)?.focus({preventScroll: true});
+    return;
   }
   if (command === "rotate") return pdfAction(tab, "rotate", {pages: [page], degrees: 90});
   if (command === "delete") {
@@ -441,11 +524,12 @@ async function pdfCommand(tab, command, jump, canvas) {
       args = await pdfTextDialog(command === "note");
     }
     if (!args) return;
+    ui.editing = true;
     ui.placement = {operation: command === "image" ? "image-file" : command, args, label: `点击页面放置${{image:"图片", text:"文字", note:"便签"}[command]}`};
     return render();
   }
   if (["highlight", "underline", "strike"].includes(command)) {
-    const match = ui.hits[ui.hit];
+    const match = ui.searchOpen ? ui.hits[ui.hit] : null;
     if (match?.page === page + 1 && match.rects.length) return pdfAction(tab, "markup", {page, kind: command, rects: match.rects});
     ui.placement = {operation: "markup", args: {kind: command}, label: "在页面上拖动框选文字"};
     return render();

@@ -4,6 +4,7 @@ let state = null;
 let view = new URLSearchParams(location.search).get("view") === "editor" ? "editor" : "home";
 let noteId = null;
 let message = "";
+let errorNotice = "";
 
 async function api(path, body) {
   const response = await fetch(path, {
@@ -82,13 +83,11 @@ function panel(tab) {
 function textPanel(tab) {
   if (tab.kind === "markdown") return markdownPanel(tab);
   if (tab.kind === "latex") return latexPanel(tab);
-  return `<div class="row"><b>${h(tab.title)}</b><button id="find">查找</button><button id="save">保存</button><button id="save-as">另存为</button><button data-close="${h(tab.id)}">关闭</button></div>
-    <textarea class="editor" data-tab="${h(tab.id)}">${h(tab.text)}</textarea>`;
+  return simpleEditor(tab, `<button id="find">${icon("search")} 查找</button><button id="save-as">另存为…</button>`);
 }
 
 function csvPanel(tab) {
-  return `<div class="row"><b>${h(tab.title)}</b><button id="csv-grid">表格</button><button id="csv-md">复制为 Markdown</button><button id="save">保存</button><button data-close="${h(tab.id)}">关闭</button></div>
-    <textarea class="editor" data-keep="1" data-tab="${h(tab.id)}">${h(tab.text)}</textarea><div id="grid"></div>`;
+  return simpleEditor(tab, `<button id="csv-grid" aria-expanded="false" aria-controls="grid">显示表格</button><button id="csv-md">复制为 Markdown</button>`, '<section id="grid" aria-label="CSV 表格" hidden></section>');
 }
 
 function imagePanel(tab) {
@@ -104,10 +103,15 @@ function imagePanel(tab) {
 const imageZoom = new Map();
 
 function rtfPanel(tab) {
-  return `<div class="row"><b>富文本</b><button id="save">保存</button><button id="save-as">另存为</button><button data-close="${h(tab.id)}">关闭</button></div>
-    ${tab.lossy ? `<div class="banner warn">原 RTF 含有未能无损保留的对象。可以编辑可见文字，但覆盖保存会被拒绝，请另存为。</div>` : ""}
-    ${tab.message ? `<div class="banner">${h(tab.message)}</div>` : ""}
-    <textarea class="editor" data-keep="1" data-tab="${h(tab.id)}">${h(tab.text)}</textarea>`;
+  const info = [tab.lossy ? "原 RTF 含有无法无损保留的对象。可以编辑可见文字后另存。" : "", tab.message].filter(Boolean);
+  return simpleEditor(tab, '<button id="save-as">另存为…</button>', "", info.map((item) => workspaceNotice(item, true)).join(""));
+}
+
+function simpleEditor(tab, controls, panel = "", notices = "") {
+  return `<div class="basic-editor">
+    <div class="editor-command-bar"><h1>${h(tab.title)}</h1><div class="row">${controls}</div></div>${notices}
+    <div class="editor-content"><textarea class="editor" aria-label="${h(tab.title)} 源码" data-tab="${h(tab.id)}">${h(tab.text)}</textarea>${panel}</div>
+  </div>`;
 }
 
 function bind() {
@@ -138,7 +142,7 @@ function bind() {
   if (saveAs) saveAs.onclick = () => saveTab(true);
   bindWriting(selected());
   const grid = document.getElementById("csv-grid");
-  if (grid) grid.onclick = () => showGrid();
+  if (grid) grid.onclick = () => showGrid().catch(fail);
   const csvMd = document.getElementById("csv-md");
   if (csvMd) csvMd.onclick = () => copyMarkdown();
   bindPdf();
@@ -180,7 +184,10 @@ async function openPath(path) {
     if (!(await leaveCurrent())) return;
     if (/\.(gaoaction|gaoresult)$/i.test(path)) { await reviewHandoff(path); return; }
     const payload = await api("/api/tabs/open", {path});
-    if (payload.result?.id) view = "editor";
+    if (payload.result?.id) {
+      view = "editor";
+      if (matchMedia("(max-width: 940px)").matches) browserVisible = false;
+    }
     message = "";
     render();
   } catch (error) {
@@ -196,6 +203,7 @@ async function pick(mode) {
     if (mode === "folder") {
       await api("/api/folder", {path});
       sidebarSearch = "";
+      browserVisible = true;
       render();
     } else await openPath(path);
   } catch (error) { fail(error); }
@@ -247,11 +255,23 @@ async function closeTab(id) {
 }
 
 async function showGrid() {
+  const grid = document.getElementById("grid");
+  const toggle = document.getElementById("csv-grid");
+  if (!grid.hidden) {
+    grid.hidden = true;
+    toggle.setAttribute("aria-expanded", "false");
+    toggle.textContent = "显示表格";
+    return;
+  }
   const id = selected().id;
   await flushEdits(id);
   const payload = await api("/api/tabs/preview", {id});
+  if (!grid.isConnected || selected()?.id !== id) return;
   const rows = payload.result.rows || [];
-  document.getElementById("grid").innerHTML = `<table class="grid">${rows.map((row, r) => `<tr>${row.map((cell, c) => `<td><input data-r="${r}" data-c="${c}" value="${h(cell)}"></td>`).join("")}</tr>`).join("")}</table><div class="row"><button id="grid-save">写回源码</button><button id="grid-sort">按列排序</button><button id="grid-filter">筛选</button></div>`;
+  grid.hidden = false;
+  toggle.setAttribute("aria-expanded", "true");
+  toggle.textContent = "隐藏表格";
+  grid.innerHTML = `<div class="row"><button class="primary" id="grid-save">写回源码</button><button id="grid-sort">按列排序</button><button id="grid-filter">筛选</button></div><div class="grid-scroll"><table class="grid" aria-label="CSV 单元格">${rows.map((row, r) => `<tr>${row.map((cell, c) => `<td><input aria-label="第 ${r + 1} 行第 ${c + 1} 列" data-r="${r}" data-c="${c}" value="${h(cell)}"></td>`).join("")}</tr>`).join("")}</table></div>`;
   const readGrid = () => {
     const next = rows.map((row) => row.slice());
     document.querySelectorAll("#grid input").forEach((input) => { next[input.dataset.r][input.dataset.c] = input.value; });
@@ -289,6 +309,15 @@ async function copyMarkdown() {
 
 function fail(error) {
   message = error.message || String(error);
+  errorNotice = message;
+  if (!state) {
+    app.innerHTML = `<div class="startup-state" role="alert">${icon("alert")}<h1>工作台暂时无法打开</h1><p>${h(message)}</p><button id="workspace-retry" class="primary">重新加载</button></div>`;
+    document.getElementById("workspace-retry").onclick = () => {
+      message = errorNotice = "";
+      refresh().catch(fail);
+    };
+    return;
+  }
   render();
 }
 

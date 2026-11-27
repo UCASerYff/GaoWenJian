@@ -58,12 +58,16 @@ if (-not $InnoCompiler) {
 }
 if (-not (Test-Path -LiteralPath $InnoCompiler -PathType Leaf)) { throw 'Inno Setup 6 ISCC.exe was not found. Pass -InnoCompiler.' }
 $releaseVersion = (Get-Content -Raw -LiteralPath (Join-Path $PSScriptRoot '..\VERSION')).Trim()
+$windowsVersion = & $Python -c "from runpy import run_path; print(run_path('src/gaowenjian/version.py')['VERSION_LABEL'])"
+Assert-LastExit 'Windows version check'
+$windowsMarketing, $windowsBuild = $windowsVersion -split '\+', 2
+if ($windowsMarketing -ne $releaseVersion -or $windowsBuild -notmatch '^\d+$') { throw "Windows version $windowsVersion disagrees with VERSION $releaseVersion" }
 $program = (Resolve-Path -LiteralPath 'dist\GaoWenJian').Path
 $appIcon = Join-Path $buildStage 'app.ico'
-$parameters = @('/Qp', "/DAppVersion=$releaseVersion", "/DBuildDirectory=$program", "/DReleaseDirectory=$outputDir", "/DAppIcon=$appIcon", 'setup.iss')
+$parameters = @('/Qp', "/DAppVersion=$releaseVersion", "/DWindowsBuild=$windowsBuild", "/DBuildDirectory=$program", "/DReleaseDirectory=$outputDir", "/DAppIcon=$appIcon", 'setup.iss')
 & $InnoCompiler @parameters
 Assert-LastExit 'Inno Setup'
-$filename = "GaoWenJian-Windows-$releaseVersion-x64-Setup.exe"
+$filename = "GaoWenJian-Windows-$releaseVersion-build$windowsBuild-x64-Setup.exe"
 $installer = Join-Path $outputDir $filename
 $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $installer).Hash.ToLowerInvariant()
 [System.IO.File]::WriteAllText("$installer.sha256", "$hash  $filename`n", [Text.UTF8Encoding]::new($false))

@@ -42,7 +42,8 @@ jobs:
           $releaseDirectory = Join-Path $env:GITHUB_WORKSPACE 'Release'
           & (Join-Path $windowsDirectory 'build.ps1') -InnoCompiler $env:GAO_INNO_COMPILER -ReleaseDirectory $releaseDirectory
           $version = (Get-Content -Raw -LiteralPath (Join-Path $env:GITHUB_WORKSPACE 'VERSION')).Trim()
-          $installer = Join-Path $releaseDirectory "GaoWenJian-Windows-$version-x64-Setup.exe"
+          $windowsBuild = python -c "import runpy, sys; print(runpy.run_path(sys.argv[1])['WINDOWS_BUILD'])" (Join-Path $windowsDirectory 'src/gaowenjian/version.py')
+          $installer = Join-Path $releaseDirectory "GaoWenJian-Windows-$version-build$windowsBuild-x64-Setup.exe"
           python (Join-Path $windowsDirectory 'tests/install_smoke.py') $installer
           "installer=$($installer.Replace('\', '/'))" >> $env:GITHUB_OUTPUT
       - uses: actions/upload-artifact@v4

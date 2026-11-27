@@ -1,62 +1,692 @@
-.handoff-card {
+.doc-tools-page,
+.doc-tools-dialog {
+  --tool-bg: #f3f5f5;
+  --tool-card: #fff;
+  --tool-line: #dce3e0;
+  --tool-text: #1d2b27;
+  --tool-muted: #566761;
+  --tool-action: #176755;
+  --tool-action-ink: #fff;
+  --tool-tint: #e7f3ee;
+  --tool-danger: #913b3d;
+  color: var(--tool-text);
+  font: 13px/1.5 "Segoe UI", "Microsoft YaHei UI", sans-serif;
+}
+
+:root[data-theme="dark"] :is(.doc-tools-page, .doc-tools-dialog) {
+  --tool-bg: #151a19;
+  --tool-card: #202725;
+  --tool-line: #35413d;
+  --tool-text: #edf4f0;
+  --tool-muted: #b1c3ba;
+  --tool-action: #8edbc0;
+  --tool-action-ink: #172b24;
+  --tool-tint: #294239;
+  --tool-danger: #ffadaf;
+}
+
+.doc-tools-page {
   display: grid;
+  align-content: start;
   gap: 12px;
-  margin-block: 14px;
-  padding: 16px 20px;
+  min-width: 0;
+  container-type: inline-size;
+}
+
+.doc-tools-page :is(h1, h2, h3, p),
+.doc-tools-dialog :is(h2, p) {
+  margin: 0;
+}
+
+.doc-tools-heading {
+  display: grid;
+  gap: 3px;
+  margin-block-end: 4px;
+}
+
+.doc-tools-page h1 {
+  font: 650 25px/1.3 "Segoe UI", "Microsoft YaHei UI", sans-serif;
+}
+
+.doc-tools-page h2,
+.doc-tools-dialog h2 {
+  font: 650 16px/1.35 "Segoe UI", "Microsoft YaHei UI", sans-serif;
+}
+
+.doc-tools-page h3 {
+  font-size: 13px;
+  line-height: 1.4;
+}
+
+.doc-tools-heading p,
+.doc-tools-hint,
+.handoff-card-heading p,
+.doc-tools-field > span {
+  color: var(--tool-muted);
+}
+
+.doc-tools-hint,
+.doc-tools-field > span {
+  font-size: 12px;
+}
+
+.doc-tools-card {
+  min-width: 0;
+  display: grid;
+  align-content: start;
+  gap: 12px;
+  padding: 14px;
+  border: 1px solid var(--tool-line);
+  border-radius: 9px;
+  background: var(--tool-card);
+}
+
+.doc-tools-card-bar,
+.doc-tools-actions,
+.handoff-card-heading {
+  display: flex;
+  min-width: 0;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.doc-tools-card-bar,
+.handoff-card-heading {
+  justify-content: space-between;
+}
+
+.doc-tools-card-bar > :first-child,
+.handoff-card-heading > :first-child {
+  min-width: 0;
+}
+
+.doc-tools-actions > span {
+  min-width: 0;
+}
+
+.doc-tools-page button,
+.doc-tools-dialog button,
+.organizer-more summary {
+  display: inline-flex;
+  justify-content: center;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+  min-height: 32px;
+  max-width: 100%;
+  border: 1px solid var(--tool-line);
+  border-radius: 6px;
+  padding: 4px 10px;
+  background: var(--tool-card);
+  color: var(--tool-text);
+  line-height: 1.35;
+}
+
+.doc-tools-page button:hover:enabled,
+.doc-tools-dialog button:hover:enabled,
+.doc-tools-page summary:hover {
+  background: var(--tool-bg);
+  border-color: var(--tool-muted);
+}
+
+.doc-tools-page .doc-tools-primary,
+.doc-tools-dialog .doc-tools-primary {
+  border-color: transparent;
+  background: var(--tool-action);
+  color: var(--tool-action-ink);
+  font-weight: 600;
+}
+
+.doc-tools-page .doc-tools-primary:hover:enabled,
+.doc-tools-dialog .doc-tools-primary:hover:enabled {
+  border-color: transparent;
+  background: color-mix(in srgb, var(--tool-action) 88%, var(--tool-card));
+}
+
+.doc-tools-page .doc-tools-quiet {
+  border-color: transparent;
+  background: transparent;
+}
+
+.doc-tools-page .doc-tools-icon,
+.organizer-more summary {
+  flex: none;
+  width: 32px;
+  padding: 0;
+}
+
+.doc-tools-page button .ui-icon,
+.doc-tools-page summary .ui-icon {
+  width: 15px;
+  height: 15px;
+}
+
+.doc-tools-page :is(button, input, select, summary):focus-visible,
+.doc-tools-dialog :is(button, input, select):focus-visible,
+#handoff-review-title:focus-visible {
+  outline: 2px solid var(--tool-action);
+  outline-offset: 2px;
+}
+
+.doc-tools-field {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+:is(.doc-tools-page, .doc-tools-dialog) :is(input[type="text"], input[type="search"], select) {
+  min-width: 0;
+  min-height: 32px;
+  width: 100%;
+  border: 1px solid var(--tool-line);
+  border-radius: 6px;
+  padding: 4px 8px;
+  background: var(--tool-card);
+  color: var(--tool-text);
+}
+
+.doc-tools-page input::placeholder,
+.doc-tools-dialog input::placeholder {
+  color: var(--tool-muted);
+  opacity: 1;
+}
+
+.doc-tools-choice {
+  display: inline-flex;
+  min-width: 0;
+  min-height: 32px;
+  align-items: center;
+  gap: 6px;
+}
+
+.doc-tools-choice input {
+  flex: none;
+  margin: 0;
+  accent-color: var(--tool-action);
+}
+
+.doc-tools-state,
+.organizer-tags {
+  padding: 2px 7px;
+  border-radius: 6px;
+  background: var(--tool-tint);
+  color: var(--tool-action);
+  font-size: 12px;
+}
+
+.doc-tools-state[data-state="cancelled"] {
+  background: var(--tool-bg);
+  color: var(--tool-muted);
+}
+
+.doc-tools-status {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  padding: 8px 10px;
+  border-radius: 6px;
+  background: var(--tool-tint);
   overflow-wrap: anywhere;
-  box-shadow: none;
-  border: 1px solid var(--line);
 }
 
-.handoff-card h2,
-.handoff-card p,
-.handoff-card .banner p {
-  margin: 0;
+.doc-tools-empty {
+  display: flex;
+  align-items: center;
+  gap: 8px 12px;
+  flex-wrap: wrap;
+  padding: 14px 10px;
+  border-radius: 6px;
+  background: var(--tool-bg);
+  color: var(--tool-muted);
 }
 
-.handoff-card fieldset {
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  margin: 0;
+.doc-file-icon {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 32px;
+  height: 32px;
+  border-radius: 6px;
+  background: var(--tool-tint);
+  color: var(--tool-action);
 }
 
-.handoff-card fieldset label {
+.doc-file-icon .ui-icon {
+  width: 17px;
+  height: 17px;
+}
+
+.doc-truncate {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.handoff-card #ocr-language {
-  width: min(460px, 100%);
+.doc-tools-dialog {
+  width: min(100% - 24px, 470px);
+  max-height: calc(100% - 24px);
+  border: 1px solid var(--tool-line);
+  border-radius: 9px;
+  padding: 17px;
+  background: var(--tool-card);
 }
 
-.organizer-nav {
-  border-bottom: 1px solid var(--line);
-  padding-bottom: 12px;
-  margin-bottom: 16px;
+.doc-tools-dialog::backdrop {
+  background: rgb(12 21 18 / .46);
 }
 
-.organizer-record {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 8px;
-  padding: 10px 0;
-  border-bottom: 1px solid var(--line);
+.doc-tools-dialog form {
+  display: grid;
+  gap: 12px;
+}
+
+.doc-tools-dialog p {
+  white-space: pre-line;
   overflow-wrap: anywhere;
+  color: var(--tool-muted);
 }
 
-.organizer-record > :first-child {
-  min-width: min(260px, 100%);
+.doc-tools-dialog .doc-tools-actions {
+  justify-content: flex-end;
+}
+
+.doc-tools-dialog .doc-tools-danger {
+  border-color: var(--tool-danger);
+  color: var(--tool-danger);
+}
+
+.handoff-grid,
+.handoff-secondary,
+.organizer-workspace-grid {
+  display: grid;
+  align-items: start;
+  gap: 12px;
+  min-width: 0;
+}
+
+.handoff-grid {
+  grid-template-columns: minmax(0, 1.48fr) minmax(0, 1fr);
+}
+
+.handoff-card-heading {
+  align-items: flex-start;
+}
+
+.handoff-card-heading p {
+  margin-block-start: 3px;
+}
+
+.handoff-review {
+  border-inline-start: 3px solid var(--tool-action);
+}
+
+.handoff-inputs,
+.handoff-options {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+
+.handoff-input-empty {
+  border: 1px dashed var(--tool-line);
+}
+
+.handoff-formats {
+  min-width: 0;
+  margin: 0;
+  padding: 3px 0 0;
+  border: 0;
+}
+
+.handoff-formats legend {
+  padding: 0;
+  font-weight: 600;
+}
+
+.handoff-formats .doc-tools-actions {
+  gap: 0 12px;
+}
+
+.handoff-files,
+.organizer-list {
+  padding: 0;
+  margin: 0;
+  list-style: none;
+}
+
+.handoff-files,
+.handoff-candidates {
+  max-height: 240px;
+  overflow: auto;
+  display: grid;
+  gap: 1px;
+  border: 1px solid var(--tool-line);
+  border-radius: 6px;
+}
+
+.handoff-files > li {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  min-width: 0;
+  min-height: 36px;
+  padding: 3px 6px;
+}
+
+.handoff-files li + li,
+.handoff-candidates label + label {
+  border-top: 1px solid var(--tool-line);
+}
+
+.handoff-files .doc-truncate {
   flex: 1;
 }
 
-.organizer-record p {
-  margin-block: 4px 0;
+.handoff-files .doc-file-icon {
+  width: 25px;
+  height: 25px;
+}
+
+.handoff-candidates label {
+  padding: 4px 8px;
+}
+
+.doc-tools-detail {
+  min-width: 0;
+}
+
+.doc-tools-detail > summary {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 6px;
+  min-height: 32px;
+  padding: 4px 8px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  cursor: pointer;
+  list-style: none;
+}
+
+.doc-tools-detail > summary::-webkit-details-marker,
+.organizer-more summary::-webkit-details-marker {
+  display: none;
+}
+
+.doc-tools-detail[open] > summary .ui-icon {
+  transform: rotate(180deg);
+}
+
+.doc-tools-detail .handoff-options {
+  padding: 4px 8px 0;
+}
+
+.organizer-nav {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  padding: 3px;
+  gap: 2px;
+  border: 1px solid var(--tool-line);
+  border-radius: 8px;
+  background: var(--tool-bg);
+}
+
+.organizer-nav button {
+  padding-inline: 12px;
+  border-color: transparent;
+  background: transparent;
+}
+
+.organizer-nav button[aria-current="page"] {
+  border-color: var(--tool-line);
+  background: var(--tool-card);
+  color: var(--tool-action);
+  font-weight: 600;
+}
+
+.organizer-list {
+  min-width: 0;
+}
+
+.organizer-list > li + li {
+  border-top: 1px solid var(--tool-line);
+}
+
+.organizer-entry {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) max-content auto;
+  align-items: center;
+  gap: 9px;
+  min-width: 0;
+  padding-block: 7px;
+}
+
+.organizer-file {
+  display: grid;
+  justify-items: start;
+  align-content: center;
+  gap: 2px;
+  min-width: 0;
+}
+
+.organizer-file .doc-truncate {
+  max-width: 100%;
+}
+
+.organizer-file button.doc-truncate {
+  display: block;
+  margin-inline-start: -4px;
+  padding: 2px 3px;
+  text-align: start;
+  font-weight: 600;
+}
+
+.organizer-file > span:not(.organizer-tags),
+.organizer-size {
+  color: var(--tool-muted);
+  font-size: 12px;
+}
+
+.organizer-size {
+  display: grid;
+  text-align: right;
+  gap: 1px;
+}
+
+.organizer-more {
+  position: relative;
+  flex: none;
+  min-width: 0;
+}
+
+.organizer-more summary {
+  cursor: pointer;
+  list-style: none;
+}
+
+.organizer-menu {
+  display: grid;
+  position: absolute;
+  z-index: 2;
+  inset-inline-end: 0;
+  inset-block-start: calc(100% + 3px);
+  min-width: 152px;
+  max-width: 210px;
+  width: max-content;
+  gap: 2px;
+  padding: 4px;
+  border: 1px solid var(--tool-line);
+  border-radius: 7px;
+  background: var(--tool-card);
+  box-shadow: 0 5px 16px rgb(0 0 0 / .13);
+}
+
+.organizer-menu button {
+  justify-content: flex-start;
+  border-color: transparent;
+  text-align: start;
 }
 
 #organizer-search {
-  margin-block: 12px;
+  display: grid;
+  gap: 9px;
 }
 
-#organizer-search :is(input, select) {
-  max-width: min(270px, 55vw);
+.organizer-search-main,
+.organizer-search-options,
+.organizer-association-form {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: end;
+  gap: 8px;
+}
+
+.organizer-search-options {
+  grid-template-columns: minmax(0, 1.5fr) minmax(70px, .7fr) minmax(80px, .85fr) auto;
+}
+
+.organizer-association-form {
+  grid-template-columns: minmax(70px, 120px) 1fr;
+}
+
+.organizer-queries {
+  display: grid;
+  gap: 6px;
+  padding-block-start: 8px;
+  border-top: 1px solid var(--tool-line);
+}
+
+.organizer-query {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  max-width: 100%;
+  border: 1px solid var(--tool-line);
+  border-radius: 6px;
+}
+
+.organizer-query [data-organizer-query] {
+  display: block;
+}
+
+.organizer-workspace-grid {
+  grid-template-columns: minmax(190px, .7fr) minmax(0, 1.3fr);
+}
+
+.organizer-workspace-item,
+.organizer-history {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding-block: 4px;
+  overflow-wrap: anywhere;
+}
+
+.organizer-workspace-item button:first-child,
+.organizer-history span {
+  flex: 1;
+  justify-content: start;
+}
+
+.organizer-workspace-item button[aria-current] {
+  color: var(--tool-action);
+  background: var(--tool-tint);
+}
+
+.organizer-history time {
+  color: var(--tool-muted);
+}
+
+.organizer-move {
+  display: grid;
+  gap: 7px;
+  padding-block: 10px;
+}
+
+.organizer-move dl {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 4px 9px;
+  margin: 0;
+}
+
+.organizer-move dt {
+  color: var(--tool-muted);
+}
+
+.organizer-move dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.organizer-pagination {
+  justify-content: flex-end;
+  color: var(--tool-muted);
+}
+
+@container (max-width: 740px) {
+  .handoff-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .handoff-secondary {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .handoff-secondary > :only-child {
+    grid-column: 1 / -1;
+  }
+}
+
+@container (max-width: 580px) {
+  .handoff-secondary,
+  .organizer-workspace-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .organizer-nav button {
+    padding-inline: 8px;
+  }
+
+  .organizer-entry {
+    grid-template-columns: auto minmax(0, 1fr) auto;
+  }
+
+  .organizer-size {
+    grid-column: 2;
+    display: flex;
+    gap: 4px 9px;
+    flex-wrap: wrap;
+    text-align: start;
+  }
+
+  .organizer-entry:has(.organizer-size) > .doc-tools-actions {
+    grid-column: 3;
+    grid-row: 1 / span 2;
+  }
+
+  .organizer-search-options {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@container (max-width: 340px) {
+  .doc-tools-card {
+    padding: 10px;
+  }
+
+  .organizer-entry > .doc-tools-actions,
+  .organizer-entry:has(.organizer-size) > .doc-tools-actions {
+    grid-column: 2 / -1;
+    grid-row: auto;
+    justify-content: flex-start;
+  }
+
+  .organizer-association-form {
+    grid-template-columns: minmax(0, 1fr);
+  }
 }

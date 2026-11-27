@@ -26,30 +26,54 @@ function optionList(items) {
   return Object.entries(items).map(([key, label]) => `<option value="${key}">${h(label)}</option>`).join("");
 }
 
+function writingTitle(tab, label, actions) {
+  return `<header class="writing-heading">
+    <div class="writing-identity">
+      <span class="writing-kind-icon" aria-hidden="true">${icon(tab.kind)}</span>
+      <div class="writing-name">
+        <h1 title="${h(tab.path || tab.title)}">${h(tab.title)}</h1>
+        <div class="writing-file-meta">
+          <span>${label}${tab.encoding ? " · " + h(tab.encoding.toUpperCase()) : ""}</span>
+          <span class="writing-dirty" data-writing-dirty ${tab.dirty ? "" : "hidden"}>未保存</span>
+        </div>
+      </div>
+    </div>
+    <div class="writing-heading-actions">${actions}</div>
+  </header>`;
+}
+
 function markdownPanel(tab) {
   const session = writingSession(tab.id);
   const url = new URLSearchParams({tab: tab.id, token, theme: document.documentElement.dataset.theme || "light",
     font: state.settings.editorFontSize || 15, wrap: state.settings.wrapLines === false ? "off" : "soft"});
   return `
-    <div class="writing-panel" data-writing="markdown">
-      <div class="row writing-toolbar">
-        <div class="writing-modes" aria-label="Markdown 编辑模式">
+    <div class="writing-panel" data-writing="markdown" data-tab-id="${h(tab.id)}">
+      ${writingTitle(tab, "Markdown", `<button id="save-as">另存为…</button>
+        <select id="md-export" aria-label="导出 Markdown" disabled><option value="">${session.export ? "导出中…" : "导出"}</option><option value="html">导出 HTML…</option><option value="pdf">导出 PDF…</option></select>`)}
+      <div class="writing-toolbar" aria-label="Markdown 工具">
+        <div class="writing-modes" role="group" aria-label="Markdown 编辑模式">
           ${Object.entries({live: "即时编辑", split: "分屏", source: "源码"}).map(([mode, title]) =>
             `<button type="button" data-md-mode="${mode}" aria-pressed="${session.mode === mode}">${title}</button>`).join("")}
         </div>
-        <button id="md-outline" aria-pressed="${session.outline}">☷ 大纲</button>
-        <button data-md-format="bold" title="加粗（Ctrl+B）"><b>B</b></button>
-        <button data-md-format="italic" title="斜体（Ctrl+I）"><i>I</i></button>
-        <select id="md-insert" aria-label="插入"><option value="">＋ 插入</option>${optionList({
-          h1: "一级标题", h2: "二级标题", list: "无序列表", task: "任务列表", quote: "引用", table: "表格", code: "代码块",
-          math: "行内公式", display: "公式块", mermaid: "Mermaid 图示", footnote: "脚注", link: "链接",
-        })}</select>
-        <button id="md-image">插入图片</button><input id="md-image-file" type="file" accept="image/png,image/jpeg,image/gif,image/webp,image/bmp,image/svg+xml" hidden multiple>
         <span class="writing-spacer"></span>
-        <select id="md-export" aria-label="导出"><option value="">导出</option><option value="html">导出 HTML…</option><option value="pdf">导出 PDF…</option></select>
-        <button id="save-as">另存为…</button>
+        <div class="writing-actions" role="group" aria-label="格式">
+          <button class="writing-icon-button" data-md-format="bold" title="加粗（Ctrl+B）" aria-label="加粗"><b>B</b></button>
+          <button class="writing-icon-button" data-md-format="italic" title="斜体（Ctrl+I）" aria-label="斜体"><i>I</i></button>
+        </div>
+        <div class="writing-actions" role="group" aria-label="插入与导航">
+          <select id="md-insert" aria-label="插入"><option value="">插入</option>
+            <optgroup label="段落">${optionList({h1: "一级标题", h2: "二级标题", list: "无序列表", task: "任务列表", quote: "引用"})}</optgroup>
+            <optgroup label="内容">${optionList({table: "表格", code: "代码块", math: "行内公式", display: "公式块", mermaid: "Mermaid 图示", footnote: "脚注", link: "链接"})}</optgroup>
+          </select>
+          <button id="md-image">插入图片</button><input id="md-image-file" type="file" accept="image/png,image/jpeg,image/gif,image/webp,image/bmp,image/svg+xml" hidden multiple>
+          <button id="md-outline" aria-pressed="${session.outline}">${icon("sidebar")} 大纲</button>
+        </div>
       </div>
-      <iframe id="markdown-frame" title="Markdown 编辑器" sandbox="allow-scripts" data-tab="${h(tab.id)}" src="/markdown-editor.html?${h(url)}"></iframe>
+      <div class="markdown-frame-wrap" aria-busy="true">
+        <div class="markdown-frame-loading" role="status">正在加载编辑器…</div>
+        <iframe id="markdown-frame" title="Markdown 编辑器" sandbox="allow-scripts" data-tab="${h(tab.id)}" src="/markdown-editor.html?${h(url)}"></iframe>
+      </div>
+      <div id="md-export-status" class="writing-feedback" aria-live="polite" ${session.markdownStatus ? "" : "hidden"}>${h(session.markdownStatus || "")}</div>
     </div>`;
 }
 
@@ -75,14 +99,43 @@ function captureWritingSession() {
   }
 }
 
+function markWritingDirty(id) {
+  const panel = document.querySelector(".writing-panel");
+  if (panel?.dataset.tabId === id) panel.querySelector("[data-writing-dirty]").hidden = false;
+}
+
+function markdownExportState(session, frame, text = "") {
+  session.markdownStatus = text;
+  const mounted = document.getElementById("markdown-frame");
+  if (mounted?.dataset.tab !== frame.dataset.tab) return;
+  const panel = mounted.closest(".writing-panel");
+  const status = panel.querySelector("#md-export-status");
+  const picker = panel.querySelector("#md-export");
+  status.textContent = text;
+  status.hidden = !text;
+  picker.disabled = Boolean(session.export) || mounted.dataset.ready !== "true";
+  picker.options[0].textContent = session.export ? "导出中…" : "导出";
+}
+
 function bindMarkdown(tab) {
   const frame = document.getElementById("markdown-frame");
   if (!frame) return;
   const session = writingSession(tab.id);
-  document.querySelectorAll("[data-md-mode]").forEach((button) => button.onclick = () => {
-    session.mode = button.dataset.mdMode;
-    markdownCommand("setMode", session.mode);
-    document.querySelectorAll("[data-md-mode]").forEach((item) => item.setAttribute("aria-pressed", item === button));
+  const modes = [...document.querySelectorAll("[data-md-mode]")];
+  modes.forEach((button, index) => {
+    button.onclick = () => {
+      session.mode = button.dataset.mdMode;
+      markdownCommand("setMode", session.mode);
+      modes.forEach((item) => item.setAttribute("aria-pressed", item === button));
+    };
+    button.onkeydown = (event) => {
+      const direction = event.key === "ArrowLeft" ? -1 : event.key === "ArrowRight" ? 1 : 0;
+      if (!direction) return;
+      event.preventDefault();
+      const next = modes[(index + direction + modes.length) % modes.length];
+      next.focus();
+      next.click();
+    };
   });
   const outline = document.getElementById("md-outline");
   outline.onclick = () => {
@@ -121,6 +174,7 @@ function bindMarkdown(tab) {
     const path = await saveWritingOutput(format, tab);
     if (path && frame.isConnected) {
       session.export = {format, path};
+      markdownExportState(session, frame, format === "pdf" ? "正在生成排版 PDF…" : "正在生成 HTML…");
       markdownCommand("requestExport", format);
     }
   };
@@ -136,15 +190,22 @@ window.addEventListener("message", async (event) => {
   if (event.origin !== "null" || !frame || event.source !== frame.contentWindow || !event.data?.gaoMarkdown) return;
   const id = frame.dataset.tab;
   const tab = state.tabs.find((item) => item.id === id);
+  if (!tab) return;
   const session = writingSession(id);
   const data = event.data;
   try {
     if (data.kind === "ready") {
       frame.dataset.ready = "true";
+      frame.closest(".markdown-frame-wrap").setAttribute("aria-busy", "false");
+      markdownExportState(session, frame, session.markdownStatus);
       markdownCommand("load", tab.text, session.mode, session.outline, session.editor);
+      if (session.export && !session.export.printing) markdownCommand("requestExport", session.export.format);
     }
     if (data.kind === "snapshot") session.editor = data.snapshot;
-    if (data.kind === "change") stageEdit({id, text: data.text});
+    if (data.kind === "change") {
+      stageEdit({id, text: data.text});
+      markWritingDirty(id);
+    }
     if (data.kind === "save") await saveTab(false);
     if (data.kind === "pasteImage") await insertMarkdownImage(id, data.name, data.data, frame);
     if (data.kind === "link") {
@@ -153,18 +214,26 @@ window.addEventListener("message", async (event) => {
     }
     if (data.kind === "exportReady" && session.export?.format === data.format) {
       const requested = session.export;
-      session.export = null;
-      await flushEdits(id);
-      if (requested.format === "pdf" && window.pywebview?.api) {
-        await window.pywebview.api.print_markdown(id, requested.path, data.html);
-      } else {
-        await api("/api/export/" + requested.format, {id, path: requested.path, html: data.html});
+      if (requested.printing) return;
+      requested.printing = true;
+      try {
+        await flushEdits(id);
+        if (requested.format === "pdf" && window.pywebview?.api) {
+          await window.pywebview.api.print_markdown(id, requested.path, data.html);
+        } else {
+          await api("/api/export/" + requested.format, {id, path: requested.path, html: data.html});
+        }
+        session.export = null;
+        markdownExportState(session, frame, "已导出 " + requested.path.replace(/^.*[\\/]/, ""));
+      } catch (error) {
+        session.export = null;
+        markdownExportState(session, frame, "");
+        throw error;
       }
-      const status = document.getElementById("status");
-      if (status) status.textContent = "已导出 " + requested.path;
     }
     if (data.kind === "error") {
       session.export = null;
+      markdownExportState(session, frame, "");
       throw new Error(data.message);
     }
   } catch (error) { fail(error); }
@@ -178,47 +247,61 @@ function latexPanel(tab) {
   const width = Math.max(800, Math.min(2500, Math.ceil(1100 * devicePixelRatio * session.zoom)));
   const engine = session.engine || state.settings.latexEngine;
   const wrap = state.settings.wrapLines === false ? "off" : "soft";
+  const compileState = session.busy ? ["busy", "编译中"] : result.success ? ["success", "编译成功"] :
+    result.success === false ? ["error", "编译未完成"] : ["idle", "尚未编译"];
   return `
-    <div class="writing-panel" data-writing="latex">
-      <div class="row writing-toolbar">
-        <button id="latex-sidebar" aria-pressed="${session.latexSidebar}" title="显示结构与诊断">☷ 结构</button>
-        <select id="latex-insert" aria-label="插入 LaTeX"><option value="">＋ 插入</option>
+    <div class="writing-panel" data-writing="latex" data-tab-id="${h(tab.id)}">
+      ${writingTitle(tab, "LaTeX", `<button id="save-as">另存为…</button>
+        <button id="latex-external" ${pages.length ? "" : "disabled"}>独立阅读</button>
+        <button id="latex-export" ${pages.length ? "" : "disabled"}>导出 PDF…</button>`)}
+      <div class="writing-toolbar latex-toolbar" aria-label="LaTeX 工具">
+        <div class="writing-actions" role="group" aria-label="源码工具">
+          <button id="latex-sidebar" aria-pressed="${session.latexSidebar}" aria-controls="latex-index" title="显示结构与诊断">${icon("sidebar")} 结构</button>
+          <select id="latex-insert" aria-label="插入 LaTeX"><option value="">插入</option>
           <optgroup label="数学公式">${optionList({fraction: "分式", sqrt: "根号", sum: "求和", integral: "积分", equation: "行间编号公式", align: "多行对齐公式"})}</optgroup>
           <optgroup label="常用环境">${optionList({itemize: "项目符号", enumerate: "编号列表", figure: "插图", table: "表格"})}</optgroup>
           <optgroup label="文本样式与引用">${optionList({bold: "加粗", italic: "斜体", emphasis: "强调", section: "一级节", subsection: "二级节", label: "标签", ref: "引用", cite: "文献引用"})}</optgroup>
-        </select>
-        <select id="latex-engine" aria-label="编译器">
-          ${Object.entries({auto: "自动", tectonic: "Tectonic · 离线", xelatex: "xelatex", pdflatex: "pdflatex", lualatex: "lualatex"}).map(([id, label]) =>
-            `<option value="${id}" ${engine === id ? "selected" : ""}>${label}</option>`).join("")}
-        </select>
-        <button id="latex-master" title="选择 LaTeX 主文件">${h(session.main?.split(/[\\/]/).pop() || session.autoMain || "当前文件")}</button>
-        <button id="latex-clear-master" title="恢复使用当前或自动识别的主文件" ${session.main ? "" : "hidden"}>清除指定</button>
+          </select>
+        </div>
         <span class="writing-spacer"></span>
-        <button id="latex-compile" title="编译（Ctrl+B）">▶ 编译</button>
-        <button id="latex-forward" ${pages.length ? "" : "disabled"}>定位 PDF</button>
-        <button id="latex-export" ${pages.length ? "" : "disabled"}>导出 PDF…</button>
-        <button id="latex-external" ${pages.length ? "" : "disabled"}>独立阅读</button>
-        <button id="latex-log" aria-pressed="${session.log}">日志</button>
-        <button id="save-as">另存为…</button>
+        <div class="writing-actions latex-build-tools" role="group" aria-label="编译工具">
+          <label class="latex-engine-field"><span>引擎</span><select id="latex-engine" aria-label="编译器">
+            ${Object.entries({auto: "自动", tectonic: "Tectonic · 离线", xelatex: "xelatex", pdflatex: "pdflatex", lualatex: "lualatex"}).map(([id, label]) =>
+              `<option value="${id}" ${engine === id ? "selected" : ""}>${label}</option>`).join("")}
+          </select></label>
+          <button id="latex-master" title="选择 LaTeX 主文件">${h(session.main?.split(/[\\/]/).pop() || session.autoMain || "当前文件")}</button>
+          <button id="latex-clear-master" aria-label="恢复使用当前或自动识别的主文件" title="恢复使用当前或自动识别的主文件" ${session.main ? "" : "hidden"}>清除指定</button>
+          <button id="latex-log" aria-pressed="${session.log}" aria-controls="latex-log-panel">日志</button>
+          <button id="latex-compile" class="writing-primary" title="编译（Ctrl+B）" ${session.busy ? "disabled aria-busy='true'" : ""}><span aria-hidden="true">▶</span> <span data-compile-label>${session.busy ? "编译中…" : "编译"}</span></button>
+        </div>
       </div>
-      <div class="latex-layout ${session.latexSidebar ? "latex-show-sidebar" : ""}">
-        <aside class="latex-index">
-          <div class="row"><button data-latex-pane="index" aria-pressed="${session.latexPane === "index"}">结构</button>
-          <button data-latex-pane="diagnostics" aria-pressed="${session.latexPane === "diagnostics"}">诊断 ${result.diagnostics?.length || ""}</button></div>
+      <div class="latex-layout ${session.latexSidebar ? "latex-show-sidebar" : ""}" data-build-state="${compileState[0]}">
+        <aside id="latex-index" class="latex-index" aria-label="文档结构和编译诊断">
+          <div class="writing-subheading latex-index-heading">
+            <div class="writing-modes" role="group" aria-label="结构与诊断">
+              <button data-latex-pane="index" aria-pressed="${session.latexPane === "index"}">结构</button>
+              <button data-latex-pane="diagnostics" aria-pressed="${session.latexPane === "diagnostics"}">诊断${result.diagnostics?.length ? " · " + result.diagnostics.length : ""}</button>
+            </div>
+          </div>
           <div id="latex-index-items"></div>
         </aside>
         <div class="latex-source-panel">
-          <div class="row latex-source-title"><b>LaTeX 源码</b><span class="writing-spacer"></span><button id="latex-complete" title="补全（Ctrl+空格）">补全</button></div>
+          <div class="writing-subheading latex-source-title"><strong>源码</strong><span class="writing-spacer"></span>
+            <button id="latex-complete" title="补全（Ctrl+空格）">补全</button></div>
           <div class="latex-source-area"><div class="latex-numbers" aria-hidden="true"></div><div class="latex-code-surface">
-            <pre class="latex-highlight" aria-hidden="true"></pre><textarea class="editor latex-source" data-tab="${h(tab.id)}" aria-label="LaTeX 源码" spellcheck="false" wrap="${wrap}">${h(tab.text)}</textarea></div></div>
+            <pre class="latex-highlight" aria-hidden="true"></pre><textarea id="latex-source" class="editor latex-source" data-tab="${h(tab.id)}" aria-label="LaTeX 源码" spellcheck="false" wrap="${wrap}">${h(tab.text)}</textarea></div></div>
           <div id="latex-completions" class="latex-completions" hidden></div>
         </div>
-        <section class="latex-preview">
-          <div class="row latex-preview-toolbar"><b>PDF 预览</b><span class="writing-spacer"></span>
-          ${page ? `<button id="latex-page-prev" title="上一页" aria-label="上一页" ${session.page ? "" : "disabled"}>‹</button><span id="latex-page-count">${page.number} / ${pages.length}</span><button id="latex-page-next" title="下一页" aria-label="下一页" ${session.page + 1 < pages.length ? "" : "disabled"}>›</button>
-          <button id="latex-zoom-out" title="缩小" aria-label="缩小">−</button><button id="latex-actual" title="实际大小">100%</button><button id="latex-zoom-in" title="放大" aria-label="放大">＋</button>
-          <button id="latex-fit-width" title="适应宽度" aria-label="适应宽度">↔</button><button id="latex-fit-page" title="适应页面" aria-label="适应页面">↕</button>` : ""}
+        <section class="latex-preview" aria-label="LaTeX PDF 预览">
+          <div class="writing-subheading"><strong>PDF 预览</strong><span class="writing-spacer"></span>
+            <span class="latex-build-state" data-build-label>${compileState[1]}</span>
+            <button id="latex-forward" title="将当前源码行定位到 PDF" ${pages.length ? "" : "disabled"}>定位</button>
           </div>
+          ${page ? `<div class="latex-preview-toolbar" aria-label="PDF 导航和缩放">
+            <div class="writing-actions" role="group" aria-label="页码"><button id="latex-page-prev" title="上一页" aria-label="上一页" ${session.page ? "" : "disabled"}>‹</button><span id="latex-page-count">${page.number} / ${pages.length}</span><button id="latex-page-next" title="下一页" aria-label="下一页" ${session.page + 1 < pages.length ? "" : "disabled"}>›</button></div>
+            <div class="writing-actions" role="group" aria-label="缩放"><button id="latex-zoom-out" title="缩小" aria-label="缩小">−</button><button id="latex-actual" title="实际大小">100%</button><button id="latex-zoom-in" title="放大" aria-label="放大">＋</button>
+            <button id="latex-fit-width" title="适应宽度" aria-label="适应宽度">↔</button><button id="latex-fit-page" title="适应页面" aria-label="适应页面">↕</button></div>
+          </div>` : ""}
           <div class="latex-preview-scroll">${page ? pages.map((pdfPage, index) => {
             const flags = new URLSearchParams({tab: tab.id, token, generation: result.generation || "", page: index, width});
             const paperWidth = session.zoomMode === "page" ?
@@ -227,11 +310,14 @@ function latexPanel(tab) {
             return `<div class="latex-paper" data-latex-page="${index}" style="width:${paperWidth};aspect-ratio:${pdfPage.width}/${pdfPage.height}">
               <img class="latex-page-image" ${session.page === index ? 'id="latex-paper"' : 'loading="lazy"'} src="/api/latex/page?${h(flags)}" alt="编译 PDF 第 ${pdfPage.number} 页" title="按住 Ctrl 点击以返回源码"><i class="latex-pin" hidden></i></div>`;
           }).join("") :
-            '<div class="latex-empty muted">编译后在这里预览 PDF</div>'}</div>
+            `<div class="latex-empty"><span class="latex-empty-icon" aria-hidden="true">${icon("doc")}</span><strong>编译后在这里预览 PDF</strong></div>`}</div>
         </section>
       </div>
-      ${session.log ? `<pre class="latex-log" aria-label="编译日志">${h(result.log || "尚未运行编译。")}</pre>` : ""}
-      <div class="writing-status" aria-live="polite">${h(session.status || "")}</div>
+      <section id="latex-log-panel" class="latex-log-panel" ${session.log ? "" : "hidden"} aria-label="编译日志">
+        <div class="writing-subheading"><strong>编译日志</strong><span class="writing-spacer"></span><button id="latex-close-log" aria-label="关闭编译日志">${icon("close")}</button></div>
+        <pre class="latex-log" tabindex="0">${h(result.log || "尚未运行编译。")}</pre>
+      </section>
+      <div class="writing-status writing-feedback" aria-live="polite" ${session.status ? "" : "hidden"}>${h(session.status || "")}</div>
     </div>`;
 }
 
@@ -269,18 +355,36 @@ function bindLatex(tab) {
   const source = panel.querySelector(".latex-source");
   const paint = panel.querySelector(".latex-highlight");
   const numbers = panel.querySelector(".latex-numbers");
+  const layout = panel.querySelector(".latex-layout");
   const newline = tab.text.includes("\r\n") ? "\r\n" : "\n";
   const nativeText = (value) => newline === "\r\n" ? value.replace(/\n/g, "\r\n") : value;
   const pane = byId("latex-index-items");
-  const status = (text) => { session.status = text; panel.querySelector(".writing-status").textContent = text; };
+  const status = (text) => {
+    session.status = text;
+    const notice = panel.querySelector(".writing-status");
+    notice.textContent = text;
+    notice.hidden = !text;
+  };
+  const renderWithFocus = (control, focused = document.activeElement === control) => {
+    render();
+    if (focused && control.id) document.getElementById(control.id)?.focus({preventScroll: true});
+  };
   const showIndex = () => {
     const data = session.latexPane === "diagnostics" ? tab.preview?.diagnostics : session.index?.nodes;
     pane.replaceChildren();
     for (const item of data || []) {
-      const button = document.createElement("button");
-      button.textContent = [item.line, item.message || item.title].filter(Boolean).join("  ");
-      button.title = item.detail || item.title || "";
-      button.onclick = async () => {
+      const entry = document.createElement(item.line || item.file ? "button" : "div");
+      entry.className = "latex-index-entry";
+      if (item.severity) entry.dataset.severity = item.severity;
+      entry.title = item.detail || item.title || "";
+      const line = document.createElement("span");
+      line.className = "latex-index-item-line";
+      line.textContent = item.line || "–";
+      const name = document.createElement("span");
+      name.className = "latex-index-item-name";
+      name.textContent = item.message || item.title;
+      entry.append(line, name);
+      if (entry.tagName === "BUTTON") entry.onclick = async () => {
         const filename = item.file;
         if (filename && tab.path && filename.split(/[\\/]/).pop() !== tab.title) {
           const root = tab.preview?.source || session.main || tab.path;
@@ -289,9 +393,14 @@ function bindLatex(tab) {
         }
         if (item.line) jumpLatex(document.querySelector(".latex-source"), item.line);
       };
-      pane.append(button);
+      pane.append(entry);
     }
-    if (!pane.childNodes.length) pane.textContent = session.latexPane === "diagnostics" ? "没有编译诊断" : "文档中没有章节、插图或引用";
+    if (!pane.childNodes.length) {
+      const empty = document.createElement("p");
+      empty.className = "latex-index-empty";
+      empty.textContent = session.latexPane === "diagnostics" ? "没有编译诊断" : "文档中没有章节、插图或引用";
+      pane.append(empty);
+    }
   };
   const refreshIndex = async () => {
     await flushEdits(tab.id);
@@ -311,7 +420,8 @@ function bindLatex(tab) {
   const updateNumbers = () => {
     const probe = document.createElement("div");
     probe.className = "latex-line-measure";
-    probe.style.width = Math.max(1, source.clientWidth - 16) + "px";
+    const horizontalPadding = parseFloat(getComputedStyle(source).paddingInlineStart);
+    probe.style.width = Math.max(1, source.clientWidth - 2 * horizontalPadding) + "px";
     const lines = source.value.split("\n");
     const counts = document.createDocumentFragment();
     if (source.wrap === "soft") {
@@ -329,12 +439,13 @@ function bindLatex(tab) {
     numbers.replaceChildren(counts);
     probe.remove();
     paint.style.whiteSpace = source.wrap === "soft" ? "pre-wrap" : "pre";
-    paint.style.paddingRight = 8 + source.offsetWidth - source.clientWidth + "px";
+    paint.style.paddingRight = horizontalPadding + source.offsetWidth - source.clientWidth + "px";
     paint.innerHTML = colorLatex(source.value);
     mirrorScroll();
   };
   source.oninput = (event) => {
     stageEdit({id: tab.id, text: nativeText(source.value)});
+    markWritingDirty(tab.id);
     updateNumbers();
     clearTimeout(indexTimer);
     indexTimer = setTimeout(() => refreshIndex().catch(fail), 450);
@@ -365,14 +476,31 @@ function bindLatex(tab) {
     panel.querySelectorAll("[data-latex-pane]").forEach((item) => item.setAttribute("aria-pressed", item === button));
     showIndex();
   });
-  byId("latex-sidebar").onclick = () => { session.latexSidebar = !session.latexSidebar; render(); };
-  byId("latex-log").onclick = () => { session.log = !session.log; render(); };
+  byId("latex-sidebar").onclick = () => {
+    session.latexSidebar = !session.latexSidebar;
+    layout.classList.toggle("latex-show-sidebar", session.latexSidebar);
+    byId("latex-sidebar").setAttribute("aria-pressed", session.latexSidebar);
+  };
+  const setLogVisible = (visible) => {
+    session.log = visible;
+    byId("latex-log-panel").hidden = !visible;
+    byId("latex-log").setAttribute("aria-pressed", visible);
+  };
+  byId("latex-log").onclick = () => setLogVisible(!session.log);
+  byId("latex-close-log").onclick = () => {
+    setLogVisible(false);
+    byId("latex-log").focus({preventScroll: true});
+  };
   byId("latex-engine").onchange = ({target}) => { session.engine = target.value; };
   byId("latex-master").onclick = async () => {
-    try { const path = await fileDialog("open"); if (path) { session.main = path; render(); } }
+    try { const path = await fileDialog("open"); if (path) { session.main = path; renderWithFocus(byId("latex-master")); } }
     catch (error) { if (!error.message.includes("没有选择")) fail(error); }
   };
-  byId("latex-clear-master").onclick = () => { session.main = null; render(); };
+  byId("latex-clear-master").onclick = () => {
+    session.main = null;
+    render();
+    document.getElementById("latex-master")?.focus({preventScroll: true});
+  };
 
   const insert = (value, back = 0, start = source.selectionStart) => {
     source.setRangeText(value, start, source.selectionEnd, "end");
@@ -407,14 +535,23 @@ function bindLatex(tab) {
 
   const compile = async () => {
     if (session.busy) return;
+    const previousStatus = session.status || "";
+    const previousStage = layout.dataset.buildState;
+    const buildLabel = panel.querySelector("[data-build-label]");
+    const previousBuildLabel = buildLabel.textContent;
+    const initialFocus = document.activeElement;
+    let completed = false;
     session.busy = true;
-    session.status = "正在本地编译…";
     const button = byId("latex-compile");
     button.disabled = true;
-    status(session.status);
+    button.setAttribute("aria-busy", "true");
+    button.querySelector("[data-compile-label]").textContent = "编译中…";
+    layout.dataset.buildState = "busy";
+    buildLabel.textContent = "编译中";
+    status("正在本地编译…");
     try {
       await flushEdits(tab.id);
-      let current = state.tabs.find((item) => item.id === tab.id);
+      const current = state.tabs.find((item) => item.id === tab.id);
       if (current.dirty || !current.path) {
         if (!current.path) {
           const path = await saveWritingOutput("tex", current);
@@ -425,7 +562,8 @@ function bindLatex(tab) {
         }
       }
       const {result} = await api("/api/tabs/compile", {id: tab.id, main: session.main, engine: session.engine});
-      session.status = state.status;
+      completed = true;
+      session.status = "";
       if (result.success) {
         session.page = 0;
         session.pin = null;
@@ -434,9 +572,25 @@ function bindLatex(tab) {
         session.latexPane = "diagnostics";
         session.log = true;
       }
-      if (panel.isConnected) render();
-    } catch (error) { fail(error); }
-    finally { session.busy = false; button.disabled = false; }
+    } catch (error) {
+      session.busy = false;
+      session.status = previousStatus;
+      fail(error);
+    } finally {
+      session.busy = false;
+      if (panel.isConnected && completed) {
+        if (initialFocus === button || initialFocus === source) renderWithFocus(initialFocus, true);
+        else render();
+      }
+      else if (panel.isConnected) {
+        button.disabled = false;
+        button.removeAttribute("aria-busy");
+        button.querySelector("[data-compile-label]").textContent = "编译";
+        layout.dataset.buildState = previousStage;
+        buildLabel.textContent = previousBuildLabel;
+        status(previousStatus);
+      }
+    }
   };
   byId("latex-compile").onclick = compile;
   panel.addEventListener("keydown", (event) => {
@@ -466,7 +620,7 @@ function bindLatex(tab) {
       return;
     }
     const url = new URLSearchParams({tab: tab.id, token});
-    window.open("/api/latex/document?" + url, "_blank", "popup,width=900,height=850");
+    window.open("/latex-reader.html?" + url, "_blank", "popup,width=1000,height=850");
   };
   const pages = tab.preview?.pages || [];
   const scroll = panel.querySelector(".latex-preview-scroll");
@@ -483,15 +637,15 @@ function bindLatex(tab) {
       scroll.scrollTop += active.getBoundingClientRect().top - scroll.getBoundingClientRect().top - 10;
     }
   };
-  const setZoom = (mode, zoom = 1) => { session.zoom = zoom; session.zoomMode = mode; render(); };
+  const setZoom = (control, mode, zoom = 1) => { session.zoom = zoom; session.zoomMode = mode; renderWithFocus(control); };
   if (papers.length) {
     byId("latex-page-prev").onclick = () => selectPage(session.page - 1, true);
     byId("latex-page-next").onclick = () => selectPage(session.page + 1, true);
-    byId("latex-zoom-in").onclick = () => setZoom("width", Math.min(3, session.zoom + 0.2));
-    byId("latex-zoom-out").onclick = () => setZoom("width", Math.max(0.45, session.zoom - 0.2));
-    byId("latex-actual").onclick = () => setZoom("actual");
-    byId("latex-fit-width").onclick = () => setZoom("width");
-    byId("latex-fit-page").onclick = () => setZoom("page");
+    byId("latex-zoom-in").onclick = (event) => setZoom(event.currentTarget, "width", Math.min(3, session.zoom + 0.2));
+    byId("latex-zoom-out").onclick = (event) => setZoom(event.currentTarget, "width", Math.max(0.45, session.zoom - 0.2));
+    byId("latex-actual").onclick = (event) => setZoom(event.currentTarget, "actual");
+    byId("latex-fit-width").onclick = (event) => setZoom(event.currentTarget, "width");
+    byId("latex-fit-page").onclick = (event) => setZoom(event.currentTarget, "page");
     selectPage(session.page, true);
     scroll.addEventListener("scroll", () => {
       const top = scroll.getBoundingClientRect().top;
@@ -522,14 +676,15 @@ function bindLatex(tab) {
       } catch (error) { status(error.message); }
     };
   });
-  byId("latex-forward").onclick = async () => {
+  byId("latex-forward").onclick = async (event) => {
+    const control = event.currentTarget;
     try {
       const line = source.value.slice(0, source.selectionStart).split("\n").length;
       const {result} = await api("/api/tabs/synctex", {id: tab.id, direction: "forward", line});
       session.pin = result;
       session.page = result.Page - 1;
       status("已定位到 PDF 第 " + result.Page + " 页");
-      render();
+      renderWithFocus(control);
     } catch (error) { status(error.message); }
   };
 }

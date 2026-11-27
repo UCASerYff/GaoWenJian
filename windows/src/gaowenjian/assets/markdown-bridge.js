@@ -12,6 +12,13 @@ const font = Math.max(11, Math.min(24, Number(editorConfig.get("font")) || 15));
 document.documentElement.style.setProperty("--md-editor-size", font + "px");
 document.getElementById("source").wrap = editorConfig.get("wrap") === "off" ? "off" : "soft";
 window.gaoMarkdownDark = () => document.documentElement.dataset.theme === "dark";
+const outline = document.getElementById("outline-items");
+outline.addEventListener("click", (event) => {
+  const active = event.target.closest("button");
+  if (!active) return;
+  outline.querySelector("[aria-current]")?.removeAttribute("aria-current");
+  if (active.isConnected) active.setAttribute("aria-current", "location");
+});
 document.addEventListener("keydown", (event) => {
   if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "s") {
     event.preventDefault();

@@ -1,76 +1,302 @@
-.writing-panel {
+.main-panel:has(> .writing-panel) {
   display: flex;
+  min-height: 0;
   flex-direction: column;
-  min-height: min(680px, 72vh);
-  height: 100%;
-  min-width: 0;
-  background: var(--panel);
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  overflow: hidden;
+  padding: 10px 12px;
 }
-.writing-toolbar { flex: 0 0 auto; flex-wrap: wrap; min-height: 42px; padding: 7px 10px; border-bottom: 1px solid var(--line); }
-.writing-toolbar select, .writing-toolbar button, .latex-preview-toolbar button { min-height: 29px; }
-.writing-panel .writing-toolbar select { flex: 0 0 auto; width: auto; max-width: 12rem; }
-.writing-spacer { flex: 1; }
-.writing-modes { display: inline-flex; }
-.writing-modes button { border-radius: 0; margin-left: -1px; }
-.writing-modes button:first-child { border-radius: 6px 0 0 6px; margin-left: 0; }
-.writing-modes button:last-child { border-radius: 0 6px 6px 0; }
-.writing-panel button[aria-pressed="true"] { background: var(--green-soft); color: var(--green); border-color: var(--green); }
-#markdown-frame { display: block; flex: 1 1 auto; width: 100%; min-height: 420px; border: 0; }
-.latex-layout { flex: 1 1 auto; min-height: 350px; display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
-.latex-layout.latex-show-sidebar { grid-template-columns: minmax(126px, .48fr) minmax(0, 1fr) minmax(0, 1fr); }
-.latex-index { display: none; min-width: 0; overflow: auto; border-right: 1px solid var(--line); background: var(--sidebar); padding: 9px; }
-.latex-show-sidebar .latex-index { display: block; }
-#latex-index-items { padding: 9px 0; color: var(--muted); }
-#latex-index-items button { text-align: left; display: block; border: 0; background: transparent; overflow-wrap: anywhere; width: 100%; }
-#latex-index-items button:hover { background: var(--green-soft); }
-.latex-source-panel, .latex-preview { display: flex; flex-direction: column; position: relative; min-width: 0; min-height: 0; }
-.latex-source-panel { border-right: 1px solid var(--line); }
-.latex-source-title, .latex-preview-toolbar { min-height: 41px; padding: 5px 9px; border-bottom: 1px solid var(--line); }
-.latex-preview-toolbar { column-gap: 4px; row-gap: 4px; }
-.latex-preview-toolbar button { padding-inline: 6px; }
-#latex-page-count { white-space: nowrap; }
-.latex-source-area { display: flex; flex: 1; min-height: 0; overflow: hidden; }
+
+.writing-panel {
+  --writing-stage: #f3f5f5;
+  --writing-line: #dce3e0;
+  --writing-focus: #176755;
+  --writing-selection: #e3f2ed;
+  --writing-md: #486a81;
+  --writing-md-fill: #edf3f7;
+  --writing-tex: #176755;
+  --writing-tex-fill: #e7f1ed;
+  container: writing / inline-size;
+  display: flex;
+  min-width: 0;
+  min-height: 490px;
+  flex: 1 0 auto;
+  flex-direction: column;
+  overflow: hidden;
+  color: var(--ink);
+  background: var(--panel);
+  border: 1px solid var(--writing-line);
+  border-radius: 10px;
+}
+
+:root[data-theme="dark"] .writing-panel {
+  --writing-stage: #151a19;
+  --writing-line: #35413d;
+  --writing-focus: #8edbc0;
+  --writing-selection: #294139;
+  --writing-md: #acc9dc;
+  --writing-md-fill: #293840;
+  --writing-tex: #8edbc0;
+  --writing-tex-fill: #263c34;
+}
+
+.writing-panel [hidden] { display: none !important; }
+.writing-panel button, .writing-panel select {
+  min-height: 32px;
+  border-radius: 7px;
+  white-space: nowrap;
+}
+.writing-panel button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+}
+.writing-panel button:not(:disabled):hover, .writing-panel select:not(:disabled):hover {
+  border-color: var(--writing-focus);
+}
+.writing-panel button:focus-visible, .writing-panel select:focus-visible,
+.writing-panel textarea:focus-visible, .writing-panel pre[tabindex]:focus-visible {
+  outline: 2px solid var(--writing-focus);
+  outline-offset: 2px;
+}
+.writing-panel .ui-icon { width: 15px; height: 15px; flex: none; }
+
+.writing-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px 14px;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--writing-line);
+}
+.writing-identity, .writing-heading-actions, .writing-actions {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 6px;
+}
+.writing-heading-actions { flex-wrap: wrap; justify-content: flex-end; margin-inline-start: auto; }
+.writing-identity { flex: 1 1 170px; gap: 11px; }
+.writing-kind-icon {
+  display: grid;
+  width: 38px;
+  height: 38px;
+  flex: none;
+  place-items: center;
+  color: var(--writing-md);
+  background: var(--writing-md-fill);
+  border-radius: 9px;
+}
+.writing-kind-icon .ui-icon { width: 22px; height: 22px; }
+[data-writing="latex"] .writing-kind-icon { color: var(--writing-tex); background: var(--writing-tex-fill); }
+.writing-name { min-width: 0; }
+.writing-heading h1 {
+  overflow: hidden;
+  margin: 0;
+  font-size: 17px;
+  font-weight: 650;
+  line-height: 1.3;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.writing-file-meta { display: flex; align-items: center; gap: 9px; margin-top: 3px; font-size: 11px; color: var(--muted); }
+.writing-file-meta span.writing-dirty { color: var(--warn); white-space: nowrap; }
+.writing-dirty::before { content: ""; display: inline-block; width: 5px; height: 5px; margin: 0 5px 2px 0; border-radius: 50%; background: currentColor; }
+.writing-heading-actions select, .writing-toolbar select { width: auto; min-width: 74px; max-width: 12rem; padding-block: 4px; }
+
+.writing-toolbar {
+  display: flex;
+  flex: 0 0 auto;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--writing-line);
+  background: var(--panel);
+}
+.writing-toolbar button { padding-inline: 9px; }
+.writing-spacer { flex: 1 1 0; }
+.writing-modes { display: inline-flex; flex: none; padding: 2px; border: 1px solid var(--writing-line); border-radius: 8px; background: var(--writing-stage); }
+.writing-modes button {
+  min-height: 28px;
+  padding: 3px 9px;
+  color: var(--muted);
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+}
+.writing-panel button[aria-pressed="true"] {
+  color: var(--writing-focus);
+  border-color: var(--writing-line);
+  background: var(--writing-selection);
+}
+.writing-icon-button { width: 32px; padding-inline: 0; }
+.markdown-frame-wrap { position: relative; display: flex; min-height: 350px; flex: 1 1 auto; }
+.markdown-frame-loading {
+  position: absolute;
+  inset: 0;
+  display: none;
+  place-items: center;
+  color: var(--muted);
+  background: var(--writing-stage);
+}
+.markdown-frame-wrap[aria-busy="true"] .markdown-frame-loading { display: grid; }
+#markdown-frame { display: block; width: 100%; min-height: 350px; flex: 1 1 auto; border: 0; }
+
+.latex-engine-field { display: inline-flex; flex: none; align-items: center; gap: 5px; color: var(--muted); font-size: 12px; }
+.latex-engine-field select { color: var(--ink); font-size: 13px; }
+.latex-build-tools { flex-wrap: wrap; }
+#latex-master { max-width: 145px; display: inline-block; overflow: hidden; vertical-align: middle; text-overflow: ellipsis; }
+.writing-panel button.writing-primary {
+  gap: 7px;
+  padding-inline: 13px;
+  color: #fff;
+  background: #176755;
+  border-color: #176755;
+  font-weight: 650;
+}
+.writing-panel button.writing-primary:not(:disabled):hover { background: #105243; }
+.writing-primary [aria-hidden] { font-size: 9px; }
+:root[data-theme="dark"] .writing-panel button.writing-primary { background: #8edbc0; border-color: #8edbc0; color: #12251e; }
+:root[data-theme="dark"] .writing-panel button.writing-primary:not(:disabled):hover { background: #a8ead4; }
+
+.latex-layout {
+  display: grid;
+  flex: 1 1 auto;
+  min-height: 408px;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
+  gap: 9px;
+  padding: 9px;
+  background: var(--writing-stage);
+}
+.latex-layout.latex-show-sidebar { grid-template-columns: minmax(144px, 172px) minmax(0, 1fr) minmax(0, 1fr); }
+.latex-index, .latex-source-panel, .latex-preview {
+  position: relative;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  padding: 0;
+  background: var(--panel);
+  border: 1px solid var(--writing-line);
+  border-radius: 8px;
+}
+.latex-index { display: none; }
+.latex-show-sidebar .latex-index, .latex-source-panel, .latex-preview { display: flex; flex-direction: column; }
+.writing-subheading {
+  display: flex;
+  flex: 0 0 auto;
+  min-height: 42px;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  border-bottom: 1px solid var(--writing-line);
+  background: var(--panel);
+}
+.writing-subheading strong { font-size: 12px; font-weight: 650; white-space: nowrap; }
+.writing-subheading button { min-height: 30px; }
+.latex-index-heading .writing-modes { display: flex; width: 100%; }
+.latex-index-heading .writing-modes button { flex: 1; min-width: 0; overflow: hidden; }
+#latex-index-items { overflow: auto; padding: 5px; color: var(--muted); font-size: 12px; }
+.latex-index-empty { margin: 7px; font-size: 12px; overflow-wrap: anywhere; }
+#latex-index-items .latex-index-entry {
+  display: grid;
+  width: 100%;
+  grid-template-columns: minmax(22px, auto) minmax(0, 1fr);
+  justify-content: stretch;
+  align-items: baseline;
+  gap: 6px;
+  padding: 6px;
+  border-color: transparent;
+  background: transparent;
+  text-align: left;
+  white-space: normal;
+}
+#latex-index-items button:not(:disabled):hover { border-color: var(--writing-line); background: var(--writing-selection); }
+.latex-index-item-line { color: var(--muted); font: 11px Consolas, monospace; }
+.latex-index-item-name { overflow-wrap: anywhere; }
+#latex-index-items .latex-index-entry[data-severity="error"] { color: var(--danger); }
+#latex-index-items .latex-index-entry[data-severity="warning"] { color: var(--warn); }
+
+.latex-source-area { display: flex; flex: 1 1 auto; min-height: 0; overflow: hidden; }
 .latex-source-area .latex-numbers, .latex-source-area .latex-source, .latex-line-measure, .latex-highlight {
   margin: 0;
-  padding: 12px 8px;
+  padding: 11px 9px;
   border: 0;
   border-radius: 0;
   font: var(--editor-size, 15px)/1.57 Consolas, "Microsoft YaHei UI", monospace;
   tab-size: 4;
 }
-.latex-source-area .latex-numbers { flex: 0 0 38px; overflow: hidden; text-align: right; color: var(--muted); background: var(--sidebar); }
-.latex-code-surface { position: relative; flex: 1; min-width: 0; min-height: 0; }
+.latex-source-area .latex-numbers { flex: 0 0 36px; overflow: hidden; text-align: right; color: var(--muted); background: var(--writing-stage); }
+.latex-code-surface { position: relative; min-width: 0; min-height: 0; flex: 1; }
 .latex-source-area .latex-source { position: absolute; inset: 0; width: 100%; height: 100%; min-width: 0; min-height: 100%; outline-offset: -2px; resize: none; color: transparent; caret-color: var(--ink); background: transparent; }
 .latex-source::selection { background: #588c7255; }
-.latex-highlight { position: absolute; inset: 0; color: var(--ink); pointer-events: none; overflow: hidden; overflow-wrap: break-word; }
+.latex-highlight { position: absolute; inset: 0; overflow: hidden; color: var(--ink); pointer-events: none; overflow-wrap: break-word; }
 .latex-tone-comment { color: var(--muted); }
-.latex-tone-command { color: var(--green); }
-.latex-tone-math { color: var(--markdown); }
+.latex-tone-command { color: var(--writing-tex); }
+.latex-tone-math { color: var(--writing-md); }
 .latex-tone-group { color: var(--pdf); }
 .latex-code-surface.is-composing .latex-source { color: var(--ink); background: var(--panel); }
+.latex-line-measure { position: absolute; visibility: hidden; padding: 0; white-space: pre-wrap; overflow-wrap: break-word; }
+.latex-completions { position: absolute; inset: 44px 8px auto 8px; z-index: 2; max-height: 260px; overflow: auto; padding: 4px; border: 1px solid var(--writing-line); border-radius: 8px; background: var(--panel); box-shadow: var(--shadow); }
+.latex-completions button { display: block; width: 100%; margin-top: 2px; text-align: left; white-space: normal; }
+
+.latex-preview-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 4px;
+  padding: 4px 7px;
+  border-bottom: 1px solid var(--writing-line);
+}
+.latex-preview-toolbar .writing-actions { gap: 3px; }
+.latex-preview-toolbar button { min-width: 29px; min-height: 30px; padding-inline: 5px; }
+#latex-page-count { min-width: 36px; text-align: center; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.latex-build-state {
+  max-width: 100%;
+  overflow: hidden;
+  padding: 2px 6px;
+  border-radius: 5px;
+  background: var(--writing-stage);
+  color: var(--muted);
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+[data-build-state="success"] .latex-build-state, [data-build-state="busy"] .latex-build-state { background: var(--writing-selection); color: var(--writing-focus); }
+[data-build-state="error"] .latex-build-state { color: var(--danger); }
+.latex-preview-scroll { container-type: size; flex: 1; min-height: 0; overflow: auto; background: var(--writing-stage); padding: 10px; }
+.latex-empty { display: flex; height: 100%; align-items: center; justify-content: center; flex-direction: column; gap: 7px; color: var(--muted); text-align: center; }
+.latex-empty strong { font-size: 13px; font-weight: 600; }
+.latex-empty-icon { display: grid; width: 46px; height: 46px; place-items: center; border: 1px solid var(--writing-line); border-radius: 9px; background: var(--panel); color: var(--writing-focus); }
+.latex-empty-icon .ui-icon { width: 22px; height: 22px; }
+.latex-paper { position: relative; margin: 0 auto 10px; line-height: 0; background: white; box-shadow: 0 1px 6px #11282030; }
+.latex-paper img { width: 100%; max-width: none; vertical-align: top; user-select: none; }
+.latex-pin { position: absolute; width: 14px; height: 14px; border: 3px solid #946600; border-radius: 50%; background: #ffd764; transform: translate(-50%, -50%); pointer-events: none; }
+
+.latex-log-panel { flex: 0 0 auto; max-height: 188px; overflow: auto; padding: 0; border-top: 1px solid var(--writing-line); background: var(--panel); }
+.latex-log-panel .writing-subheading { position: sticky; top: 0; z-index: 1; }
+.latex-log { margin: 0; padding: 9px 12px; background: var(--writing-stage); font: 12px/1.5 Consolas, "Microsoft YaHei UI", monospace; white-space: pre-wrap; overflow-wrap: anywhere; }
+.writing-feedback { flex: 0 0 auto; padding: 6px 12px; border-top: 1px solid var(--writing-line); color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
+
+@container writing (max-width: 805px) {
+  .latex-layout { min-height: 390px; }
+  .latex-layout.latex-show-sidebar { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); grid-template-rows: minmax(72px, auto) minmax(0, 1fr); }
+  .latex-index { grid-column: 1 / -1; max-height: 105px; }
+  .latex-index-heading .writing-modes { width: auto; }
+  #latex-index-items { display: flex; overflow: auto; gap: 4px; }
+  #latex-index-items .latex-index-entry { width: auto; min-width: max-content; }
+  .latex-source-panel, .latex-preview { min-height: 290px; }
+}
+@container writing (max-width: 520px) {
+  .writing-heading { padding: 9px 11px; }
+  .writing-heading-actions { margin-inline-start: 0; }
+  .writing-toolbar .writing-spacer { display: none; }
+  .latex-layout, .latex-layout.latex-show-sidebar { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto; }
+  .latex-preview-scroll { min-height: 260px; }
+  .writing-panel button, .writing-panel select { font-size: 12px; }
+}
 @media (forced-colors: active) {
   .latex-source-area .latex-source { color: CanvasText; }
   .latex-highlight { display: none; }
-}
-.latex-line-measure { position: absolute; visibility: hidden; padding: 0; white-space: pre-wrap; overflow-wrap: break-word; }
-.latex-completions { position: absolute; inset: 40px 10px auto 10px; max-height: 280px; overflow: auto; z-index: 2; background: var(--panel); padding: 4px; border: 1px solid var(--line); box-shadow: var(--shadow); }
-.latex-completions button { display: block; width: 100%; text-align: left; margin-top: 2px; }
-.latex-preview-scroll { flex: 1; min-height: 0; overflow: auto; background: var(--sidebar); padding: 10px; container-type: size; }
-.latex-empty { height: 100%; display: grid; place-items: center; }
-.latex-paper { position: relative; margin: 0 auto 10px; line-height: 0; background: white; box-shadow: 0 1px 5px #0003; }
-.latex-paper img { width: 100%; max-width: none; vertical-align: top; user-select: none; }
-.latex-pin { position: absolute; width: 14px; height: 14px; border-radius: 50%; border: 3px solid #946600; background: #ffd764; transform: translate(-50%, -50%); pointer-events: none; }
-.latex-log { max-height: 160px; overflow: auto; margin: 0; padding: 10px 12px; border-top: 1px solid var(--line); background: var(--sidebar); white-space: pre-wrap; }
-.writing-status { color: var(--muted); padding: 2px 8px; min-height: 22px; border-top: 1px solid var(--line); }
-@media (max-width: 960px) {
-  .latex-layout.latex-show-sidebar { grid-template-columns: minmax(96px, .42fr) minmax(0, 1fr) minmax(0, 1fr); }
-}
-@media (max-width: 680px) {
-  .latex-layout, .latex-layout.latex-show-sidebar { display: flex; flex-direction: column; }
-  .latex-index { max-height: 125px; }
-  .latex-source-panel, .latex-preview { min-height: 325px; }
-  .latex-preview-scroll { max-height: 48vh; }
 }

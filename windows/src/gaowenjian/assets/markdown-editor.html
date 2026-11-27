@@ -18,10 +18,16 @@
   <script defer src="/md-assets/markdown-editor.js"></script>
 </head>
 <body>
-  <aside id="outline" aria-label="文档大纲"><div class="outline-title">文档大纲</div><nav id="outline-items"></nav></aside>
+  <aside id="outline" aria-label="文档大纲"><div class="outline-title">文档大纲</div><nav id="outline-items" aria-label="标题"></nav></aside>
   <main id="workspace" class="mode-live">
-    <section id="source-pane"><textarea id="source" aria-label="Markdown 源码" spellcheck="false" autocapitalize="off" autocomplete="off" autocorrect="off" wrap="off"></textarea></section>
-    <section id="preview-pane" aria-label="Markdown 即时编辑"><article id="document" class="markdown-body"></article></section>
+    <section id="source-pane" aria-label="Markdown 源码">
+      <div class="md-pane-heading" aria-hidden="true">源码</div>
+      <textarea id="source" aria-label="Markdown 源码" spellcheck="false" autocapitalize="off" autocomplete="off" autocorrect="off" wrap="off"></textarea>
+    </section>
+    <section id="preview-pane" aria-label="Markdown 预览和即时编辑">
+      <div class="md-pane-heading" aria-hidden="true">预览</div>
+      <article id="document" class="markdown-body"></article>
+    </section>
   </main>
   <footer><span id="status">正在准备编辑器…</span><span id="mode-hint">点击段落编辑 · Esc 完成编辑</span></footer>
 </body>

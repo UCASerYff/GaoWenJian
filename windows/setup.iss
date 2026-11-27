@@ -1,6 +1,9 @@
 #ifndef AppVersion
   #error AppVersion is required
 #endif
+#ifndef WindowsBuild
+  #error WindowsBuild is required
+#endif
 #ifndef BuildDirectory
   #error BuildDirectory is required
 #endif
@@ -15,7 +18,7 @@
 AppId={{B06256C0-5B37-44AB-941B-7B8E00C7ED63}
 AppName=搞文件
 AppVersion={#AppVersion}
-VersionInfoVersion={#AppVersion}
+VersionInfoVersion={#AppVersion}.{#WindowsBuild}.0
 VersionInfoProductVersion={#AppVersion}
 AppPublisher=GaoSeries
 DefaultDirName={localappdata}\Programs\GaoSeries\GaoWenJian
@@ -36,7 +39,7 @@ SolidCompression=yes
 WizardStyle=modern
 SetupIconFile={#AppIcon}
 OutputDir={#ReleaseDirectory}
-OutputBaseFilename=GaoWenJian-Windows-{#AppVersion}-x64-Setup
+OutputBaseFilename=GaoWenJian-Windows-{#AppVersion}-build{#WindowsBuild}-x64-Setup
 
 [Languages]
 Name: "en"; MessagesFile: "compiler:Default.isl"
