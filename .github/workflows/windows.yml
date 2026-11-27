@@ -35,15 +35,20 @@ jobs:
           }
           "GAO_INNO_COMPILER=$tool" >> $env:GITHUB_ENV
       - name: Build and exercise the installed package
+        id: build
         shell: pwsh
         run: |
-          .\windows\build.ps1 -InnoCompiler $env:GAO_INNO_COMPILER
-          $version = (Get-Content -Raw -LiteralPath VERSION).Trim()
-          python .\windows\tests\install_smoke.py ".\Release\GaoWenJian-Windows-$version-x64-Setup.exe"
+          $windowsDirectory = Join-Path $env:GITHUB_WORKSPACE 'windows'
+          $releaseDirectory = Join-Path $env:GITHUB_WORKSPACE 'Release'
+          & (Join-Path $windowsDirectory 'build.ps1') -InnoCompiler $env:GAO_INNO_COMPILER -ReleaseDirectory $releaseDirectory
+          $version = (Get-Content -Raw -LiteralPath (Join-Path $env:GITHUB_WORKSPACE 'VERSION')).Trim()
+          $installer = Join-Path $releaseDirectory "GaoWenJian-Windows-$version-x64-Setup.exe"
+          python (Join-Path $windowsDirectory 'tests/install_smoke.py') $installer
+          "installer=$($installer.Replace('\', '/'))" >> $env:GITHUB_OUTPUT
       - uses: actions/upload-artifact@v4
         with:
           name: GaoWenJian-Windows-x64
           if-no-files-found: error
           path: |
-            Release/GaoWenJian-Windows-*-x64-Setup.exe
-            Release/GaoWenJian-Windows-*-x64-Setup.exe.sha256
+            ${{ steps.build.outputs.installer }}
+            ${{ steps.build.outputs.installer }}.sha256
