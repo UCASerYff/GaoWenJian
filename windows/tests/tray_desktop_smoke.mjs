@@ -1,6 +1,7 @@
 // Normal native GUI launch on an inactive desktop. Only the test shell, not Explorer, receives icon calls.
 import assert from "node:assert/strict";
 import {spawn} from "node:child_process";
+import {createHash, randomBytes, randomUUID} from "node:crypto";
 import {once} from "node:events";
 import {mkdir, mkdtemp, readFile, rm, writeFile} from "node:fs/promises";
 import {createServer} from "node:net";
@@ -130,6 +131,20 @@ const status = (pid) => operation("status", {pid});
 const post = (pid, hwnd, message, wparam = 0, lparam = 0) => operation("post", {pid, hwnd, message, wparam, lparam});
 const shell = () => operation("shell");
 
+async function manualReviewFixture() {
+  const folder = join(root, "启动待审核.gaoaction");
+  const blob = Buffer.from("待用户确认的启动交接\n");
+  const timestamp = (offset) => new Date(Date.now() + offset).toISOString().replace(/\.\d+Z$/, "Z");
+  await mkdir(join(folder, "payload"), {recursive: true});
+  await writeFile(join(folder, "payload", "启动待审核.txt"), blob);
+  await writeFile(join(folder, "manifest.json"), JSON.stringify({schemaVersion: 1, kind: "request", requestID: randomUUID(),
+    sourceBundleID: "com.gaoseries.GaoYanJiu", targetBundleID: "com.gaoseries.GaoWenJian", action: "documents.newText",
+    createdAt: timestamp(0), expiresAt: timestamp(90_000), nonce: randomBytes(32).toString("base64"), references: [],
+    parameters: {suggestedTitle: "启动待审核.txt"}, items: [{id: randomUUID(), relativePath: "启动待审核.txt",
+      uti: "public.utf8-plain-text", byteCount: blob.length, sha256: createHash("sha256").update(blob).digest("hex")}] }));
+  return folder;
+}
+
 async function api(path, sessionToken, data) {
   const response = await fetch(`${appUrl}/api/${path}`, {
     method: data === undefined ? "GET" : "POST",
@@ -167,6 +182,10 @@ try {
   const main = await target("/");
   await until(() => main.evaluate('Boolean(document.querySelector(".welcome") && window.pywebview?.api?.show_settings)'), "workspace ready");
   const token = await main.evaluate('document.querySelector("meta[name=gao-token]").content');
+  assert.deepEqual(await api("handoff/ocr-returns", token), {pending: false, results: [], issues: []});
+  await main.evaluate('document.querySelector("#workspace-nav [data-go=projects]").click()');
+  await until(() => main.evaluate('Boolean(document.querySelector("#projects-heading"))'), "writing projects in the normal native launcher");
+  await main.evaluate('navigate("home")');
 
   await main.evaluate('showSettings()');
   const settings = await target("/settings");
@@ -202,6 +221,7 @@ Tray reader smoke test.
   await main.evaluate('(() => {const editor=document.querySelector("textarea.editor"); editor.value="通过托盘确认保存"; editor.dispatchEvent(new Event("input")); })()');
   await post(pid, mainWindow.hwnd, 0x10);
   await until(async () => (await status(pid)).windows.some((window) => window.hwnd === mainWindow.hwnd && !window.visible), "native X hid the main window");
+  assert.deepEqual(await api("handoff/ocr-returns", token), {paused: true});
   assert.equal(await main.evaluate('Boolean(document.querySelector("dialog[open]"))'), false);
   assert.equal((await shell()).icons, 1);
   await until(async () => (await api("state", token)).tabs.some((tab) => tab.dirty && tab.text === "通过托盘确认保存"), "editing flushed while backgrounded");
@@ -209,6 +229,7 @@ Tray reader smoke test.
 
   await post(pid, tray.hwnd, 0x8001, 0, (1 << 16) | 0x400);
   await until(async () => workspace((await status(pid)).windows)?.visible, "notification-area selection restored the same window");
+  await until(async () => !(await api("handoff/ocr-returns", token)).paused, "OCR checks resumed on tray reopening");
   assert.equal(await main.evaluate('document.querySelector("textarea.editor").value'), "通过托盘确认保存");
   if (hasReader) assert.equal((await status(pid)).windows.some((window) => window.hwnd === readerWindow.hwnd), true);
   await post(pid, mainWindow.hwnd, 0x10);
@@ -260,10 +281,14 @@ Tray reader smoke test.
   await until(async () => (await status(versionPid)).exit === 0, "version command returned without a desktop process");
   assert.deepEqual(await shell(), removed, "short-lived version command did not touch the notification area");
 
-  const reopened = await start("--data-dir", profile, "--port", String(appPort));
+  const handoff = await manualReviewFixture();
+  const reopened = await start("--data-dir", profile, "--port", String(appPort), "--open", handoff);
   await until(async () => workspace((await status(reopened)).windows)?.visible && (await shell()).icons === 1, "normal launch worked again after full exit");
   const reopenedMain = await target("/");
   await until(() => reopenedMain.evaluate('Boolean(document.querySelector("#exit-app") && window.pywebview?.api?.close_workspace)'), "workspace after full relaunch");
+  await until(() => reopenedMain.evaluate('Boolean(document.querySelector("#handoff-accept"))'), "cold --open showed package review");
+  assert.equal(await reopenedMain.evaluate("state.tabs.length"), 0, "cold --open never accepted a handoff before user action");
+  await reopenedMain.evaluate('document.querySelector("#handoff-cancel").click()');
   const reopenedNote = await target("/note?");
   await until(() => reopenedNote.evaluate('document.querySelector("#note-body")?.textContent === "后台保存便笺"'), "desktop note restored on relaunch");
   assert.equal(await reopenedMain.evaluate('document.documentElement.dataset.theme'), "dark");

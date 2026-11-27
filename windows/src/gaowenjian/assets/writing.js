@@ -241,6 +241,7 @@ window.addEventListener("message", async (event) => {
 
 function latexPanel(tab) {
   const session = writingSession(tab.id);
+  const main = session.main ?? projectMainForTab(tab);
   const result = tab.preview || {};
   const pages = result.pages || [];
   const page = pages[Math.min(session.page, pages.length - 1)];
@@ -269,8 +270,8 @@ function latexPanel(tab) {
             ${Object.entries({auto: "自动", tectonic: "Tectonic · 离线", xelatex: "xelatex", pdflatex: "pdflatex", lualatex: "lualatex"}).map(([id, label]) =>
               `<option value="${id}" ${engine === id ? "selected" : ""}>${label}</option>`).join("")}
           </select></label>
-          <button id="latex-master" title="选择 LaTeX 主文件">${h(session.main?.split(/[\\/]/).pop() || session.autoMain || "当前文件")}</button>
-          <button id="latex-clear-master" aria-label="恢复使用当前或自动识别的主文件" title="恢复使用当前或自动识别的主文件" ${session.main ? "" : "hidden"}>清除指定</button>
+          <button id="latex-master" title="选择 LaTeX 主文件">${h(main?.split(/[\\/]/).pop() || session.autoMain || "当前文件")}</button>
+          <button id="latex-clear-master" aria-label="恢复使用当前或自动识别的主文件" title="恢复使用当前或自动识别的主文件" ${main ? "" : "hidden"}>清除指定</button>
           <button id="latex-log" aria-pressed="${session.log}" aria-controls="latex-log-panel">日志</button>
           <button id="latex-compile" class="writing-primary" title="编译（Ctrl+B）" ${session.busy ? "disabled aria-busy='true'" : ""}><span aria-hidden="true">▶</span> <span data-compile-label>${session.busy ? "编译中…" : "编译"}</span></button>
         </div>
@@ -408,7 +409,7 @@ function bindLatex(tab) {
     session.index = result.index;
     session.autoMain = result.root ? result.root.split(/[\\/]/).pop() + "（自动识别）" : "";
     if (panel.isConnected) {
-      if (!session.main) byId("latex-master").textContent = session.autoMain || "当前文件";
+      if (!(session.main ?? projectMainForTab(tab))) byId("latex-master").textContent = session.autoMain || "当前文件";
       showIndex();
     }
   };
@@ -497,7 +498,7 @@ function bindLatex(tab) {
     catch (error) { if (!error.message.includes("没有选择")) fail(error); }
   };
   byId("latex-clear-master").onclick = () => {
-    session.main = null;
+    session.main = "";
     render();
     document.getElementById("latex-master")?.focus({preventScroll: true});
   };
@@ -561,11 +562,12 @@ function bindLatex(tab) {
           await api("/api/tabs/save", {id: tab.id});
         }
       }
-      const {result} = await api("/api/tabs/compile", {id: tab.id, main: session.main, engine: session.engine});
+      const {result} = await api("/api/tabs/compile", {id: tab.id, main: session.main ?? projectMainForTab(tab), engine: session.engine});
       completed = true;
       session.status = "";
       if (result.success) {
-        session.page = 0;
+        session.page = session.restoreProjectPage ? Math.min(session.page, result.pages.length - 1) : 0;
+        session.restoreProjectPage = false;
         session.pin = null;
       } else {
         session.latexSidebar = true;

@@ -56,7 +56,11 @@ def _run(args, directory, tray) -> int:
     try:
         workspace = Workspace(directory)
         if args.open:
-            workspace.open_path(Path(args.open))
+            path = Path(args.open).expanduser()
+            if path.suffix.lower() in {".gaoaction", ".gaoresult"}:
+                workspace.launch_handoff = str(path.absolute())
+            else:
+                workspace.open_path(path)
         if args.self_check:
             return _self_check(workspace)
         if args.inspect:

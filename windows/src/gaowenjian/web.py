@@ -39,6 +39,7 @@ class DocumentServer(ThreadingHTTPServer):
         self.revision = 0
         self.shutdown_requested = threading.Event()
         self.desktop_closing = False
+        self.ocr_window_visible = True
         super().__init__((host, port), Handler)
 
     @property
@@ -81,6 +82,13 @@ class Handler(BaseHTTPRequestHandler):
             with self.server.lock:
                 state = self.server.snapshot()
             self._json(state)
+            return
+        if parsed.path == "/api/handoff/ocr-returns":
+            if not self._authorized():
+                return
+            with self.server.lock:
+                result = self.server.workspace.ocr_returns() if self.server.ocr_window_visible and not self.server.desktop_closing else {"paused": True}
+            self._json(result)
             return
         if parsed.path == "/api/media":
             if not self._authorized(query=parse_qs(parsed.query)):
@@ -418,6 +426,14 @@ def dispatch(workspace: Workspace, path: str, payload: dict):
         note = workspace.notes._find(payload["id"])
         tab = workspace.new_text("markdown", note.get("plainText") or "")
         return {"id": tab.id}
+    if path == "/api/projects/save":
+        return workspace.projects.save(payload)
+    if path == "/api/projects/restore":
+        return workspace.projects.restore(payload)
+    if path == "/api/projects/checkpoint":
+        return workspace.projects.checkpoint(payload.get("reading", {}))
+    if path == "/api/projects/reader":
+        return workspace.projects.reader_page(payload["id"], payload.get("page"))
     raise AppError("没有这个操作。", "invalid")
 
 

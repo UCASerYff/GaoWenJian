@@ -1,0 +1,27 @@
+.project-home-shortcut { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-block: 0 14px; }
+.project-home-shortcut > span, .project-resume { max-width: min(100%, 36ch); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.project-home-shortcut > span { color: var(--muted); }
+.projects-panel { display: grid; gap: 16px; max-width: 980px; margin-inline: auto; padding: clamp(8px, 2.4vw, 20px); }
+.projects-heading { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: start; gap: 12px; }
+.projects-heading p, .project-empty p, .project-card-info, .project-disk-path { color: var(--muted); }
+.projects-heading p { margin-top: 4px; }
+.projects-actions, .project-card-actions { display: flex; flex-wrap: wrap; gap: 7px; }
+.project-list { display: grid; gap: 8px; margin: 0; padding: 0; list-style: none; }
+.project-card, .project-empty { display: flex; align-items: center; gap: 12px; min-width: 0; padding: 12px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--panel); }
+.project-card[data-active] { border-inline-start: 3px solid var(--green); }
+.project-card-icon, .project-empty > .ui-icon { display: grid; place-items: center; flex: none; align-self: start; width: 34px; height: 34px; border-radius: 7px; background: var(--green-soft); color: var(--green); }
+.project-empty > .ui-icon { padding: 8px; }
+.project-card-content { flex: 1; display: grid; gap: 2px; min-width: min(180px, 100%); }
+.project-card-content h2, .project-disk-path, .project-card-info { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.project-issues { padding: 10px 13px; border: 1px solid var(--warn); border-radius: var(--radius); background: var(--panel); }
+.project-issues summary, .project-form-error { color: var(--warn); }
+.project-issues ul { margin-block: 7px 0; padding-inline-start: 22px; overflow-wrap: anywhere; }
+.project-issues button { margin-top: 8px; }
+.project-dialog .project-field { display: block; margin-top: 9px; font-weight: 600; }
+.project-dialog .project-path-field { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 6px; }
+.project-dialog .project-form-error { margin-top: 8px; overflow-wrap: anywhere; }
+.project-dialog .project-dialog-actions { display: flex; flex-wrap: wrap; justify-content: end; gap: 8px; margin-top: 14px; }
+@media (max-width: 650px) {
+  .project-card { flex-wrap: wrap; }
+  .project-card-actions { flex-basis: 100%; justify-content: end; }
+}

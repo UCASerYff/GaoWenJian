@@ -24,6 +24,7 @@ from gaowenjian.office import read_document
 from gaowenjian.organizer import Organizer
 from gaowenjian.pdfdoc import MAX_BYTES as MAX_PDF_BYTES
 from gaowenjian.pdfdoc import extract, image_info, inspect, merge, plain_pdf, render_page, search, split, transform
+from gaowenjian.projects import WritingProjects
 from gaowenjian.rtf import from_html, parse as parse_rtf
 from gaowenjian.safety import FileIdentity, GuardedJSON, digest, inside, read_file_snapshot, reject_symlink, safe_replace, same_file, write_document
 from gaowenjian.version import VERSION_LABEL
@@ -119,6 +120,7 @@ class Tab:
         self.undo: list[bytes] = []
         self.redo: list[bytes] = []
         self.message = ""
+        self.project_reading: dict = {}
 
     @property
     def title(self) -> str:
@@ -145,6 +147,7 @@ class Workspace:
         self.settings_guard = GuardedJSON(self.data_dir / "settings.json")
         self.settings = {"appearance": "system", "latexEngine": "auto", "editorFontSize": 15, "wrapLines": True}
         self.handoff_references: dict[str, dict] = {}
+        self.launch_handoff = ""
         self.organizer = Organizer(self.data_dir)
         self.notes = NotesStore(self.data_dir / "StickyNotes")
         try:
@@ -155,6 +158,7 @@ class Workspace:
         self._load_settings()
         self._load_state()
         self._load_recovery()
+        self.projects = WritingProjects(self)
 
     def snapshot(self) -> dict:
         return {
@@ -168,7 +172,9 @@ class Workspace:
             "tabs": [self._tab_summary(tab) for tab in self.tabs],
             "selection": self.selection,
             "settings": self.settings,
+            "launchHandoff": self.launch_handoff,
             "notes": self.notes.snapshot(),
+            "projects": self.projects.snapshot(),
             "engines": self.engine_status(),
             "recoveryBlocked": not self.recovery_guard.readable,
             "stateBlocked": not self.state_guard.readable,
@@ -193,7 +199,7 @@ class Workspace:
     def open_path(self, path: Path) -> Tab | None:
         path = path.expanduser()
         if path.suffix.lower() in {".gaoaction", ".gaoresult"}:
-            return self.import_handoff(path)
+            raise AppError("请在文档交接中审核此包，再明确接收。", "handoffReview")
         if path.is_dir():
             self.set_folder(path)
             raise AppError("已打开文件夹。", "folder")
@@ -235,6 +241,8 @@ class Workspace:
             if not tab.preview["encrypted"]:
                 self._restore_pdf(tab)
             tab.preview = self._pdf_metadata(tab)
+            if self.handoff and (incoming := self.handoff.incoming_pdf(path, tab.digest)):
+                tab.extra["incoming"] = incoming
         elif kind == "image":
             tab.binary = data
             tab.preview = image_info(data, path.suffix.lstrip("."))
@@ -684,15 +692,26 @@ class Workspace:
 
     def inspect_handoff(self, path: Path) -> dict:
         from gaowenjian.handoff import read_package
+        from gaowenjian.ocr_handoff import inspect_return, is_return_path, result_sources, validate_result
         from gaowenjian.organizer_actions import ACTIONS, review
 
-        manifest, _, sha = read_package(path)
+        automatic = is_return_path(path)
+        if automatic and not self.handoff:
+            raise AppError("交接发送记录无法读取，不能审核自动回传。", "handoff")
+        if automatic:
+            manifest, files, sha = inspect_return(self.handoff, path)
+        else:
+            manifest, files, sha = read_package(path)
         result = {"sha256": sha, "action": manifest["action"], "source": manifest["sourceBundleID"],
                   "status": manifest.get("status"), "kind": manifest["kind"],
                   "items": [{"name": Path(item["relativePath"]).name, "byteCount": item["byteCount"]} for item in manifest["items"]],
                   "references": [item["displayName"] for item in manifest["references"]]}
         if manifest["kind"] == "request" and manifest["action"] in ACTIONS:
             result["organizer"] = review(self, manifest, sha)
+        if manifest["kind"] == "result" and manifest["action"] == "ocr.files" and self.handoff:
+            if not automatic and validate_result(manifest, files, self.handoff.outgoing.data, self.handoff.journal.data):
+                raise AppError("这份交接结果已经接收。", "duplicate")
+            result["ocrSources"] = result_sources(self.handoff, manifest)
         return result
 
     def import_handoff(self, path: Path, expected_digest: str | None = None) -> Tab | None:
@@ -700,7 +719,7 @@ class Workspace:
             raise AppError(self.error or "交接日志无法读取，已停止处理。", "handoff")
         if not self.recovery_guard.readable:
             raise AppError("草稿恢复记录无法读取，交接文字尚未导入，请先处理现有恢复记录。", "recovery")
-        result = self.handoff.import_package(path, remember=False)
+        result = self.handoff.import_package(path, remember=False, expected_digest=expected_digest)
         if result["duplicate"]:
             raise AppError("这份交接结果已经处理过，没有重复打开。", "duplicate")
         record = result["record"]
@@ -779,6 +798,13 @@ class Workspace:
                 "sessions": [{key: item.get(key) for key in ("requestID", "action", "expiresAt", "path")}
                              for item in reversed(sessions[-20:]) if item.get("action") == "ocr.files"]}
 
+    def ocr_returns(self) -> dict:
+        from gaowenjian.ocr_handoff import scan_returns
+
+        if self.handoff is None:
+            return {"pending": False, "results": [], "issues": []}
+        return scan_returns(self.handoff)
+
     def handoff_reference(self, identifier: str, path: Path) -> Tab:
         reference = self.handoff_references.get(identifier)
         if self.handoff is None or reference is None:
@@ -794,14 +820,16 @@ class Workspace:
         if self.handoff is None or payload.get("confirm") is not True:
             raise AppError("请确认创建用于搞操作审核的 OCR 请求。", "handoff")
         current = None
+        origin = None
         if payload.get("currentTab"):
             tab = self._tab(payload["currentTab"])
             if tab.kind not in {"pdf", "image"} or tab.binary is None:
                 raise AppError("当前标签没有可用于 OCR 的 PDF 或图像数据。", "handoff")
             current = (Path(tab.title), tab.binary)
+            origin = tab.path
         directory = Path(payload["directory"]) if payload.get("directory") else None
         return export_request(self.handoff, payload.get("paths") or [], payload.get("outputs") or [],
-                              payload.get("languages") or [], directory, current=current)
+                              payload.get("languages") or [], directory, current=current, origin=origin)
 
     def export_research(self, tab_id: str, directory: Path, target_record: str | None = None) -> dict:
         if self.handoff is None:
@@ -969,6 +997,9 @@ class Workspace:
             "preview": tab.preview if tab.kind not in TEXT_KINDS else tab.preview,
             "canSave": tab.kind in TEXT_KINDS | {"richText"} or tab.kind == "pdf" and not (tab.preview or {}).get("encrypted"),
             "incoming": tab.extra.get("incoming"),
+            "ocrSourceSHA256": tab.digest if tab.kind in {"pdf", "image"} else None,
+            "ocrSourcePath": str(tab.path.absolute()) if tab.kind in {"pdf", "image"} and tab.path else None,
+            "projectReading": tab.project_reading,
         }
 
     def _remember(self, path: Path) -> None:
@@ -1059,7 +1090,7 @@ class Workspace:
         for tab in self.tabs:
             if tab.kind not in TEXT_KINDS or not tab.dirty:
                 continue
-            item = dict(tab.extra)
+            item = {key: value for key, value in tab.extra.items() if key not in {"compiledPdf", "compiledRoot", "compiledDigest"}}
             item.update({
                 "id": tab.id,
                 "path": str(tab.path) if tab.path else None,

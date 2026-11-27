@@ -323,6 +323,54 @@
   border-inline-start: 3px solid var(--tool-action);
 }
 
+.ocr-inbox .handoff-files li {
+  grid-template-columns: auto minmax(0, 1fr) auto auto;
+}
+
+.ocr-inbox-warning { color: var(--tool-danger); }
+
+.ocr-review-sources {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+
+.ocr-review-sources p {
+  padding: 4px 9px;
+  overflow-wrap: anywhere;
+}
+
+.side-shortcut[data-ocr-waiting-review] {
+  position: relative;
+}
+
+.side-shortcut[data-ocr-waiting-review]::after {
+  content: "";
+  position: absolute;
+  inset: 8px 8px auto auto;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--green);
+}
+
+.ocr-document-notice {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 7px 10px;
+  padding: 6px 10px;
+  margin: 0 0 8px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--green-soft);
+  color: var(--ink);
+}
+
+.main-panel:has(.pdf-workspace) .ocr-document-notice { margin: 8px 12px; }
+.ocr-document-notice span { flex: 1; min-width: 10ch; }
+.ocr-document-notice .ui-icon { color: var(--green); }
+
 .handoff-inputs,
 .handoff-options {
   display: grid;

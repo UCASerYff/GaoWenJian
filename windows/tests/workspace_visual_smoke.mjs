@@ -2,7 +2,7 @@
 import assert from "node:assert/strict";
 import {spawn} from "node:child_process";
 import {once} from "node:events";
-import {mkdir, mkdtemp, readFile, rm, writeFile} from "node:fs/promises";
+import {mkdir, mkdtemp, readFile, rm, unlink, writeFile} from "node:fs/promises";
 import {tmpdir} from "node:os";
 import {basename, dirname, join, resolve} from "node:path";
 import {setTimeout as delay} from "node:timers/promises";
@@ -12,6 +12,7 @@ assert.ok(process.argv[2] && process.argv[3], "Pass the CLI or Python executable
 const cli = resolve(process.argv[2]);
 const evidenceDir = resolve(process.argv[3]);
 const baseline = process.argv.includes("--baseline");
+const projects = process.argv.includes("--projects");
 const project = dirname(dirname(fileURLToPath(import.meta.url)));
 const command = /python(?:w)?\.exe$/i.test(basename(cli)) ? [join(project, "launch.py")] : [];
 const root = await mkdtemp(join(tmpdir(), "gao-workspace-visual-"));
@@ -75,6 +76,131 @@ function child(binary, args, stdio = ["ignore", "pipe", "pipe"]) {
   return spawn(binary, args, {windowsHide: true, stdio});
 }
 
+function samplePdf() {
+  const objects = ["<</Type /Catalog /Pages 2 0 R>>", "<</Type /Pages /Count 3 /Kids [3 0 R 4 0 R 5 0 R]>>",
+    ...[6, 7, 8].map((n) => `<</Type /Page /Parent 2 0 R /MediaBox [0 0 400 960] /Resources <</Font <</F1 9 0 R>>>> /Contents ${n} 0 R>>`),
+    ...[1, 2, 3].map((page) => {
+      const drawing = `0.12 0.36 0.28 rg 28 902 344 5 re f BT /F1 21 Tf 28 860 Td (Proof page ${page}) Tj ET\n`;
+      return `<</Length ${drawing.length}>>\nstream\n${drawing}endstream`;
+    }), "<</Type /Font /Subtype /Type1 /BaseFont /Helvetica>>"];
+  let pdf = "%PDF-1.4\n";
+  const offsets = objects.map((object, index) => {
+    const offset = pdf.length;
+    pdf += `${index + 1} 0 obj\n${object}\nendobj\n`;
+    return offset;
+  });
+  const count = objects.length + 1;
+  return pdf + `xref\n0 ${count}\n0000000000 65535 f \n${offsets.map((offset) => String(offset).padStart(10, "0") + " 00000 n \n").join("")}`
+    + `trailer\n<</Root 1 0 R /Size ${count}>>\nstartxref\n${pdf.length}\n%%EOF\n`;
+}
+
+async function projectControls(mdPath, textPath) {
+  const secondDirectory = join(root, "第二写作项目");
+  const secondMain = join(secondDirectory, "课题草案.md");
+  const proof = join(fixtures, "排版校样.pdf");
+  const enterProjects = async () => {
+    await page(`document.querySelector('#workspace-nav [data-go="projects"]').click()`);
+    await until(() => page("!!document.querySelector('#projects-heading')"), "writing projects");
+  };
+  const create = async (name, folder, main) => {
+    await page("document.querySelector('[data-project-new]').click()");
+    await page(`(() => {
+      const dialog = document.querySelector('.project-dialog[open]');
+      for (const [field, value] of Object.entries(${JSON.stringify({name, folder, main})})) dialog.querySelector('#project-' + field).value = value;
+      if (!dialog.querySelector('form').checkValidity()) throw new Error('Project configuration form is invalid');
+      dialog.querySelector('button[type=submit]').click();
+    })()`);
+    return until(() => page(`(() => {
+      const error = document.querySelector('.project-dialog[open] .project-form-error:not([hidden])');
+      if (error) throw new Error(error.textContent);
+      return activeProject()?.name === ${JSON.stringify(name)} && activeProject().id;
+    })()`), `saved ${name}`);
+  };
+  const open = (id) => page(`document.querySelector('[data-project-open="${id}"]').click()`);
+  const proofPageInView = (index) => page(`(() => {
+    const canvas = document.querySelector('.pdf-canvas');
+    if (!canvas) return false;
+    const top = canvas.getBoundingClientRect().top + canvas.clientTop;
+    const bottom = top + canvas.clientHeight;
+    const pages = [...canvas.querySelectorAll('[data-pdf-sheet]')].map((sheet) => {
+      const bounds = sheet.getBoundingClientRect();
+      return {top: bounds.top, visible: Math.max(0, Math.min(bottom, bounds.bottom) - Math.max(top, bounds.top))};
+    });
+    const active = pages[${index}];
+    return active && Math.abs(active.top - top) < 38 && active.visible >= canvas.clientHeight * .55 &&
+      pages.every((candidate) => candidate === active || active.visible > candidate.visible);
+  })()`);
+
+  await mkdir(secondDirectory);
+  await writeFile(secondMain, "# 另一个写作项目\n");
+  await writeFile(proof, samplePdf());
+  await api("settings", {appearance: "light"});
+  await devtools("Emulation.setDeviceMetricsOverride", {width: 1250, height: 820, deviceScaleFactor: 1, mobile: false});
+  await navigate();
+  await page(`openPath(${JSON.stringify(proof)})`);
+  await until(() => page(`(() => {
+    if (errorNotice) throw new Error(errorNotice);
+    const rasterError = document.querySelector('.pdf-image-error[data-pdf-sheet="0"] [data-pdf-retry]');
+    if (rasterError) throw new Error(rasterError.closest('.pdf-sheet').innerText);
+    return Boolean(document.querySelector('.pdf-image-ready'));
+  })()`), "PDF project proof");
+  await page(`document.querySelector('[data-pdf-command="next"]').click()`);
+  await until(() => page(`document.querySelector('#pdf-page-number').value === '2'`), "PDF page two");
+  await until(() => proofPageInView(1), "PDF page two occupies the reading viewport after Next");
+  await enterProjects();
+  const first = await create("稿件与校样", fixtures, mdPath);
+  await screenshot("projects-light");
+
+  await page(`(async () => {
+    for (const tab of [...state.tabs]) await api('/api/tabs/close', {id: tab.id});
+    await openPath(${JSON.stringify(secondMain)});
+  })()`);
+  await until(() => page(`view === 'editor' && selected()?.path === ${JSON.stringify(secondMain)}`), "second project's main document");
+  await enterProjects();
+  const second = await create("课题草案", secondDirectory, secondMain);
+  const draft = await page(`(async () => {
+    const result = (await api('/api/tabs/new', {kind:'text', text:'草稿须在项目切换后继续保留'})).result;
+    return result.id;
+  })()`);
+  await unlink(textPath);
+  await api("settings", {appearance: "dark"});
+  await devtools("Emulation.setDeviceMetricsOverride", {width: 620, height: 620, deviceScaleFactor: 1.5, mobile: false});
+  await navigate();
+  await enterProjects();
+  await open(first);
+  await until(() => page("!!document.querySelector('#switch-project-heading')"), "project unsaved confirmation");
+  await screenshot("projects-switch-dark-narrow");
+  await page(`document.querySelector('.project-dialog button[value="cancel"]').click()`);
+  await until(() => page(`!document.querySelector('#switch-project-heading') && activeProject()?.id === ${JSON.stringify(second)}`), "cancelled project switch");
+  await open(first);
+  await until(() => page("!!document.querySelector('#switch-project-heading')"), "project unsaved confirmation retry");
+  await page(`document.querySelector('.project-dialog button[value="keep"]').click()`);
+  await until(() => page(`document.querySelector('#pdf-page-number')?.value === '2' && activeProject().id === ${JSON.stringify(first)}`), "restored project PDF at page two");
+  await until(() => page("Boolean(document.querySelector('.pdf-sheet.pdf-image-ready [data-pdf-raster=\"1\"]'))"), "restored PDF proof rendering");
+  await until(() => proofPageInView(1), "restored PDF page two occupies the reading viewport");
+  assert.equal(await page(`Boolean(state.tabs.find((tab) => tab.id === ${JSON.stringify(draft)} && tab.dirty))`), true);
+  assert.equal(await page(`document.querySelector('.workspace-banner')?.textContent.includes('样本说明.txt')`), true);
+  await screenshot("projects-restored-pdf-dark-narrow");
+  await enterProjects();
+  await screenshot("projects-missing-dark-narrow");
+
+  const revision = join(fixtures, "待保存的修改.txt");
+  await writeFile(revision, "未修改的合成样本");
+  await page(`(async () => {
+    await api('/api/tabs/close', {id:${JSON.stringify(draft)}, discard:true});
+    await openPath(${JSON.stringify(revision)});
+    const editor = document.querySelector('textarea.editor');
+    editor.value = '切换前已明确保存';
+    editor.dispatchEvent(new Event('input'));
+  })()`);
+  await enterProjects();
+  await open(second);
+  await until(() => page("!!document.querySelector('#switch-project-heading')"), "save documents before changing project");
+  await page(`document.querySelector('.project-dialog button[value="save"]').click()`);
+  await until(() => page(`activeProject()?.id === ${JSON.stringify(second)}`), "saved changes and opened second project");
+  assert.equal(await readFile(revision, "utf8"), "切换前已明确保存");
+}
+
 try {
   await mkdir(fixtures);
   await mkdir(evidenceDir, {recursive: true});
@@ -116,6 +242,10 @@ try {
   });
   await devtools("Page.enable");
 
+  if (projects) {
+    await projectControls(mdPath, textPath);
+    console.log("project visuals OK: creation, dark narrow cancel/keep/save, restored PDF page, missing file and retained draft");
+  } else {
   for (const [theme, width, height, scale] of [["light", 1250, 820, 1], ["dark", 790, 650, 1.5]]) {
     await api("settings", {appearance: theme});
     await devtools("Emulation.setDeviceMetricsOverride", {width, height, deviceScaleFactor: scale, mobile: false});
@@ -144,6 +274,7 @@ try {
   await navigate(`note?id=${encodeURIComponent(note.id)}`);
   await screenshot("desktop-note-150dpi");
   console.log("workspace visuals OK: home, Markdown, notes, settings, desktop note at 100% and 150%");
+  }
 } finally {
   if (socket?.readyState === WebSocket.OPEN) {
     socket.send(JSON.stringify({id: ++serial, method: "Browser.close"}));

@@ -47,6 +47,8 @@ class HandoffBook:
         self.root.mkdir(parents=True, exist_ok=True)
         self.journal = GuardedJSON(root / "journal.json")
         self.outgoing = GuardedJSON(root / "outgoing.json")
+        self.ocr_outgoing_stamp = None
+        self.ocr_returns_cache = {}
         if self.journal.exists and not self.journal.readable:
             raise AppError(self.journal.error or "交接日志损坏，已停止处理。", "handoff")
         if self.outgoing.exists and not self.outgoing.readable:
@@ -57,15 +59,30 @@ class HandoffBook:
                                  or not all(isinstance(item, dict) for item in guard.data[key])):
                 raise AppError("交接记录版本或格式无效，已保留原件。", "handoff")
 
-    def import_package(self, path: Path, now: datetime | None = None, *, remember=True) -> dict:
+    def import_package(self, path: Path, now: datetime | None = None, *, remember=True,
+                       expected_digest: str | None = None) -> dict:
         if not self.journal.readable or not self.outgoing.readable:
             raise AppError("交接日志或发送记录无法读取，已停止处理。", "handoff")
         now = now or datetime.now(timezone.utc)
-        manifest, files, digest_hex = read_package(path, now=now)
+        from gaowenjian.ocr_returns import inspect_return, is_return_path
+
+        from_mailbox = is_return_path(path)
+        if from_mailbox and expected_digest is None:
+            raise AppError("请先在交接页审核 OCR 结果，再确认接收。", "reviewRequired")
+        manifest, files, digest_hex = inspect_return(self, path, now) if from_mailbox else read_package(path, now=now)
+        bound_ocr = (manifest["kind"] == "result" and manifest["action"] == "ocr.files"
+                     and "requestManifestSHA256" in manifest["provenance"])
+        if from_mailbox or bound_ocr:
+            if expected_digest is None:
+                raise AppError("请先在交接页审核 OCR 结果，再确认接收。", "reviewRequired")
+            if digest_hex != expected_digest:
+                raise AppError("交接包自审核后发生变化，请重新审核。", "changed")
         if _already(self.journal.data, manifest.get("requestID"), digest_hex):
             return {"duplicate": True, "requestID": manifest.get("requestID"), "opened": []}
         action = manifest["action"]
         opened = []
+        ocr_sources = []
+        ocr_items = {}
         if action == "documents.open" and manifest.get("items") and manifest.get("references"):
             raise AppError("打开文档的交接不能同时携带附件和原件引用。", "invalidActionInput")
         if action == "documents.newText" and (len(files) != 1 or manifest["references"] or manifest["items"][0]["uti"] not in TEXT_UTIS):
@@ -78,18 +95,25 @@ class HandoffBook:
             opened.append({"kind": "newText", "text": text, "title": (manifest.get("parameters") or {}).get("suggestedTitle"), "manifest": _public_manifest(manifest)})
         elif action == "documents.open" or (manifest["kind"] == "result" and action == "ocr.files"):
             if action == "ocr.files":
-                from gaowenjian.ocr_handoff import validate_result
+                from gaowenjian.ocr_handoff import result_sources, validate_result
 
                 if validate_result(manifest, files, self.outgoing.data, self.journal.data):
                     return {"duplicate": True, "requestID": manifest["requestID"], "opened": []}
                 if not files:
                     opened.append({"kind": "receipt", "action": action, "status": manifest["status"]})
+                else:
+                    ocr_sources = result_sources(self, manifest)
+                    sources = {item["sourceItemID"]: item for item in ocr_sources}
+                    ocr_items = {output["resultItemID"]: (sources[output["sourceItemID"]], output)
+                                 for output in manifest["provenance"]["outputs"]}
             for item, content in zip(manifest["items"], files, strict=True):
                 uti = item["uti"]
+                source, output = ocr_items.get(item["id"], (None, None))
+                item_manifest = _public_manifest(manifest, source, output)
                 if uti in TEXT_UTIS or uti in {"public.json", "application/json", "text/json"}:
-                    opened.append({"kind": "newText", "text": _read_text(content), "title": Path(item["relativePath"]).name, "manifest": _public_manifest(manifest)})
+                    opened.append({"kind": "newText", "text": _read_text(content), "title": Path(item["relativePath"]).name, "manifest": item_manifest})
                 elif uti in PDF_UTIS:
-                    opened.append({"kind": "pdf", "bytes": content, "title": Path(item["relativePath"]).name, "manifest": _public_manifest(manifest)})
+                    opened.append({"kind": "pdf", "bytes": content, "title": Path(item["relativePath"]).name, "manifest": item_manifest})
                 else:
                     raise AppError("交接文件类型目前不能在 Windows 版打开，原文档未修改。", "handoff")
             for reference in manifest.get("references") or []:
@@ -102,12 +126,58 @@ class HandoffBook:
         record = {"requestID": manifest["requestID"], "manifestSHA256": digest_hex, "action": action}
         if action == "ocr.files":
             record["inReplyTo"] = manifest["inReplyTo"]
+            record["status"] = manifest["status"]
+            record["failureCount"] = len(manifest["provenance"]["exportFailures"])
+            record["ocrSources"] = ocr_sources
+            record["ocrOutputs"] = [
+                {**ocr_items[item["id"]][1], "sha256": item["sha256"], "uti": item["uti"],
+                 "name": Path(item["relativePath"]).name} for item in manifest["items"]
+            ]
         if remember:
             self.finish_import(record)
         return {"duplicate": False, "requestID": manifest["requestID"], "opened": opened, "record": record}
 
     def finish_import(self, record: dict) -> None:
         _remember(self.journal, record)
+
+    def incoming_pdf(self, path: Path, sha: str) -> dict | None:
+        """Recover source pages only for an explicitly accepted, unchanged app-owned copy."""
+        if (not self.journal.readable or not _sha(sha)
+                or path.absolute().parent != self.root.absolute() / "Incoming"):
+            return None
+        try:
+            regular_path(path)
+        except (AppError, OSError):
+            return None
+        for record in reversed((self.journal.data or {}).get("entries", [])):
+            if record.get("action") != "ocr.files":
+                continue
+            outputs, sources = record.get("ocrOutputs"), record.get("ocrSources")
+            if not isinstance(outputs, list) or not isinstance(sources, list):
+                continue
+            for output in outputs:
+                if (not isinstance(output, dict) or output.get("sha256") != sha
+                        or not isinstance(output.get("uti"), str) or output["uti"] not in PDF_UTIS):
+                    continue
+                name = output.get("name")
+                if not isinstance(name, str) or path.name != f"{sha[:16]}-{name[:80]}":
+                    continue
+                source = next((item for item in sources if isinstance(item, dict)
+                               and item.get("sourceItemID") == output.get("sourceItemID")
+                               and item.get("sourceSHA256") == output.get("sourceSHA256")
+                               and isinstance(item.get("pages"), list)
+                               and {"sourceItemID", "sourceSHA256", "name", "path", "pages"}.issubset(item)), None)
+                if source is None:
+                    continue
+                from gaowenjian.ocr_returns import PROVIDER
+
+                details = {"action": "ocr.files", "requestID": record.get("requestID"), "inReplyTo": record.get("inReplyTo"),
+                           "sourceBundleID": PROVIDER, "status": record.get("status"), "provenance": {}}
+                output_link = {key: value for key, value in output.items() if key not in {"sha256", "uti", "name"}}
+                result = _public_manifest(details, source, output_link)
+                result["failureCount"] = record.get("failureCount", 0)
+                return result
+        return None
 
     def resolve_reference(self, reference: dict, selected: Path, *, directory=False) -> None:
         declared = _file_url(reference["fileURL"])
@@ -485,13 +555,14 @@ def _read_text(data: bytes) -> str:
         raise AppError("文字交接必须是有效 UTF-8 文件。", "invalidUTF8") from exc
 
 
-def _public_manifest(manifest: dict) -> dict:
+def _public_manifest(manifest: dict, source: dict | None = None, output: dict | None = None) -> dict:
     info = {key: manifest.get(key) for key in ("action", "requestID", "inReplyTo", "status", "sourceBundleID")}
     if manifest["action"] == "ocr.files":
-        provenance = manifest["provenance"]
-        info["pages"] = [{"pageNumber": page["pageNumber"], "status": page["status"], "lineCount": page["lineCount"]}
-                         for source in provenance.get("sources", []) for page in source["pages"]]
-        info["failureCount"] = len(provenance.get("exportFailures", []))
+        info["failureCount"] = len(manifest["provenance"].get("exportFailures", []))
+        if source and output:
+            info.update({"sourceItemID": source["sourceItemID"], "sourceSHA256": source["sourceSHA256"],
+                         "sourceName": source["name"], "sourcePath": source["path"], "pages": source["pages"],
+                         "output": output})
     return info
 
 

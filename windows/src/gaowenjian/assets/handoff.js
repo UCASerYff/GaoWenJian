@@ -9,6 +9,13 @@ let ocrLanguages = "";
 let ocrOptionsOpen = false;
 let ocrBusy = false;
 let handoffLoading = false;
+let ocrReturns = {results: [], issues: [], pending: false};
+let ocrReturnNativeVisible = true;
+let ocrReturnTimer = 0;
+let ocrReturnRequest = null;
+let ocrReturnRefreshQueued = false;
+let ocrVisibilityGeneration = 0;
+let ocrNativeRevision = 0;
 
 const handoffStatus = {pending: "待处理", completed: "已完成", partial: "部分完成", failed: "失败", cancelled: "已取消", unsupported: "不支持"};
 const handoffApps = {"com.gaoseries.GaoCaoZuo": "搞操作", "com.gaoseries.GaoYanJiu": "搞研究",
@@ -31,6 +38,7 @@ function handoffPanel() {
   return `<div class="doc-tools-page">
     <div class="doc-tools-heading"><h1>文档交接</h1><p>接收其他应用的文档，或发送当前内容的副本。</p></div>
     ${handoffReview ? handoffReviewCard(handoffReview) : ""}
+    <div id="ocr-return-inbox" hidden></div>
     <div class="handoff-grid">
       <div class="doc-tools-card handoff-ocr-card"${ocrBusy ? ' aria-busy="true"' : ""}>
         <div class="handoff-card-heading">
@@ -69,7 +77,8 @@ function handoffPanel() {
         </div>
         <p class="doc-tools-hint">请求生成后须在 2 分钟内交给搞操作。</p>
         ${handoffRequest ? `<div class="doc-tools-status" role="status"><strong>${h(handoffRequest.label)}</strong>
-          <span class="doc-truncate" title="${h(handoffRequest.path)}">${h(handoffRequest.path)}</span></div>` : ""}
+          <span class="doc-truncate" title="${h(handoffRequest.path)}">${h(handoffRequest.path)}</span>
+          ${handoffRequest.returnEnabled === false ? "<span>自动回传不可用，可手工接收结果包。</span>" : ""}</div>` : ""}
       </div>
       <div class="handoff-secondary">
         <div class="doc-tools-card">
@@ -104,8 +113,15 @@ function handoffReviewCard(result) {
     ${entries.length ? `<ul class="handoff-files">${entries.map(({name, detail}) =>
       `<li><span class="doc-file-icon" aria-hidden="true">${icon("doc")}</span><span class="doc-truncate" title="${h(name)}">${h(name)}</span>
         <span class="doc-tools-hint">${h(detail)}</span></li>`).join("")}</ul>` : ""}
+    ${result.ocrSources?.length ? `<div class="ocr-review-sources"><h3>原件与页码</h3>${result.ocrSources.map((source) => {
+      const pages = source.pages || [];
+      const failed = pages.filter((page) => page.status === "failed").length;
+      return `<details class="doc-tools-detail"><summary><span class="doc-truncate" title="${h(source.path || source.name)}">${h(source.name)} · ${pages.length} 页${failed ? ` · ${failed} 页失败` : ""}</span>${icon("chevron")}</summary>
+        <p>原件 SHA-256 <code>${h(source.sourceSHA256)}</code></p>
+        ${pages.length ? `<p>${h(pages.map((page) => `第 ${page.pageNumber} 页 · ${page.status === "failed" ? "识别失败" : `${page.lineCount} 行`}`).join("；"))}</p>` : ""}</details>`;
+    }).join("")}</div>` : ""}
     ${result.organizer ? organizerReviewPanel(result) :
-      '<div class="doc-tools-actions"><button id="handoff-accept" class="doc-tools-primary">接收交接包</button><button id="handoff-cancel">取消</button></div>'}
+      `<div class="doc-tools-actions"><button id="handoff-accept" class="doc-tools-primary">${result.ocrSources ? "接收结果副本" : "接收交接包"}</button><button id="handoff-cancel">取消</button></div>`}
   </div>`;
 }
 
@@ -166,14 +182,119 @@ async function refreshHandoff() {
   handoffState = (await api("/api/handoff/state", {})).result;
 }
 
-async function reviewHandoff(path) {
+async function reviewHandoff(path, expectedDigest = null) {
   if (!path) return;
-  handoffReview = {...(await api("/api/handoff/inspect", {path})).result, path};
+  const review = (await api("/api/handoff/inspect", {path})).result;
+  if (expectedDigest && review.sha256 !== expectedDigest) {
+    checkOcrReturns();
+    throw new Error("回传结果已变化，请重新查看待审核列表。");
+  }
+  handoffReview = {...review, path};
   message = "";
   view = "handoff";
   render();
   document.getElementById("handoff-review-title")?.focus();
 }
+
+function ocrReturnWindowActive() {
+  return surface === "workspace" && ocrReturnNativeVisible && !document.hidden;
+}
+
+function setOcrReturnWindowVisible(visible, revision) {
+  if (revision <= ocrNativeRevision) return;
+  ocrNativeRevision = revision;
+  if (visible !== ocrReturnNativeVisible) {
+    ocrReturnNativeVisible = visible;
+    updateOcrReturnVisibility();
+  }
+}
+
+function updateOcrReturnVisibility() {
+  ocrVisibilityGeneration++;
+  clearTimeout(ocrReturnTimer);
+  if (ocrReturnWindowActive()) checkOcrReturns();
+}
+
+function checkOcrReturns() {
+  if (!ocrReturnWindowActive()) return;
+  if (ocrReturnRequest) {
+    ocrReturnRefreshQueued = true;
+    return;
+  }
+  const generation = ocrVisibilityGeneration;
+  clearTimeout(ocrReturnTimer);
+  ocrReturnRequest = fetch("/api/handoff/ocr-returns", {headers: {"X-Gao-Token": token}})
+    .then((response) => response.ok ? response.json() : null)
+    .then((result) => {
+      if (result && !result.paused && ocrReturnWindowActive() && generation === ocrVisibilityGeneration) {
+        ocrReturns = result;
+        paintOcrReturns();
+      }
+    }).catch(() => {}).finally(() => {
+      ocrReturnRequest = null;
+      const refresh = ocrReturnRefreshQueued || generation !== ocrVisibilityGeneration;
+      ocrReturnRefreshQueued = false;
+      if (!ocrReturnWindowActive()) return;
+      if (refresh) checkOcrReturns();
+      else if (ocrReturns.pending) ocrReturnTimer = setTimeout(checkOcrReturns, 4000);
+    });
+}
+
+function replaceOcrReturnContent(node, html) {
+  if (!node) return;
+  if (node.ocrContent !== html) {
+    node.ocrContent = html;
+    node.innerHTML = html;
+    node.hidden = !html;
+  }
+}
+
+function paintOcrReturns() {
+  const {results, issues, pending} = ocrReturns;
+  const nav = document.querySelector('#workspace-nav [data-go="handoff"]');
+  if (nav) {
+    nav.toggleAttribute("data-ocr-waiting-review", results.length > 0);
+    const label = "OCR 与交接" + (results.length ? `，${results.length} 项待审核` : "");
+    nav.setAttribute("aria-label", label);
+    nav.title = label;
+  }
+  const documentSlot = document.getElementById("ocr-document-return");
+  const active = view === "editor" ? selected() : null;
+  const normalize = (path) => path?.replaceAll("/", "\\").toLowerCase();
+  const sameOriginal = (source) => source.path && normalize(source.path) === normalize(active.ocrSourcePath);
+  const matching = active?.ocrSourceSHA256 && active.ocrSourcePath ? results.filter((item) =>
+    item.sources.some(sameOriginal)) : [];
+  const priorVersion = matching.length && !matching.some((item) =>
+    item.sources.some((source) => sameOriginal(source) && source.sourceSHA256 === active.ocrSourceSHA256));
+  replaceOcrReturnContent(documentSlot, matching.length ? `<div class="ocr-document-notice">
+    ${icon("scan")}<span>此文件有 ${matching.length} 项 OCR 结果待审核。${priorVersion ? "识别基于提交时的文件副本。" : ""}</span>
+    ${matching.length === 1 ? `<button data-ocr-review="${h(matching[0].resultID)}">审核结果</button>` : '<button data-ocr-inbox>查看待审核</button>'}</div>` : "");
+  const queued = results.filter((item) => item.sha256 !== handoffReview?.sha256);
+  replaceOcrReturnContent(document.getElementById("ocr-return-inbox"), queued.length || pending || issues.length ?
+    `<section class="doc-tools-card ocr-inbox" aria-labelledby="ocr-inbox-title">
+      <div class="handoff-card-heading"><div><h2 id="ocr-inbox-title">OCR 待审核</h2><p>${queued.length ? "核对来源和页码后，再接收结果副本。" : "如未收到回传，可手工接收结果包。"}</p></div>
+      ${pending ? '<span class="doc-tools-state" role="status">等待搞操作回传</span>' : ""}</div>
+      ${queued.length ? `<ul class="handoff-files">${queued.map((item) => {
+        const names = item.sources.map((source) => source.name).join("、");
+        const pages = item.sources.reduce((sum, source) => sum + (source.pages?.length || 0), 0);
+        return `<li><span class="doc-file-icon" aria-hidden="true">${icon("scan")}</span><span class="doc-truncate" title="${h(names)}">${h(names || "OCR 结果")}</span>
+          <span class="doc-tools-hint">${pages} 页 · ${h(handoffStatus[item.status] || item.status)}</span>
+          <button data-ocr-review="${h(item.resultID)}">审核</button></li>`;
+      }).join("")}</ul>` : ""}
+      ${issues.length ? '<p class="ocr-inbox-warning" role="status">部分回传未通过核验。可从搞操作手工导出结果包后再审核。</p>' : ""}
+    </section>` : "");
+}
+
+document.addEventListener("visibilitychange", updateOcrReturnVisibility);
+document.addEventListener("click", (event) => {
+  const button = event.target.closest?.("[data-ocr-review], [data-ocr-inbox]");
+  if (!button) return;
+  if (button.hasAttribute("data-ocr-inbox")) navigate("handoff").catch(fail);
+  else {
+    const item = ocrReturns.results.find((result) => result.resultID === button.dataset.ocrReview);
+    if (item) leaveCurrent().then((ready) => ready && reviewHandoff(item.path, item.sha256)).catch(fail);
+  }
+});
 
 function organizerReviewPanel(review) {
   const options = review.organizer;
@@ -243,6 +364,7 @@ async function makeOcrRequest(send) {
   render();
   try {
     handoffRequest = {...(await api("/api/handoff/ocr", payload)).result, label: "已导出 OCR 请求包"};
+    checkOcrReturns();
     if (send) {
       const opened = (await api("/api/handoff/dispatch", {
         requestID: handoffRequest.requestID, provider: providerOverride, confirm: true,
@@ -301,6 +423,7 @@ function bindHandoff() {
     await refreshHandoff();
     if (response.result.id) view = "editor";
     message = state.status;
+    checkOcrReturns();
     render();
   });
   listenHandoff("handoff-cancel", () => { handoffReview = null; render(); });
@@ -335,7 +458,10 @@ function incomingHandoff(tab) {
   const source = handoffApps[incoming.sourceBundleID] || incoming.sourceBundleID;
   const action = incoming.action === "ocr.files" ? "OCR" : "文档交接";
   const failed = (incoming.pages || []).filter((page) => page.status === "failed").length;
+  const pages = action === "OCR" ? (incoming.pages || []).map((page) => `第 ${page.pageNumber} 页`) : [];
   return '<div class="banner' + (failed || incoming.failureCount ? " warn" : "") + '">' + h(source) + ' · ' + action
     + (status ? ' · ' + h(status) : '') + (failed ? ' · ' + failed + ' 页失败' : '')
-    + (incoming.failureCount ? ' · ' + incoming.failureCount + ' 份导出失败' : '') + '</div>';
+    + (incoming.failureCount ? ' · ' + incoming.failureCount + ' 份导出失败' : '')
+    + (incoming.sourceName ? ` · 原件 <span title="${h(incoming.sourcePath || incoming.sourceName)}">${h(incoming.sourceName)}</span>` : "")
+    + (pages.length ? ` · <span title="${h(pages.join("、"))}">${h(pages.slice(0, 3).join("、"))}${pages.length > 3 ? ` 等 ${pages.length} 页` : ""}</span>` : "") + '</div>';
 }

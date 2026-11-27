@@ -85,6 +85,12 @@ class WindowActions:
     def show_latex_pdf(self, tab_id: str):
         self._desktop.show_latex_pdf(tab_id)
 
+    def capture_project_readers(self):
+        return self._desktop.capture_project_readers()
+
+    def sync_project_readers(self):
+        self._desktop.sync_project_readers()
+
 
 class Desktop:
     def __init__(self, webview, server, *, hidden=False, tray=None):
@@ -101,6 +107,8 @@ class Desktop:
         self.closing = False
         self._close_lock = threading.Lock()
         self._main_hidden = hidden
+        self._ocr_visibility_revision = 0
+        self._ocr_visibility_lock = threading.Lock()
 
     def _create(self, title, endpoint="", note_id="", **options):
         actions = WindowActions(self, note_id)
@@ -110,9 +118,12 @@ class Desktop:
 
     def start(self, activate):
         self.webview.settings["OPEN_EXTERNAL_LINKS_IN_BROWSER"] = True
+        self.server.ocr_window_visible = not self.hidden
         self.main = self._create(WINDOW_TITLE, "?view=editor" if activate else "", width=1160, height=820, min_size=(770, 560))
         self.main.events.closing += self._request_workspace_close
         self.main.events.loaded += self._attach_file_drop
+        self.main.events.minimized += lambda: self._set_ocr_visibility(False)
+        self.main.events.restored += lambda: self._set_ocr_visibility(not self._main_hidden)
         if self.tray:
             threading.Thread(target=self._handle_tray_events, name="GaoWenJian desktop activation", daemon=True).start()
         self.webview.start(gui="edgechromium", private_mode=True)
@@ -151,6 +162,7 @@ class Desktop:
                 native.Activate()
 
         native.BeginInvoke(Action(show))
+        self._set_ocr_visibility(True)
 
     def hide_workspace(self):
         native = self.main.native
@@ -158,9 +170,21 @@ class Desktop:
             from System import Action
 
             self._main_hidden = True
+            self._set_ocr_visibility(False)
             native.BeginInvoke(Action(lambda: native.Hide()))
             return True
         return False
+
+    def _set_ocr_visibility(self, visible):
+        with self._ocr_visibility_lock:
+            if self.server.ocr_window_visible == visible:
+                return
+            self.server.ocr_window_visible = visible
+            self._ocr_visibility_revision += 1
+            revision = self._ocr_visibility_revision
+        if self.main.events.loaded.is_set() and not self.closing:
+            script = f"setOcrReturnWindowVisible({json.dumps(visible)}, {revision})"
+            threading.Thread(target=self.main.run_js, args=(script,), daemon=True).start()
 
     def _attach_file_drop(self):
         from webview.dom import DOMEventHandler
@@ -218,6 +242,24 @@ class Desktop:
         window = self._create(title, "latex-reader.html?" + query, width=1000, height=850, min_size=(550, 450))
         self.readers[tab_id] = window
         window.events.closed += lambda: self.readers.pop(tab_id, None)
+
+    def capture_project_readers(self):
+        pages = {}
+        for tab_id, window in list(self.readers.items()):
+            if window.events.loaded.is_set() and window.native is not None and not window.native.IsDisposed:
+                page = window.evaluate_js("typeof current === 'number' ? current : null")
+                if type(page) is int:
+                    pages[tab_id] = page
+        return pages
+
+    def sync_project_readers(self):
+        with self.server.lock:
+            tabs = {tab.id: tab.project_reading.get("readerPage") for tab in self.server.workspace.tabs}
+        for tab_id, window in list(self.readers.items()):
+            if tab_id not in tabs:
+                window.destroy()
+            elif (page := tabs[tab_id]) is not None:
+                window.run_js(f"selectPage({page}, true)")
 
     def close_workspace(self, allow_dirty):
         with self._close_lock:

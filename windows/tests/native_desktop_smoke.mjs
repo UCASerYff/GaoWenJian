@@ -153,6 +153,22 @@ Second page
   await until(() => reader("document.querySelector('#reader-canvas img')?.naturalWidth > 0"), "independent PDF reader");
   assert.equal(await reader("document.querySelector('#reader-total').textContent.trim()"), "/ 2");
   await capture(reader, "native-latex-reader-150dpi", 800, 650);
+  if (await main("Boolean(window.pywebview.api.capture_project_readers)")) {
+    await reader("document.querySelector('#reader-next').click()");
+    await until(() => reader("document.querySelector('#reader-page-number').value === '2'"), "native LaTeX reader page two");
+    assert.equal(await main(`(async () => (await window.pywebview.api.capture_project_readers())[${JSON.stringify(opened)}])()`), 1);
+    await main("document.querySelector('#workspace-nav [data-go=projects]').click()");
+    await until(() => main("Boolean(document.querySelector('[data-project-new]'))"), "native projects entry");
+    await main("document.querySelector('[data-project-new]').click()");
+    const fields = {name: "原生读窗项目", folder: root, main: latex};
+    await main(`(() => {
+      for (const [field,value] of Object.entries(${JSON.stringify(fields)})) document.querySelector('#project-' + field).value = value;
+      document.querySelector('.project-dialog button[type=submit]').click();
+    })()`);
+    await until(() => main("activeProject()?.documents.some(item => item.reading?.readerPage === 1)"), "native reading position saved in project");
+    await capture(main, "native-writing-project-dark-150dpi", 800, 650);
+    console.log("native project OK: captured independent LaTeX reader page and saved through the project form");
+  }
   await main('setTimeout(() => window.pywebview.api.close_workspace(true),100); true');
   const exit = await Promise.race([new Promise((done) => child.once("exit", done)), delay(15000, "timeout", {ref: false})]);
   assert.equal(exit, 0, logs);

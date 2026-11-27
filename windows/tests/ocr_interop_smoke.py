@@ -37,9 +37,14 @@ class Workbench:
     def call(self, path, value):
         return self.post(path, value)["result"]
 
+    def get(self, path):
+        request = Request(self.url + path, headers={"X-Gao-Token": self.token})
+        with self.session.open(request, timeout=15) as response:
+            return json.load(response)
+
 
 @contextmanager
-def serve(cli, data, *, package=None):
+def serve(cli, data, *, local_appdata, package=None):
     stdout_path = data.with_suffix(".out")
     stderr_path = data.with_suffix(".err")
     data.mkdir()
@@ -47,7 +52,8 @@ def serve(cli, data, *, package=None):
     if package:
         command += ["--gaoaction", str(package)]
     with stdout_path.open("wb") as output, stderr_path.open("wb") as errors:
-        process = subprocess.Popen(command, stdout=output, stderr=errors, creationflags=subprocess.CREATE_NO_WINDOW)
+        environment = {**os.environ, "LOCALAPPDATA": str(local_appdata), "PYTHONDONTWRITEBYTECODE": "1"}
+        process = subprocess.Popen(command, stdout=output, stderr=errors, env=environment, creationflags=subprocess.CREATE_NO_WINDOW)
         workbench = None
         try:
             deadline = time.monotonic() + 45
@@ -95,29 +101,43 @@ def verify_setup(archive: Path) -> None:
 
 def main() -> None:
     options = argparse.ArgumentParser()
-    options.add_argument("--provider-setup", type=Path, required=True)
+    provider = options.add_mutually_exclusive_group(required=True)
+    provider.add_argument("--provider-setup", type=Path)
+    provider.add_argument("--provider-source", type=Path, help="use the provider's source launch_cli.py and prebuilt native OCR helper")
     options.add_argument("--client-cli", type=Path)
+    options.add_argument("--automatic", action="store_true", help="expect the provider to publish an automatic return before manual export")
     args = options.parse_args()
-    args.provider_setup = args.provider_setup.resolve(strict=True)
-    verify_setup(args.provider_setup)
     with tempfile.TemporaryDirectory(prefix="GaoWenJian-ocr-smoke-") as directory:
         root = Path(directory)
-        target = root / "isolated provider"
-        subprocess.run([str(args.provider_setup), "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART",
-                        "/SP-", "/ISOLATEDSMOKE=1", f"/DIR={target}"],
-                       check=True, timeout=140, creationflags=subprocess.CREATE_NO_WINDOW)
-        provider_cli = target / "GaoCaoZuo-cli.exe"
-        capability = json.loads(subprocess.check_output([str(provider_cli), "--capabilities"],
+        local_appdata = root / "LocalAppData"
+        local_appdata.mkdir()
+        if args.provider_setup:
+            installer = args.provider_setup.resolve(strict=True)
+            verify_setup(installer)
+            target = root / "isolated provider"
+            subprocess.run([str(installer), "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART",
+                            "/SP-", "/ISOLATEDSMOKE=1", f"/DIR={target}"],
+                           check=True, timeout=140, creationflags=subprocess.CREATE_NO_WINDOW)
+            provider_cli = [str(target / "GaoCaoZuo-cli.exe")]
+        else:
+            provider_cli = [sys.executable, "-B", str(args.provider_source.resolve(strict=True))]
+        capability = json.loads(subprocess.check_output([*provider_cli, "--capabilities"],
                                                         creationflags=subprocess.CREATE_NO_WINDOW, timeout=30))
         assert capability["bundleID"] == "com.gaoseries.GaoCaoZuo"
         assert any(item["action"] == "ocr.files" for item in capability["actions"])
 
         files = create_fixtures(root)
+        original_digests = {file: hashlib.sha256(file.read_bytes()).hexdigest() for file in files}
         cli = [str(args.client_cli)] if args.client_cli else [sys.executable, str(Path(__file__).parents[1] / "launch.py")]
-        with serve(cli, root / "client data") as client:
+        with serve(cli, root / "client data", local_appdata=local_appdata) as client:
             request = client.call("api/handoff/ocr", {"confirm": True, "paths": [str(path) for path in files],
                                                       "outputs": ["text", "markdown", "json", "searchablePDF"]})
-            with serve([str(provider_cli)], root / "provider data", package=request["path"]) as workbench:
+            assert request["returnEnabled"] is True
+            slot = local_appdata / "GaoSeries" / "GaoAction" / "OcrReturns-v1" / request["requestID"]
+            ticket = json.loads((slot / "request.json").read_text(encoding="utf-8"))
+            assert ticket["requestManifestSHA256"] == hashlib.sha256((Path(request["path"]) / "manifest.json").read_bytes()).hexdigest()
+            assert client.get("api/handoff/ocr-returns")["pending"]
+            with serve(provider_cli, root / "provider data", local_appdata=local_appdata, package=request["path"]) as workbench:
                 languages = workbench.call("api/screenshot/ocr/languages", {})["languages"]
                 assert languages, "No Windows OCR language is installed"
                 jobs = workbench.call("api/ocr-provider/jobs", {})["jobs"]
@@ -125,26 +145,48 @@ def main() -> None:
                 approved = workbench.call("api/ocr-provider/approve", {"requestID": request["requestID"], "confirm": True})
                 assert approved["status"] == "completed", approved
                 assert approved["resultCount"] == 8
-                result = workbench.call("api/ocr-provider/result", {"requestID": request["requestID"],
-                                         "directory": str(root), "confirm": True})
-                review = client.call("api/handoff/inspect", {"path": result["path"]})
-                accepted = client.post("api/handoff/import", {"path": result["path"], "sha256": review["sha256"]})
+                if args.automatic:
+                    waiting = client.get("api/handoff/ocr-returns")
+                    [item] = waiting["results"]
+                    assert item["requestID"] == request["requestID"] and Path(item["path"]) == slot / "result.gaoaction"
+                    assert client.get("api/handoff/ocr-returns") == waiting
+                    assert client.get("api/state")["tabs"] == [], "An automatic return opened document tabs before approval"
+                    result_path = item["path"]
+                    try:
+                        client.post("api/handoff/import", {"path": result_path})
+                    except RuntimeError:
+                        pass
+                    else:
+                        raise AssertionError("Automatic return was imported without its reviewed digest")
+                else:
+                    result_path = workbench.call("api/ocr-provider/result", {"requestID": request["requestID"],
+                                                 "directory": str(root), "confirm": True})["path"]
+                review = client.call("api/handoff/inspect", {"path": result_path})
+                assert {source["sourceSHA256"] for source in review["ocrSources"]} == set(original_digests.values())
+                accepted = client.post("api/handoff/import", {"path": result_path, "sha256": review["sha256"]})
                 tabs = accepted["state"]["tabs"]
                 assert len(tabs) == 8 and sum(tab["kind"] == "pdf" for tab in tabs) == 2
                 assert all(tab["incoming"]["inReplyTo"] == request["requestID"] for tab in tabs)
                 assert all(tab["incoming"]["status"] == "completed" for tab in tabs)
+                assert {tab["incoming"]["sourceName"] for tab in tabs} == {file.name for file in files}
+                assert all([page["pageNumber"] for page in tab["incoming"]["pages"]] == [1] for tab in tabs)
+                assert {file: hashlib.sha256(file.read_bytes()).hexdigest() for file in files} == original_digests
+                assert client.get("api/handoff/ocr-returns")["results"] == []
                 actual_text = "".join("".join(tab["text"].split()) for tab in tabs if tab["title"].endswith(".txt"))
                 assert "1234567890" in actual_text and "9876543210" in actual_text, actual_text
                 assert all(len(tab["preview"]["pages"]) == 1 for tab in tabs if tab["kind"] == "pdf")
                 repeated = workbench.call("api/ocr-provider/result", {"requestID": request["requestID"],
                                           "directory": str(root), "confirm": True})
                 try:
-                    client.post("api/handoff/import", {"path": repeated["path"]})
+                    repeat_sha = hashlib.sha256((Path(repeated["path"]) / "manifest.json").read_bytes()).hexdigest()
+                    client.post("api/handoff/import", {"path": repeated["path"], "sha256": repeat_sha})
                 except RuntimeError as exc:
                     assert '"code": "duplicate"' in str(exc), exc
                 else:
                     raise AssertionError("Re-exported OCR result reopened existing tabs")
-    print("OK · installed GaoCaoZuo capabilities, review, offline PNG/PDF OCR and verified GaoWenJian import (8 pieces).")
+    route = "automatic return" if args.automatic else "manual export"
+    executable = "installed GaoCaoZuo" if args.provider_setup else "GaoCaoZuo source with the native helper"
+    print(f"OK · {executable} offline PNG/PDF OCR, {route}, GaoWenJian approval (8 outputs).")
 
 
 if __name__ == "__main__":

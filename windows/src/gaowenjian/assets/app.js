@@ -70,6 +70,7 @@ function panel(tab) {
   if (view === "notes") return notesPanel();
   if (view === "settings") return settingsPanel();
   if (view === "files") return organizerPanel();
+  if (view === "projects") return projectsPanel();
   if (!tab || view === "home") return homePanel();
   if (tab.kind === "markdown" || tab.kind === "latex" || tab.kind === "text") return incomingHandoff(tab) + textPanel(tab);
   if (tab.kind === "csv") return csvPanel(tab);
@@ -335,4 +336,8 @@ window.addEventListener("pywebviewready", () => {
   if (surface === "workspace") window.pywebview.api.restore_notes();
 });
 matchMedia("(prefers-color-scheme: dark)").addEventListener("change", applyTheme);
-refresh().catch(fail);
+refresh().then(async () => {
+  if (surface !== "workspace") return;
+  checkOcrReturns();
+  if (state?.launchHandoff) await reviewHandoff(state.launchHandoff);
+}).catch(fail);

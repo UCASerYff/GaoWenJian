@@ -23,6 +23,9 @@ let useOriginal = false;
 let showThumbs = true;
 let available = false;
 let scrollAnimation;
+let lastRecordedPage;
+let pendingPage;
+let pageTimer;
 
 function requestOptions(extra = {}) {
   return new URLSearchParams({tab: tabId, token: sessionToken, ...extra});
@@ -64,6 +67,22 @@ function selectPage(index, reveal = false) {
     thumbs.children[current]?.scrollIntoView({block: "nearest", inline: "nearest"});
   }
   updateControls();
+  if (available && current !== lastRecordedPage) {
+    pendingPage = current;
+    clearTimeout(pageTimer);
+    pageTimer = setTimeout(recordReaderPage, 150);
+  }
+}
+
+function recordReaderPage() {
+  if (!Number.isInteger(pendingPage)) return;
+  const page = pendingPage;
+  pendingPage = undefined;
+  lastRecordedPage = page;
+  fetch("/api/projects/reader", {
+    method: "POST", headers: {"X-Gao-Token": sessionToken, "Content-Type": "application/json"},
+    body: JSON.stringify({id: tabId, page}), keepalive: true,
+  }).catch(() => {});
 }
 
 function showOriginal(value) {
@@ -158,6 +177,8 @@ async function loadDocument() {
   byId("reader-meta").textContent = pages.length + " 页 · LaTeX 编译结果";
   byId("reader-total").textContent = "/ " + pages.length;
   pageNumber.max = pages.length;
+  current = Math.min(tab.projectReading?.readerPage || 0, pages.length - 1);
+  lastRecordedPage = current;
   const pdf = await fetch("/api/latex/document?" + requestOptions());
   if (!pdf.ok) throw new Error("编译 PDF 无法读取。");
   pdfUrl = URL.createObjectURL(await pdf.blob());
@@ -175,6 +196,7 @@ canvas.addEventListener("scroll", () => {
     if (index >= 0 && index !== current) selectPage(index);
   });
 });
+window.addEventListener("pagehide", recordReaderPage);
 byId("reader-toggle-pages").onclick = (event) => {
   showThumbs = !showThumbs;
   thumbs.hidden = !showThumbs;

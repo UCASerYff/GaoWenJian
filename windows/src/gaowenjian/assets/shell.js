@@ -77,6 +77,7 @@ const symbols = {
   home: '<rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/>',
   folder: '<path d="M3 7a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z"/>',
   folderPlus: '<path d="M3 7a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z M12 10v7m-3.5-3.5h7"/>',
+  project: '<path d="M3 7a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z M8 12h8m-8 4h5"/>',
   organize: '<path d="M21 9a2 2 0 0 0-2-2h-7l-2-2H5a2 2 0 0 0-2 2v11a2 2 0 0 0 2 2h6"/><circle cx="16.5" cy="15.5" r="3.2"/><path d="M16.5 10v2m0 7v2m-5.5-5.5h2m7 0h2"/>',
   latex: '<path d="M16.8 4.7c-2-2-5.6-.6-6.1 2.3L8.6 17c-.6 2.7-2.8 4-4.4 1.7M6.5 10h10M17 14l4 5m0-5-4 5"/>',
   markdown: '<path d="M3 5h18M3 10h13M3 15h18M3 20h10"/>',
@@ -123,6 +124,7 @@ function renderWorkspace() {
           <main class="main-panel ${view === "home" ? "home-panel" : ""}" data-view="${h(view)}" ${active ? `data-kind="${h(active.kind)}"` : ""}>
             ${message ? workspaceNotice(message, message === errorNotice, true) : ""}
             ${state.error ? workspaceNotice(state.error, true) : ""}
+            ${active?.ocrSourceSHA256 ? '<div id="ocr-document-return" aria-live="polite" hidden></div>' : ""}
             ${panel(tab)}
           </main>
         </div>
@@ -130,6 +132,7 @@ function renderWorkspace() {
       </div></div>`;
   bind();
   bindWorkspace();
+  paintOcrReturns();
 }
 
 function workspaceCommands(active) {
@@ -175,6 +178,7 @@ function workspaceSidebar() {
     <div class="app-brand"><img src="/app-icon.png" alt="" width="32" height="32"><strong>搞文件</strong></div>
     <nav class="shortcuts" aria-label="工作台导航">
       ${shortcut("工作台", "home", 'data-go="home"', view === "home")}
+      ${shortcut("写作项目", "project", 'data-go="projects"', view === "projects")}
       ${shortcut("整理与查找", "organize", 'data-go="files"', view === "files")}
       ${shortcut("便笺", "notes", 'data-go="notes"', view === "notes")}
       ${shortcut("OCR 与交接", "scan", 'data-go="handoff"', view === "handoff")}
@@ -207,6 +211,7 @@ function homePanel() {
   const restored = state.tabs.filter((item) => item.restored);
   return `<div class="welcome">
     <div class="welcome-header"><h1>工作台</h1><button class="plain home-folder" data-pick="folder">${icon("folderPlus")} 打开文件夹</button></div>
+    ${projectHomeShortcut()}
     ${restored.length ? `<div class="home-recovery" role="status">${icon("restore")}<span>已恢复 ${restored.length} 个未保存草稿</span><button data-tab="${h(restored[0].id)}">查看草稿</button></div>` : ""}
     <div class="welcome-columns">
       <section class="home-card recent-surface" aria-labelledby="recent-heading"><div class="home-card-heading"><h2 id="recent-heading">最近打开</h2>${state.recent.length ? '<button class="plain" data-browse aria-controls="workspace-browser">查看文件</button>' : ""}</div>
@@ -276,6 +281,7 @@ function openFromDesktop(path) {
 
 async function finishWorkspaceExit() {
   if (!(await leaveCurrent())) return;
+  await checkpointProject().catch(fail);
   if (window.pywebview?.api) {
     if (await window.pywebview.api.close_workspace()) return;
     const dirty = state.tabs.filter((item) => item.dirty);
@@ -283,11 +289,13 @@ async function finishWorkspaceExit() {
     const choice = await closeDocumentChoice(`还有 ${dirty.length} 个文件未保存`, true);
     if (choice !== "save") return false;
     for (const tab of dirty) if (!(await saveDocument(tab))) return false;
+    await checkpointProject().catch(fail);
     if (!(await window.pywebview.api.close_workspace())) throw new Error("还有修改待保存，请检查文档或桌面便笺。");
   } else await api("/api/shutdown", {}).then(() => window.close());
 }
 
 function bindWorkspace() {
+  bindProjects();
   document.querySelectorAll("[data-pick]").forEach((node) => node.onclick = () => pick(node.dataset.pick));
   document.querySelectorAll("[data-settings]").forEach((node) => node.onclick = () => showSettings().catch(fail));
   const nav = document.getElementById("toggle-sidebar");

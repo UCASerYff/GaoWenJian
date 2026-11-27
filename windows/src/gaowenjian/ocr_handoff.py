@@ -13,11 +13,11 @@ from pathlib import Path
 
 from gaowenjian.errors import AppError
 from gaowenjian.handoff import (
-    MAX_ITEM_BYTES, _remember, _request, _validate, _write_package, read_package, read_regular, regular_path,
+    MAX_ITEM_BYTES, _remember, _request, _sha, _validate, _write_package, read_package, read_regular, regular_path,
 )
+from gaowenjian.ocr_returns import PROVIDER, inspect_return, is_return_path, publish_ticket, scan_returns
 from gaowenjian.safety import digest
 
-PROVIDER = "com.gaoseries.GaoCaoZuo"
 ENGINE = "Windows.Media.Ocr"
 FORMATS = {"text": "public.utf8-plain-text", "markdown": "net.daringfireball.markdown",
            "json": "public.json", "searchablePDF": "com.adobe.pdf"}
@@ -28,7 +28,7 @@ LANGUAGE = re.compile(r"[A-Za-z]{2,8}(?:-[A-Za-z0-9]{1,8})*\Z", re.ASCII)
 
 
 def export_request(book, paths: list, outputs: list, languages: list, destination: Path | None = None,
-                   *, current: tuple[Path, bytes] | None = None, now=None) -> dict:
+                   *, current: tuple[Path, bytes] | None = None, origin: Path | None = None, now=None) -> dict:
     if not isinstance(paths, list) or not all(isinstance(path, str) and path for path in paths):
         raise AppError("请选择本机图像或 PDF 文件。", "invalid")
     if (not isinstance(outputs, list) or not outputs or not all(isinstance(value, str) and value in FORMATS for value in outputs)
@@ -46,13 +46,14 @@ def export_request(book, paths: list, outputs: list, languages: list, destinatio
     if languages:
         parameters["languages"] = list(dict.fromkeys(languages))
     manifest = _request("ocr.files", identifier, PROVIDER, parameters, now)
-    inputs = [(Path(value), None) for value in paths]
+    inputs = [(Path(value), None, Path(value)) for value in paths]
     if current:
-        inputs.insert(0, current)
+        inputs.insert(0, (*current, origin))
     files = {}
+    sources = []
     try:
         total = 0
-        for index, (path, content) in enumerate(inputs, start=1):
+        for index, (path, content, location) in enumerate(inputs, start=1):
             extension = path.suffix.lower()
             if extension not in INPUTS:
                 raise AppError("搞操作只接受受支持的图像与 PDF 附件。", "unsupported")
@@ -65,8 +66,13 @@ def export_request(book, paths: list, outputs: list, languages: list, destinatio
                 raise AppError("OCR 输入文件为空或超过本机交接大小限制，请分批。", "itemLimit")
             name = f"Input-{index}{extension}"
             files[name] = content
-            manifest["items"].append({"id": str(uuid.uuid4()), "relativePath": name, "uti": INPUTS[extension],
-                                      "byteCount": len(content), "sha256": digest(content)})
+            item_id, source_sha = str(uuid.uuid4()), digest(content)
+            manifest["items"].append({"id": item_id, "relativePath": name, "uti": INPUTS[extension],
+                                      "byteCount": len(content), "sha256": source_sha})
+            source = {"id": item_id, "sha256": source_sha, "name": location.name if location else path.name}
+            if location and location.is_absolute():
+                source["path"] = str(location)
+            sources.append(source)
     except OSError as exc:
         raise AppError("无法读取所选 OCR 输入。", "missing") from exc
     _validate(manifest, PROVIDER, now)
@@ -78,9 +84,10 @@ def export_request(book, paths: list, outputs: list, languages: list, destinatio
     raw = read_regular(path / "manifest.json", 1_048_576)
     session = {"requestID": identifier, "action": "ocr.files", "targetBundleID": PROVIDER,
                "manifestSHA256": digest(raw), "parameters": parameters, "expiresAt": manifest["expiresAt"],
-               "path": str(path), "sources": [{"id": item["id"], "sha256": item["sha256"]} for item in manifest["items"]]}
+               "path": str(path), "sources": sources}
     _remember(book.outgoing, session, key="sessions")
-    return {"path": str(path), "requestID": identifier, "expiresAt": manifest["expiresAt"], "itemCount": count}
+    return {"path": str(path), "requestID": identifier, "expiresAt": manifest["expiresAt"], "itemCount": count,
+            "returnEnabled": publish_ticket(session, now)}
 
 
 def default_provider() -> Path | None:
@@ -157,19 +164,26 @@ def validate_result(manifest: dict, files: list[bytes], outgoing, journal) -> bo
     session = next((item for item in sessions if item.get("requestID") == in_reply_to), None)
     require(session and session.get("action") == "ocr.files" and session.get("targetBundleID") == PROVIDER)
     require(manifest["sourceBundleID"] == PROVIDER and not manifest["references"]
-            and manifest["parameters"] == session["parameters"])
+            and manifest["parameters"] == session.get("parameters"))
     provenance = manifest["provenance"]
     require(provenance.get("engine") == ENGINE and provenance.get("networkUsed") is False)
     if "requestManifestSHA256" in provenance:
-        require(provenance["requestManifestSHA256"] == session["manifestSHA256"])
+        require(_sha(provenance["requestManifestSHA256"]) and provenance["requestManifestSHA256"] == session.get("manifestSHA256"))
     sources, outputs, failures = (provenance.get(key) for key in ("sources", "outputs", "exportFailures"))
     require(isinstance(sources, list) and isinstance(outputs, list) and isinstance(failures, list)
             and all(isinstance(value, str) for value in failures))
     status = manifest["status"]
     require(status in {"completed", "partial", "failed"})
     require(bool(manifest.get("errorCode")) == (status != "completed"))
-    expected = {item["id"]: item["sha256"] for item in session["sources"]}
-    requested = set(session["parameters"]["outputs"])
+    origin_records = session.get("sources")
+    require(isinstance(origin_records, list) and origin_records
+            and all(isinstance(item, dict) and isinstance(item.get("id"), str) and _sha(item.get("sha256"))
+                    for item in origin_records))
+    expected = {item["id"]: item["sha256"] for item in origin_records}
+    formats = manifest["parameters"].get("outputs")
+    require(len(expected) == len(origin_records) and isinstance(formats, list) and formats
+            and all(isinstance(value, str) and value in FORMATS for value in formats))
+    requested = set(formats)
     payloads = {item["id"]: (item, content) for item, content in zip(manifest["items"], files, strict=True)}
     mapped_sources = {}
     source_uuids = set()
@@ -220,6 +234,23 @@ def validate_result(manifest: dict, files: list[bytes], outgoing, journal) -> bo
     require(status != "failed" or (not pages_completed or (failures and not payloads)))
     return any(entry.get("action") == "ocr.files" and entry.get("inReplyTo") == in_reply_to
                for entry in (journal or {}).get("entries", []))
+
+
+def result_sources(book, manifest: dict) -> list[dict]:
+    """Associate validated provider pages with the local-only original document descriptors."""
+    entries = (book.outgoing.data or {}).get("sessions", []) if book else []
+    session = next((item for item in entries if item.get("requestID") == manifest["inReplyTo"]), {})
+    local = {item["id"]: item for item in session.get("sources", [])}
+    sources = []
+    for source in manifest["provenance"]["sources"]:
+        item_id = source["sourceItemID"]
+        record = local.get(item_id, {})
+        pages = [{key: page[key] for key in ("pageNumber", "status", "lineCount", "elapsedSeconds")}
+                 for page in source["pages"]]
+        sources.append({"sourceID": source["sourceID"], "sourceItemID": item_id, "sourceSHA256": source["sourceSHA256"],
+                        "name": record.get("name") or f"文件 {len(sources) + 1}", "path": record.get("path"),
+                        "pages": pages, "outputItemIDs": source["outputItemIDs"]})
+    return sources
 
 
 def _validate_json(content: bytes, source_sha: str, pages: list, require) -> None:

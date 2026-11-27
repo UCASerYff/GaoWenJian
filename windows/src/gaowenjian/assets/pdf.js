@@ -22,7 +22,7 @@ function pdfView(tab) {
   if (!pdfViews.has(tab.id)) {
     pdfViews.set(tab.id, {page: 0, navigation: null, navigationPane: "pages", spread: false, zoom: 0,
       inspector: "", editing: false, searchOpen: false, query: "", hits: [], hit: 0, pending: new Map(),
-      placement: null, jump: true, scroll: 0, notice: ""});
+      placement: null, jump: true, scroll: 0, offset: 0, notice: ""});
   }
   return pdfViews.get(tab.id);
 }
@@ -215,6 +215,9 @@ function bindPdf() {
   const number = workspace.querySelector("#pdf-page-number");
   const thumbs = workspace.querySelector(".pdf-thumbnails");
   const navigation = workspace.querySelector(".pdf-navigation");
+  const pageInset = 18;
+  let canvasSize = "";
+  const viewportTop = () => canvas.getBoundingClientRect().top + canvas.clientTop;
   const hasNavigation = () => Boolean(navigation && getComputedStyle(navigation).display !== "none");
   const syncControls = () => {
     number.value = ui.page + 1;
@@ -227,10 +230,11 @@ function bindPdf() {
     workspace.querySelector("#pdf-zoom-value").textContent = Math.round(factor * 100) + "%";
     workspace.querySelector(".pdf-reading [data-pdf-command='thumbs']").setAttribute("aria-pressed", String(hasNavigation()));
   };
-  const jump = (page) => {
+  const jump = (page, offset = 0) => {
     ui.page = Math.max(0, Math.min(page, info.pages.length - 1));
-    if (sheets[ui.page]) canvas.scrollTop = sheets[ui.page].offsetTop - 20;
-    ui.scroll = canvas.scrollTop;
+    const active = sheets[ui.page]?.getBoundingClientRect();
+    if (active) canvas.scrollTop += active.top - viewportTop() - pageInset + offset * active.height;
+    ui.offset = offset;
     syncControls();
     const inView = thumbs?.querySelector(`[data-pdf-page="${ui.page}"]`);
     if (inView && (inView.offsetTop < thumbs.scrollTop || inView.offsetTop + inView.offsetHeight > thumbs.scrollTop + thumbs.clientHeight)) {
@@ -238,6 +242,9 @@ function bindPdf() {
     }
   };
   const resize = () => {
+    const size = `${canvas.clientWidth},${canvas.clientHeight}`;
+    const resized = size !== canvasSize;
+    canvasSize = size;
     const columns = ui.spread ? 2 : 1;
     const fit = Math.min(920, Math.max(85, (canvas.clientWidth - (columns === 2 ? 56 : 36)) / columns));
     const visible = info.pages[ui.page];
@@ -256,7 +263,12 @@ function bindPdf() {
         image.src = url;
       }
     }
-    if (ui.jump) { ui.jump = false; jump(ui.page); }
+    if (ui.jump || resized) {
+      const offset = ui.jump ? ui.restoreOffset || 0 : ui.offset;
+      ui.jump = false;
+      delete ui.restoreOffset;
+      jump(ui.page, offset);
+    }
     else syncControls();
   };
   workspace.querySelectorAll("[data-pdf-retry]").forEach((button) => { button.onclick = (event) => {
@@ -266,25 +278,29 @@ function bindPdf() {
     image.src = `${image.dataset.source}&retry=${Date.now()}`;
   }; });
   resize();
-  if (ui.scroll && !ui.jump) canvas.scrollTop = ui.scroll;
   if (window.ResizeObserver) {
     pdfResize = new ResizeObserver(resize);
     pdfResize.observe(canvas);
   }
   canvas.onscroll = () => {
-    ui.scroll = canvas.scrollTop;
-    const at = canvas.scrollTop + 34;
-    let closest = ui.page;
-    if (!sheets[closest] || Math.abs(sheets[closest].offsetTop - at) > 35) {
-      for (let index = 0; index < sheets.length; index++) {
-        const sheet = sheets[index];
-        if (sheet.offsetTop <= at && at < sheet.offsetTop + sheet.offsetHeight) { closest = index; break; }
+    const top = viewportTop();
+    const bottom = top + canvas.clientHeight;
+    let closest = ui.page, active, mostVisible = 0;
+    for (const [index, sheet] of sheets.entries()) {
+      const region = sheet.getBoundingClientRect();
+      const visible = Math.min(bottom, region.bottom) - Math.max(top, region.top);
+      if (visible > 0 && (visible > mostVisible + 1 || (index === ui.page && visible >= mostVisible - 1))) {
+        closest = index;
+        active = region;
+        mostVisible = visible;
       }
     }
+    if (!active) return;
     if (closest !== ui.page) {
       ui.page = closest;
       syncControls();
     }
+    ui.offset = Math.max(0, Math.min(1, (top + pageInset - active.top) / Math.max(1, active.height)));
   };
   workspace.querySelectorAll("[data-pdf-page]").forEach((node) => { node.onclick = () => jump(Number(node.dataset.pdfPage)); });
   workspace.querySelectorAll("[data-pdf-nav]").forEach((node) => { node.onclick = () => {
