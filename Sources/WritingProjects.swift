@@ -76,9 +76,14 @@ enum WritingProjectPaths {
     }
 
     static func key(_ path: String) -> String {
-        let aliases = ["/tmp", "/var", "/etc"]
-        let local = aliases.contains { path == $0 || path.hasPrefix($0 + "/") } ? "/private" + path : path
-        return URL(fileURLWithPath: local).standardizedFileURL.path
+        guard path.hasPrefix("/") else { return path }
+        let components = path.split(separator: "/")
+        let local = "/" + components.joined(separator: "/")
+        // Foundation's file-path standardization can strip /private and restore a system symlink.
+        switch components.first {
+        case "tmp", "var", "etc": return "/private" + local
+        default: return local
+        }
     }
 
     static func contains(_ path: String, in folder: String) -> Bool {
@@ -98,25 +103,25 @@ enum WritingProjectPaths {
     static func requireExisting(_ path: String, directory: Bool, dataRoot: URL) throws -> URL {
         guard isAbsolute(path) else { throw FileIssue.message("项目位置不是有效的本机绝对路径。") }
         let normalized = key(path)
-        let root = dataRoot.resolvingSymlinksInPath().path
+        let root = key(dataRoot.resolvingSymlinksInPath().path)
         guard normalized != root, !contains(normalized, in: root), !isHandoff(normalized) else {
             throw FileIssue.message("应用资料和交接包应通过原功能打开，不能由项目恢复。")
         }
-        let url = URL(fileURLWithPath: normalized, isDirectory: directory)
-        let components = url.pathComponents.dropFirst()
-        var current = URL(fileURLWithPath: "/", isDirectory: true)
+        let components = normalized.split(separator: "/")
+        var currentPath = ""
         for (index, component) in components.enumerated() {
             let requiresDirectory = directory || index < components.count - 1
-            current.appendPathComponent(component, isDirectory: requiresDirectory)
+            currentPath += "/\(component)"
             var value = stat()
-            guard lstat(current.path, &value) == 0 else { throw FileIssue.message("文件或目录不存在，或暂时无法读取。") }
+            guard lstat(currentPath, &value) == 0 else { throw FileIssue.message("文件或目录不存在，或暂时无法读取。") }
+            let current = URL(fileURLWithPath: currentPath, isDirectory: requiresDirectory)
             guard value.st_mode & S_IFMT == (requiresDirectory ? S_IFDIR : S_IFREG),
                   (try? current.resourceValues(forKeys: [.isAliasFileKey]).isAliasFile) != true else {
                 throw FileIssue.message("项目仅恢复普通文件和目录，不跟随符号链接或 Finder 替身。")
             }
         }
         guard directory || !components.isEmpty else { throw FileIssue.message("项目引用不是普通文件。") }
-        return url
+        return URL(fileURLWithPath: normalized, isDirectory: directory)
     }
 }
 

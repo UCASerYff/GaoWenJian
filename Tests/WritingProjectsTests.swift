@@ -17,6 +17,23 @@ import Foundation
         try Data("暂时离线".utf8).write(to: missing)
         try PDFModuleTests.makeFixture().write(to: proof)
         try Data("\\documentclass{article}\n".utf8).write(to: alternate)
+        try require(WritingProjectPaths.key("/tmp//fixture/") == "/private/tmp/fixture" &&
+                    WritingProjectPaths.key("/private/tmp/fixture") == "/private/tmp/fixture" &&
+                    WritingProjectPaths.key("/var/fixture") == "/private/var/fixture" &&
+                    WritingProjectPaths.key("/etc/fixture") == "/private/etc/fixture", "stable system path keys")
+        if main.path.hasPrefix("/private/tmp/") {
+            let systemPath = String(main.path.dropFirst("/private".count))
+            let checked = try WritingProjectPaths.requireExisting(systemPath, directory: false, dataRoot: data)
+            try require(checked.path == main.path, "ordinary document opens through the system temporary path")
+        }
+        let linkedFolder = directory.appendingPathComponent("项目目录链接")
+        try FileManager.default.createSymbolicLink(at: linkedFolder, withDestinationURL: firstFolder)
+        var rejected = false
+        do {
+            _ = try WritingProjectPaths.requireExisting(linkedFolder.path + "/" + main.lastPathComponent,
+                                                        directory: false, dataRoot: data)
+        } catch { rejected = true }
+        try require(rejected, "an intermediate user symlink is rejected")
         let store = WorkspaceStore(dataRoot: data)
         store.open(main)
         store.open(missing)
@@ -36,7 +53,7 @@ import Foundation
         try require(store.writingProjectMain(for: store.active!) == alternate, "active project resolves its bound TeX main file")
         let otherDraft = store.active!
         otherDraft.edited("尚未保存的合成课题")
-        var rejected = false
+        rejected = false
         do { try store.restoreWritingProject(firstID, drafts: .requireSaved) } catch { rejected = true }
         try require(rejected && store.activeWritingProjectID == secondID && store.active === otherDraft, "restore requires explicit draft decision and leaves workspace untouched")
 
