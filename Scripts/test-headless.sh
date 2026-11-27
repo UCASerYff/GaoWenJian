@@ -16,7 +16,26 @@ text = source.read_text()
 assert text.count('@main @MainActor struct') == 1
 source.write_text(text.replace('@main @MainActor struct', '@MainActor struct'))
 PY
-TEST_SOURCES=(CoreTests OfficeRoundTripTests OfficeRecoveryTests OfficeViewerTests PDFTests PDFHandoffTests PDFFormFocusTests PDFImageHandoffTests CurrentDocumentHandoffTests OCRResultProvenanceTests OCRJSONPayloadVerifierTests OCRDispatchOptionsTests OCRProviderRoutingTests GaoActionWriterCompatibilityTests ResearchImportReceiptTests ReferenceSelectionTests EditedDocumentExportTests GaoActionFixtures GaoActionTests GaoOutgoingJournalTests HandoffSafeExportTests DocumentHandoffSafetyTests LaTeXTests StickyNotesTests HandoffProductionTests BackupRemovalTests HeadlessTestMain)
+TEST_SOURCES=(CoreTests OfficeRoundTripTests OfficeRecoveryTests OfficeViewerTests PDFTests PDFHandoffTests PDFFormFocusTests PDFImageHandoffTests CurrentDocumentHandoffTests OCRResultProvenanceTests OCRJSONPayloadVerifierTests OCRDispatchOptionsTests OCRProviderRoutingTests OCRReturnMailboxTests WritingProjectsTests GaoActionWriterCompatibilityTests ResearchImportReceiptTests ReferenceSelectionTests EditedDocumentExportTests GaoActionFixtures GaoActionTests GaoOutgoingJournalTests HandoffSafeExportTests DocumentHandoffSafetyTests LaTeXTests StickyNotesTests HandoffProductionTests BackupRemovalTests HeadlessTestMain)
+PROVIDER_FILES=()
+SWIFT_DEFINES=()
+if [[ -n "${GAO_OCR_RETURN_PROVIDER_PROJECT:-}" ]]; then
+  PROVIDER="$GAO_OCR_RETURN_PROVIDER_PROJECT/Sources"
+  mkdir -p "$STAGING/Provider"
+  python3 - "$PROVIDER/ScreenshotCore.swift" "$STAGING/Provider/ScreenshotFileSafety.swift" <<'PY'
+import pathlib
+import sys
+
+source = pathlib.Path(sys.argv[1]).read_text(encoding="utf-8")
+marker = "\nstruct ScreenshotCaptureAsset:"
+assert source.count(marker) == 1 and "enum ScreenshotFileSafety" in source.split(marker, 1)[0]
+pathlib.Path(sys.argv[2]).write_text(source.split(marker, 1)[0] + "\n", encoding="utf-8")
+PY
+  PROVIDER_FILES=("$STAGING/Provider/ScreenshotFileSafety.swift" "$PROVIDER/ScreenshotGaoActionModel.swift"
+    "$PROVIDER/ScreenshotGaoActionTransport.swift" "$PROVIDER/ScreenshotGaoActionState.swift" "$PROVIDER/ScreenshotOCRReturn.swift")
+  TEST_SOURCES+=(OCRReturnCrossImplementationTests)
+  SWIFT_DEFINES=(-D GAO_OCR_RETURN_CROSSCHECK)
+fi
 TEST_FILES=()
 for name in $TEST_SOURCES; do
   [[ -f "$STAGING/Tests/$name.swift" ]] || { print -u2 "缺少无界面单元测试源码：$name.swift"; exit 1; }
@@ -30,7 +49,10 @@ for name in sys.argv[1:]:
 print('Audited headless test sources: no application, window, browser or modal construction')
 PY
 swiftc -swift-version 5 -Xfrontend -disable-sandbox -target arm64-apple-macos14.0 -module-cache-path "$STAGING/cache" \
-  "$STAGING"/Sources/*.swift -framework CoreServices -lsqlite3 $TEST_FILES -o "$STAGING/headless-regression"
+  "${SWIFT_DEFINES[@]}" "$STAGING"/Sources/*.swift "${PROVIDER_FILES[@]}" -framework CoreServices -lsqlite3 "${TEST_FILES[@]}" -o "$STAGING/headless-regression"
 EVIDENCE_DIR="$STAGING/evidence"
 "$STAGING/headless-regression" --data-dir "$STAGING/data" --evidence-dir "$EVIDENCE_DIR" "$@"
-if [[ " ${*} " != *" --research-handoff-only "* && " ${*} " != *" --reference-selection-only "* && " ${*} " != *" --ocr-provider-routing-only "* && " ${*} " != *" --backup-removal-only "* ]]; then node "$PROJECT_DIR/Tests/MarkdownCoreTests.js"; fi
+case " $* " in
+  *" --research-handoff-only "*|*" --reference-selection-only "*|*" --ocr-provider-routing-only "*|*" --backup-removal-only "*|*" --writing-and-ocr-returns-only "*) ;;
+  *) node "$PROJECT_DIR/Tests/MarkdownCoreTests.js" ;;
+esac

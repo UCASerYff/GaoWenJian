@@ -43,8 +43,8 @@ final class GaoPDFView: PDFView {
                 }
                 self.autoScales = true
             }
-            self.go(to: firstPage)
-            self.onInitialLayout?(self.scaleFactor)
+            if let onInitialLayout = self.onInitialLayout { onInitialLayout(self.scaleFactor) }
+            else { self.go(to: firstPage) }
         }
     }
     override func mouseDown(with event: NSEvent) {
@@ -73,7 +73,8 @@ struct PDFCanvas: NSViewRepresentable {
     let twoUp: Bool
     let placement: ((PDFPage, NSPoint) -> Void)?
     let onAnnotationDoubleClick: (PDFAnnotation) -> Void
-    func makeCoordinator() -> Coordinator { Coordinator(model: model) }
+    var projectReading: WritingProjectReadingTracker? = nil
+    func makeCoordinator() -> Coordinator { Coordinator(model: model, projectReading: projectReading) }
     func makeNSView(context: Context) -> GaoPDFView {
         let view = GaoPDFView()
         view.document = model.document
@@ -91,9 +92,9 @@ struct PDFCanvas: NSViewRepresentable {
         view.onAnnotationDoubleClick = onAnnotationDoubleClick
         view.onFormInteraction = { [weak model] in model?.formInteractionWillBegin() }
         view.formsEditable = model.permitsForms
-        view.onInitialLayout = { [weak model] scale in
+        view.onInitialLayout = { [weak model, weak view, weak coordinator = context.coordinator] scale in
             model?.zoom = scale
-            model?.currentPage = 1
+            if let view { coordinator?.attachReading(to: view) }
         }
         context.coordinator.observe(view)
         return view
@@ -115,6 +116,7 @@ struct PDFCanvas: NSViewRepresentable {
         model.pdfView = view
     }
     static func dismantleNSView(_ view: GaoPDFView, coordinator: Coordinator) {
+        coordinator.projectReading?.detach(view, role: .document)
         coordinator.stopObserving()
         view.placement = nil
         view.onFormInteraction = nil
@@ -123,9 +125,34 @@ struct PDFCanvas: NSViewRepresentable {
     }
     @MainActor final class Coordinator {
         let model: PDFWorkspaceModel
+        let projectReading: WritingProjectReadingTracker?
         var tokens: [NSObjectProtocol] = []
         private var formTimer: Timer?
-        init(model: PDFWorkspaceModel) { self.model = model }
+        init(model: PDFWorkspaceModel, projectReading: WritingProjectReadingTracker?) {
+            self.model = model
+            self.projectReading = projectReading
+        }
+        func attachReading(to view: PDFView) {
+            if projectReading?.hasPosition(for: .document) != true, let firstPage = view.document?.page(at: 0) {
+                view.go(to: firstPage)
+            }
+            projectReading?.attach(view, role: .document)
+            projectReading?.applyPending(in: view, role: .document)
+            updatePage(in: view)
+            if let clip = view.documentView?.enclosingScrollView?.contentView {
+                clip.postsBoundsChangedNotifications = true
+                tokens.append(NotificationCenter.default.addObserver(forName: NSView.boundsDidChangeNotification, object: clip, queue: .main) { [weak self, weak view] _ in
+                    Task { @MainActor in if let view { self?.updatePage(in: view) } }
+                })
+            }
+        }
+        private func updatePage(in view: PDFView) {
+            let visible = projectReading?.position(in: view)?.pageIndex
+            let reported = view.currentPage.flatMap { page in view.document.map { $0.index(for: page) } }
+            if let index = visible ?? reported, index < model.pageCount, model.currentPage != index + 1 {
+                model.currentPage = index + 1
+            }
+        }
         func observe(_ view: PDFView) {
             // PDFKit exposes hit notifications, not widget-value-change events.
             // Observe real values without interrupting the active field editor.
@@ -153,8 +180,7 @@ struct PDFCanvas: NSViewRepresentable {
             }
             tokens.append(NotificationCenter.default.addObserver(forName: .PDFViewPageChanged, object: view, queue: .main) { [weak self, weak view] _ in
                 Task { @MainActor in
-                    guard let self, let page = view?.currentPage, let document = self.model.document else { return }
-                    self.model.currentPage = document.index(for: page) + 1
+                    if let view { self?.updatePage(in: view) }
                 }
             })
             tokens.append(NotificationCenter.default.addObserver(forName: .PDFViewScaleChanged, object: view, queue: .main) { [weak self, weak view] _ in
@@ -191,6 +217,7 @@ struct PDFWorkspace: View {
     let url: URL
     let onSaved: () -> Void
     let onError: (String) -> Void
+    let projectReading: WritingProjectReadingTracker?
     @StateObject private var model: PDFWorkspaceModel
     @State private var showThumbnails = true
     @State private var showInspector = false
@@ -220,10 +247,12 @@ struct PDFWorkspace: View {
 
     static let saveRequested = Notification.Name("GaoWenJian.saveActive")
 
-    init(url: URL, onSaved: @escaping () -> Void, onError: @escaping (String) -> Void) {
+    init(url: URL, onSaved: @escaping () -> Void, onError: @escaping (String) -> Void,
+         projectReading: WritingProjectReadingTracker? = nil) {
         self.url = url
         self.onSaved = onSaved
         self.onError = onError
+        self.projectReading = projectReading
         _model = StateObject(wrappedValue: PDFWorkspaceModel(url: url))
     }
 
@@ -245,7 +274,8 @@ struct PDFWorkspace: View {
                             PDFThumbnails(model: model)
                         }.frame(minWidth: 100, idealWidth: 140, maxWidth: 220)
                     }
-                    PDFCanvas(model: model, twoUp: twoUp, placement: placementHandler, onAnnotationDoubleClick: editAnnotation)
+                    PDFCanvas(model: model, twoUp: twoUp, placement: placementHandler, onAnnotationDoubleClick: editAnnotation,
+                              projectReading: projectReading)
                         .frame(minWidth: 280, maxWidth: .infinity, maxHeight: .infinity)
                     if showInspector { inspector.frame(minWidth: 230, idealWidth: 270, maxWidth: 350) }
                 }.frame(maxWidth: .infinity, maxHeight: .infinity).layoutPriority(1)

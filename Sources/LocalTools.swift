@@ -67,10 +67,47 @@ enum LocalTools {
 }
 
 @MainActor enum PDFReaderWindow {
-    static var windows:[NSWindow]=[]
-    static func open(_ url:URL) {
-        let view=PDFView();view.document=PDFDocument(url:url);view.autoScales=true
-        let window=NSWindow(contentRect:NSRect(x:0,y:0,width:850,height:900),styleMask:[.titled,.closable,.miniaturizable,.resizable],backing:.buffered,defer:false)
-        window.title=url.lastPathComponent;window.contentView=view;window.isReleasedWhenClosed=false;window.center();window.makeKeyAndOrderFront(nil);windows.append(window)
+    private final class ReaderWindow: NSWindow {
+        weak var projectReading: WritingProjectReadingTracker?
+        var documentURL: URL?
+        override func close() {
+            if let view = contentView as? PDFView { projectReading?.detach(view, role: .latexReader) }
+            super.close()
+            PDFReaderWindow.windows.removeAll { $0 === self }
+        }
+    }
+    private static var windows: [ReaderWindow] = []
+
+    static func open(_ url: URL, projectReading: WritingProjectReadingTracker? = nil) {
+        if let projectReading {
+            if let existing = windows.first(where: { $0.projectReading === projectReading && $0.documentURL == url }) {
+                existing.makeKeyAndOrderFront(nil)
+                return
+            }
+            close(for: projectReading)
+        }
+        guard let document = PDFDocument(url: url) else { return }
+        let view = SyncPDFView()
+        view.document = document
+        view.autoScales = true
+        view.displayDirection = .vertical
+        view.displayMode = .singlePageContinuous
+        view.projectReading = projectReading
+        view.projectReadingRole = .latexReader
+        let window = ReaderWindow(contentRect: NSRect(x: 0, y: 0, width: 850, height: 900),
+                                  styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered, defer: false)
+        window.projectReading = projectReading
+        window.documentURL = url
+        window.title = url.lastPathComponent
+        window.contentView = view
+        window.isReleasedWhenClosed = false
+        window.center()
+        window.makeKeyAndOrderFront(nil)
+        projectReading?.attach(view, role: .latexReader)
+        windows.append(window)
+    }
+
+    static func close(for projectReading: WritingProjectReadingTracker) {
+        for window in windows.filter({ $0.projectReading === projectReading }) { window.close() }
     }
 }

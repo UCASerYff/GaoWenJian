@@ -28,6 +28,7 @@ public final class LaTeXBuildModel: ObservableObject {
     @Published public var targetHighlightPoint: CGPoint?
     @Published public var highlightGeneration = 0
     @Published public var statusMessage: String?
+    @Published var writingProjectMainURL: URL?
 
     private var generation = UUID()
 
@@ -35,6 +36,7 @@ public final class LaTeXBuildModel: ObservableObject {
         if !mainPath.isEmpty {
             return URL(fileURLWithPath: mainPath)
         }
+        if let writingProjectMainURL { return writingProjectMainURL }
         if let detectedRootPath, !detectedRootPath.isEmpty {
             return URL(fileURLWithPath: detectedRootPath)
         }
@@ -67,7 +69,10 @@ public final class LaTeXBuildModel: ObservableObject {
         self.generation = currentGen
 
         do {
-            let source = effectiveMainURL ?? file
+            var source = effectiveMainURL ?? file
+            if mainPath.isEmpty, source == writingProjectMainURL {
+                source = try WritingProjectPaths.requireExisting(source.path, directory: false, dataRoot: FileSafety.root)
+            }
             guard FileManager.default.fileExists(atPath: source.path), source.pathExtension.lowercased() == "tex" else {
                 throw FileIssue.message("请选择有效的 .tex 主文件。")
             }
@@ -181,15 +186,24 @@ public struct LaTeXWorkspace: View {
     public let url: URL?
     public let save: () -> URL?
     public let onError: (String) -> Void
+    private let projectReading: WritingProjectReadingTracker?
+    private let projectMain: URL?
 
     @StateObject private var build = LaTeXBuildModel()
     @State private var pdfControls = LaTeXPDFControls()
 
     public init(text: Binding<String>, url: URL?, save: @escaping () -> URL?, onError: @escaping (String) -> Void) {
+        self.init(text: text, url: url, save: save, onError: onError, projectReading: nil, projectMain: nil)
+    }
+
+    init(text: Binding<String>, url: URL?, save: @escaping () -> URL?, onError: @escaping (String) -> Void,
+         projectReading: WritingProjectReadingTracker?, projectMain: URL?) {
         self._text = text
         self.url = url
         self.save = save
         self.onError = onError
+        self.projectReading = projectReading
+        self.projectMain = projectMain
     }
 
     public var body: some View {
@@ -231,7 +245,9 @@ public struct LaTeXWorkspace: View {
         }
         .onAppear {
             build.refreshIndex(editorText: text, currentURL: url)
+            build.writingProjectMainURL = projectMain
         }
+        .onChange(of: projectMain) { _, main in build.writingProjectMainURL = main }
         .onChange(of: text) { _, newText in
             build.refreshIndex(editorText: newText, currentURL: url)
         }
@@ -378,7 +394,7 @@ public struct LaTeXWorkspace: View {
 
             // 独立窗口阅读
             Button {
-                if let pdf = build.pdfURL { PDFReaderWindow.open(pdf) }
+                if let pdf = build.pdfURL { PDFReaderWindow.open(pdf, projectReading: projectReading) }
             } label: {
                 Image(systemName: "arrow.up.right.square")
             }
@@ -428,6 +444,7 @@ public struct LaTeXWorkspace: View {
 
     private func compile() {
         guard let savedURL = save() else { return }
+        build.writingProjectMainURL = projectMain
         let editorText = text
         Task {
             await build.compile(savedURL, editorText: editorText)
@@ -602,7 +619,8 @@ public struct LaTeXWorkspace: View {
                     highlightGeneration: build.highlightGeneration,
                     onCommandClick: { page, point in
                         build.handlePDFCommandClick(page: page, point: point)
-                    }
+                    },
+                    projectReading: projectReading
                 )
             } else {
                 VStack(spacing: 14) {
@@ -700,6 +718,7 @@ public struct LaTeXPDFPreview: NSViewRepresentable {
     public let highlightPoint: CGPoint?
     public let highlightGeneration: Int
     public let onCommandClick: (Int, CGPoint) -> Void
+    var projectReading: WritingProjectReadingTracker? = nil
 
     public func makeNSView(context: Context) -> SyncPDFView {
         let view = SyncPDFView()
@@ -709,6 +728,7 @@ public struct LaTeXPDFPreview: NSViewRepresentable {
         view.displaysPageBreaks = true
         view.backgroundColor = .windowBackgroundColor
         view.onCommandClick = onCommandClick
+        view.projectReading = projectReading
         controls.pdfView = view
         context.coordinator.load(url, into: view)
         return view
@@ -717,6 +737,7 @@ public struct LaTeXPDFPreview: NSViewRepresentable {
     public func updateNSView(_ view: SyncPDFView, context: Context) {
         controls.pdfView = view
         view.onCommandClick = onCommandClick
+        view.projectReading = projectReading
         context.coordinator.load(url, into: view)
 
         if let p = highlightPage, let pt = highlightPoint {
@@ -726,12 +747,17 @@ public struct LaTeXPDFPreview: NSViewRepresentable {
 
     public func makeCoordinator() -> Coordinator { Coordinator() }
 
-    public final class Coordinator {
+    public static func dismantleNSView(_ view: SyncPDFView, coordinator: Coordinator) {
+        view.projectReading?.detach(view, role: .latexPreview)
+    }
+
+    @MainActor public final class Coordinator {
         private var currentURL: URL?
         private var currentHighlightGen = -1
 
         func load(_ url: URL, into view: SyncPDFView) {
             if currentURL != url {
+                view.projectReading?.detach(view, role: .latexPreview)
                 currentURL = url
                 if let doc = PDFDocument(url: url) {
                     view.document = doc
@@ -739,6 +765,7 @@ public struct LaTeXPDFPreview: NSViewRepresentable {
             } else if view.document == nil {
                 view.document = PDFDocument(url: url)
             }
+            if view.document != nil { view.projectReading?.attach(view, role: .latexPreview) }
         }
 
         func applyHighlight(page: Int, point: CGPoint, generation: Int, to view: SyncPDFView) {
@@ -751,6 +778,13 @@ public struct LaTeXPDFPreview: NSViewRepresentable {
 
 public final class SyncPDFView: PDFView {
     public var onCommandClick: ((Int, CGPoint) -> Void)?
+    weak var projectReading: WritingProjectReadingTracker?
+    var projectReadingRole: ProjectPDFRole = .latexPreview
+
+    public override func layout() {
+        super.layout()
+        if document != nil { projectReading?.applyPending(in: self, role: projectReadingRole) }
+    }
 
     public override func mouseDown(with event: NSEvent) {
         if event.modifierFlags.contains(.command) {

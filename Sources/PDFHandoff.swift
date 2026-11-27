@@ -86,7 +86,7 @@ struct OCRProvenance: Codable, Equatable {
     }
 }
 
-struct OCRPageProvenance: Codable, Equatable {
+struct OCRPageProvenance: Codable, Equatable, Sendable {
     let pageNumber: Int
     var status: String?
     var confidence: Double?

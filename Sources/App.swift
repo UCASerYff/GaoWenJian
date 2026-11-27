@@ -69,25 +69,26 @@ import UniformTypeIdentifiers
             CommandGroup(replacing:.saveItem){
                 Button("保存"){
                     if store.showingNotes || AppHub.isStickyWindow {_=AppHub.saveStickyNotes()}
-                    else if !store.showingOrganizer,let active=store.active{store.save(active)}
-                }.keyboardShortcut("s").disabled((store.showingOrganizer && !AppHub.isStickyWindow) || (store.active?.kind.canSave != true && !store.showingNotes && !AppHub.isStickyWindow))
-                Button("另存为…"){guard !store.showingOrganizer && !store.showingNotes && !AppHub.isStickyWindow else{return};if let active=store.active{store.save(active,asCopy:true)}}.keyboardShortcut("s",modifiers:[.command,.shift]).disabled(store.active?.kind.isText != true || store.showingOrganizer || store.showingNotes || AppHub.isStickyWindow)
-                Button("导出编辑副本…"){EditedDocumentExporter.showPanel(store:store)}.disabled(store.active == nil || store.showingOrganizer || store.showingNotes || AppHub.isStickyWindow)
+                    else if !store.showingOrganizer, !store.showingProjects, let active=store.active{store.save(active)}
+                }.keyboardShortcut("s").disabled(((store.showingOrganizer || store.showingProjects) && !AppHub.isStickyWindow) || (store.active?.kind.canSave != true && !store.showingNotes && !AppHub.isStickyWindow))
+                Button("另存为…"){guard !store.showingOrganizer && !store.showingProjects && !store.showingNotes && !AppHub.isStickyWindow else{return};if let active=store.active{store.save(active,asCopy:true)}}.keyboardShortcut("s",modifiers:[.command,.shift]).disabled(store.active?.kind.isText != true || store.showingOrganizer || store.showingProjects || store.showingNotes || AppHub.isStickyWindow)
+                Button("导出编辑副本…"){EditedDocumentExporter.showPanel(store:store)}.disabled(store.active == nil || store.showingOrganizer || store.showingProjects || store.showingNotes || AppHub.isStickyWindow)
             }
             CommandGroup(after:.pasteboard){Button("查找…"){NSApp.sendAction(#selector(NSTextView.performFindPanelAction(_:)),to:nil,from:FindSender())}.keyboardShortcut("f")}
             CommandMenu("工作区"){
                 Button("返回首页"){store.showHome();openWindow(id:"main");NSApp.activate(ignoringOtherApps:true)}.keyboardShortcut("1")
+                Button("写作项目"){store.showWritingProjects();openWindow(id:"main")}
                 Button("文件整理 / 查找"){store.showOrganizer();openWindow(id:"main")}.keyboardShortcut("3")
                 Divider()
-                Button("编译当前 LaTeX"){guard !store.showingOrganizer && !store.showingNotes && !AppHub.isStickyWindow else{return};if let active=store.active,store.save(active),let url=active.url{NotificationCenter.default.post(name:Notification.Name("GaoWenJian.compileActive"),object:url.path)}}.keyboardShortcut("b").disabled(store.active?.kind != .latex || store.showingOrganizer || store.showingNotes || AppHub.isStickyWindow)
+                Button("编译当前 LaTeX"){guard !store.showingOrganizer && !store.showingProjects && !store.showingNotes && !AppHub.isStickyWindow else{return};if let active=store.active,store.save(active),let url=active.url{NotificationCenter.default.post(name:Notification.Name("GaoWenJian.compileActive"),object:url.path)}}.keyboardShortcut("b").disabled(store.active?.kind != .latex || store.showingOrganizer || store.showingProjects || store.showingNotes || AppHub.isStickyWindow)
                 Button("关闭当前标签或便笺"){
                     if AppHub.isStickyWindow{NSApp.keyWindow?.performClose(nil)}
                     else if NSApp.keyWindow?.title.hasPrefix("搞文件 V") != true {NSApp.keyWindow?.performClose(nil)}
-                    else if store.showingOrganizer{store.showHome()}
+                    else if store.showingOrganizer || store.showingProjects{store.showHome()}
                     else if store.showingNotes{NSApp.keyWindow?.makeFirstResponder(nil);store.showingNotes=false}
                     else if let active=store.active{store.close(active)}
                 }.keyboardShortcut("w")
-                Button("在 Finder 显示"){if let url=store.active?.url{NSWorkspace.shared.activateFileViewerSelecting([url])}}.disabled(store.showingOrganizer || store.active?.url==nil)
+                Button("在 Finder 显示"){if let url=store.active?.url{NSWorkspace.shared.activateFileViewerSelecting([url])}}.disabled(store.showingOrganizer || store.showingProjects || store.active?.url==nil)
                 Divider();Button("显示主窗口"){openWindow(id:"main");NSApp.activate(ignoringOtherApps:true)}.keyboardShortcut("0")
             }
             CommandMenu("便笺"){

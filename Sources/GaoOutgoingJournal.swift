@@ -88,8 +88,10 @@ final class GaoOutgoingJournal {
     private var sessions: [String:GaoOutgoingSession] = [:]
     private var results: [String:GaoOutgoingResultRecord] = [:]
     private var persistedDigest: String?
-    init(exchangeRoot: URL) throws {
-        root = exchangeRoot; directory = try GaoPrivateIO.directory(exchangeRoot,create:true,requirePrivate:true)
+    convenience init(exchangeRoot: URL) throws { try self.init(exchangeRoot: exchangeRoot, returnScanOnly: false) }
+
+    private init(exchangeRoot: URL, returnScanOnly: Bool) throws {
+        root = exchangeRoot; directory = try GaoPrivateIO.directory(exchangeRoot,create:!returnScanOnly,requirePrivate:true)
         let markerFD = openat(directory.value,Self.marker,O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC)
         let hadMarker: Bool
         if markerFD >= 0 {
@@ -103,7 +105,7 @@ final class GaoOutgoingJournal {
             guard envelope.schemaVersion == 1 else { throw Self.issue("journalUnsupported") }
             guard envelope.sessions.count <= 10_000, envelope.results.count <= 100_000 else { throw Self.issue("journalCorrupt") }
             for session in envelope.sessions {
-                try validateStoredSession(session)
+                try validateStoredSession(session, verifyFiles: !returnScanOnly)
                 guard sessions.updateValue(session,forKey:session.requestID) == nil else { throw Self.issue("journalCorrupt") }
             }
             for record in envelope.results {
@@ -112,11 +114,13 @@ final class GaoOutgoingJournal {
             }
             persistedDigest = FileSafety.digest(bytes)
             // Recovery stops at a visible interruption. Starting the App never repeats an uncertain side effect.
-            var recovered = results
-            for (id,var r) in recovered where r.phase == .executing {
-                r.phase = .interrupted; r.errorCode = "interruptedBeforeAcknowledgement"; r.updatedAt = GaoActionContract.timestamp(Date()); recovered[id] = r
+            if !returnScanOnly {
+                var recovered = results
+                for (id,var r) in recovered where r.phase == .executing {
+                    r.phase = .interrupted; r.errorCode = "interruptedBeforeAcknowledgement"; r.updatedAt = GaoActionContract.timestamp(Date()); recovered[id] = r
+                }
+                if recovered != results { try persist(sessions:sessions,results:recovered); results = recovered }
             }
-            if recovered != results { try persist(sessions:sessions,results:recovered); results = recovered }
         } catch let issue as GaoActionIssue { throw issue }
         catch { throw Self.issue("journalCorrupt") }
     }
@@ -124,6 +128,17 @@ final class GaoOutgoingJournal {
     func lookupResult(_ requestID: String) -> GaoOutgoingResultRecord? { lock.lock(); defer { lock.unlock() }; return results[requestID] }
     func allSessions() -> [GaoOutgoingSession] { lock.lock(); defer { lock.unlock() }; return sessions.values.sorted { $0.createdAt > $1.createdAt } }
     func allResults() -> [GaoOutgoingResultRecord] { lock.lock(); defer { lock.unlock() }; return results.values.sorted { $0.receivedAt > $1.receivedAt } }
+
+    /// Polling reads persisted metadata only. It neither replays recovery nor reads historical attachments.
+    static func returnSnapshot(exchangeRoot: URL) throws -> (sessions: [GaoOutgoingSession], results: [GaoOutgoingResultRecord]) {
+        var info = stat()
+        if lstat(exchangeRoot.path, &info) != 0, errno == ENOENT { return ([], []) }
+        let journal = try GaoOutgoingJournal(exchangeRoot: exchangeRoot, returnScanOnly: true)
+        let sessions = journal.sessions.values.filter { $0.action == "ocr.files" }
+            .sorted { ($0.createdAt, $0.requestID) > ($1.createdAt, $1.requestID) }
+        let identifiers = Set(sessions.map(\.requestID))
+        return (sessions, journal.results.values.filter { identifiers.contains($0.inReplyTo) })
+    }
 
     /// Register only a successfully written request in this App's own Outgoing directory.
     /// The production transport reopens fixed descriptors and hashes every attachment before it becomes an authoritative source version.
@@ -170,6 +185,9 @@ final class GaoOutgoingJournal {
         lock.lock(); defer { lock.unlock() }
         let m = package.manifest
         guard m.kind == "result", m.targetBundleID == GaoActionContract.bundleID, let reply = m.inReplyTo, let session = sessions[reply], m.action == session.action, m.sourceBundleID == session.targetBundleID, let status = m.status, ["pending","partial","completed","failed","cancelled","unsupported"].contains(status), GaoActionContract.validSHA(package.manifestSHA256) else { throw Self.issue("unmatchedResult") }
+        if m.action == "ocr.files", let requestDigest = m.provenance?["requestManifestSHA256"], requestDigest.stringValue != session.manifestSHA256 {
+            throw Self.issue("privateRequestChanged")
+        }
         try verifySources(session)
         if let old = results[m.requestID] {
             guard old.manifestSHA256 == package.manifestSHA256 else { throw Self.issue("resultCollision") }
@@ -305,10 +323,10 @@ final class GaoOutgoingJournal {
         guard formats.isSubset(of:["text","markdown","json","searchablePDF"]) else { throw Self.issue("privateRequestChanged") }
         return formats
     }
-    private func validateStoredSession(_ session: GaoOutgoingSession) throws {
+    private func validateStoredSession(_ session: GaoOutgoingSession, verifyFiles: Bool) throws {
         guard UUID(uuidString:session.requestID) != nil, GaoActionContract.validSHA(session.manifestSHA256), Self.supports(action:session.action,targetBundleID:session.targetBundleID), GaoActionContract.validBundleID(session.targetBundleID), Self.packageName(session.requestPackageName), GaoActionContract.date(session.createdAt) != nil, GaoActionContract.date(session.updatedAt) != nil, session.sources.count <= GaoActionContract.maximumItems, Set(session.sources.map({$0.item.id})).count == session.sources.count else { throw Self.issue("journalCorrupt") }
         for source in session.sources { try validateBinding(source.binding); guard source.binding.itemID == source.item.id, GaoActionContract.validSHA(source.item.sha256), source.item.byteCount >= 0, source.item.byteCount <= GaoActionContract.maximumPayloadBytes, GaoActionContract.validUTI(source.item.uti) else { throw Self.issue("journalCorrupt") }; try Self.validateSourcePath(source.privateRelativePath) }
-        try verifySources(session)
+        if verifyFiles { try verifySources(session) }
     }
     private func validateStoredResult(_ r: GaoOutgoingResultRecord) throws {
         guard UUID(uuidString:r.requestID) != nil, let session = sessions[r.inReplyTo], GaoActionContract.validSHA(r.manifestSHA256), ["pending","partial","completed","failed","cancelled","unsupported"].contains(r.status), GaoActionContract.date(r.receivedAt) != nil, GaoActionContract.date(r.updatedAt) != nil, r.outputs.count + r.referenceIDs.count <= GaoActionContract.maximumItems, Set(r.outputs.map(\.resultItemID)).count == r.outputs.count, Set(r.referenceIDs).count == r.referenceIDs.count, Set(r.referenceFingerprints.keys) == Set(r.referenceIDs), r.referenceFingerprints.values.allSatisfy(GaoActionContract.validSHA), Set(r.openedItemIDs).isSubset(of:Set(r.outputs.map(\.resultItemID))), Set(r.openedReferenceIDs).isSubset(of:Set(r.referenceIDs)), r.errorCode == nil || r.errorCode!.utf8.count <= 256 else { throw Self.issue("journalCorrupt") }

@@ -58,32 +58,76 @@ final class GaoHandoffCancellation: @unchecked Sendable {
 /// Presentation is injectable; validation, journals and editor adapters are always real.
 @MainActor enum GaoHandoffService {
     static var exchangeRoot:URL {FileSafety.root.appendingPathComponent("Exchange")}
-    private static var queue:[(URL,WorkspaceStore)]=[]
+    // An explicit --data-dir launch must never use the production shared mailbox.
+    static var ocrMailboxRoot: URL {
+        CommandLine.arguments.contains("--data-dir")
+            ? FileSafety.root.appendingPathComponent("GaoAction/OcrReturns-v1", isDirectory: true)
+            : OCRReturnMailbox.defaultRoot
+    }
+    private enum Inbound {
+        case manual(URL)
+        case approvedOCR(OCRReturnCandidate)
+    }
+    private static var queue:[(Inbound,WorkspaceStore)]=[]
     private static var receiving=false
     private static var cancellation:GaoHandoffCancellation?
 
     @discardableResult static func handleIncoming(url:URL,store:WorkspaceStore)->Bool {
+        if OCRReturnMailbox.isMailboxURL(url, mailboxRoot: ocrMailboxRoot) {
+            store.status = "请在“OCR 与交接”中审核自动回传。"
+            OCRReturnCenter.mailboxDidChange()
+            return true
+        }
         guard url.pathExtension.lowercased()=="gaoaction" else{return false}
         guard queue.count<16 else {store.error="待处理交接过多，请完成当前批次后重试。";return true}
-        queue.append((url,store));runNext();return true
+        queue.append((.manual(url),store));runNext();return true
+    }
+    static func acceptOCRReturn(_ candidate: OCRReturnCandidate, store: WorkspaceStore) {
+        guard !receiving, queue.isEmpty else {
+            store.error = "请完成当前交接，再接收这份 OCR 回传。"
+            return
+        }
+        queue.append((.approvedOCR(candidate), store))
+        runNext()
     }
     static func cancelCurrent(){cancellation?.cancel()}
     private static func runNext(){
         guard !receiving,!queue.isEmpty else{return}
-        receiving=true;let (url,store)=queue.removeFirst(), token=GaoHandoffCancellation()
+        receiving=true;let (inbound,store)=queue.removeFirst(), token=GaoHandoffCancellation()
         cancellation=token;store.handoffBusy=true;store.status="正在复制并核验交接文件，可取消…"
         Task {
-            defer {store.handoffBusy=false;cancellation=nil;receiving=false;runNext()}
+            defer {
+                store.handoffBusy=false;cancellation=nil;receiving=false
+                OCRReturnCenter.mailboxDidChange()
+                runNext()
+            }
             do {
-                let root=exchangeRoot
-                let validated=try await Task.detached(priority:.userInitiated){
-                    try GaoActionTransport.receive(packageURL:url,exchangeRoot:root,chunkObserver:{try token.check()})
-                }.value
-                _ = try process(validated,store:store,interaction:.application,cancellation:token)
+                let root=exchangeRoot, mailbox=ocrMailboxRoot
+                switch inbound {
+                case .manual(let url):
+                    let validated=try await Task.detached(priority:.userInitiated){
+                        try GaoActionTransport.receive(packageURL:url,exchangeRoot:root,chunkObserver:{try token.check()})
+                    }.value
+                    _ = try process(validated,store:store,interaction:.application,cancellation:token)
+                case .approvedOCR(let candidate):
+                    let validated=try await Task.detached(priority:.userInitiated){
+                        try token.check()
+                        return try OCRReturnMailbox.review(requestID: candidate.requestID,
+                            expectedDigest: candidate.manifestSHA256, exchangeRoot: root, mailboxRoot: mailbox,
+                            chunkObserver: { try token.check() })
+                    }.value
+                    var interaction = GaoHandoffInteraction.application
+                    // The inbox's explicit acceptance applies to this manifest digest only.
+                    interaction.confirm = { _ in true }
+                    _ = try process(validated, store: store, interaction: interaction, cancellation: token)
+                }
             } catch {store.error=error.localizedDescription;store.status="交接未执行 · 原文档保留"}
         }
     }
     @discardableResult static func receive(url:URL,store:WorkspaceStore,interaction:GaoHandoffInteraction,now:Date=Date(),cancellation:GaoHandoffCancellation=GaoHandoffCancellation()) throws -> GaoHandoffOutcome {
+        guard !OCRReturnMailbox.isMailboxURL(url, mailboxRoot: ocrMailboxRoot) else {
+            throw GaoActionContract.reject("ocrReviewRequired", "请在“OCR 与交接”中审核自动回传。")
+        }
         let package=try GaoActionTransport.receive(packageURL:url,exchangeRoot:exchangeRoot,now:now,chunkObserver:{try cancellation.check()})
         return try process(package,store:store,interaction:interaction,now:now,cancellation:cancellation)
     }
@@ -453,6 +497,15 @@ typealias PreparedOCRHandoff = PreparedDocumentHandoff
                 alert.addButton(withTitle:"导出当前副本并识别");alert.addButton(withTitle:"发送磁盘已保存版本");alert.addButton(withTitle:"取消")
                 switch alert.runModal(){case .alertFirstButtonReturn:return .currentEdits;case .alertSecondButtonReturn:return .diskOriginal;default:return .cancel}
             })
+            let automatic: Bool
+            do {
+                try OCRReturnMailbox.publishTicket(for: prepared.session, packageURL: prepared.packageURL,
+                    exchangeRoot: GaoHandoffService.exchangeRoot, mailboxRoot: GaoHandoffService.ocrMailboxRoot)
+                automatic = true
+                OCRReturnCenter.mailboxDidChange()
+            } catch {
+                automatic = false
+            }
             guard let provider=try GaoCapabilityDiscovery.installedProvider(bundleID:providerBundleID,action:"ocr.files"),provider.bundleID == prepared.session.targetBundleID,provider.capability.action == "ocr.files",provider.capability.accepts(parameterKeys:["outputs"]) else {
                 fallback(prepared,store:store);return
             }
@@ -460,7 +513,7 @@ typealias PreparedOCRHandoff = PreparedDocumentHandoff
                 Task { @MainActor in
                     do {try GaoOutgoingJournal(exchangeRoot:GaoHandoffService.exchangeRoot).markDispatched(requestID:prepared.session.requestID,success:error==nil)}catch{store.error=error.localizedDescription;return}
                     if let error {store.error="发送请求失败："+error.localizedDescription}
-                    else {store.status="识别请求已交给搞操作，等待用户处理并发送结果；尚未完成识别"}
+                    else {store.status=automatic ? "识别请求已交给搞操作；完成后可在 OCR 待审核中查看" : "识别请求已交给搞操作；自动回传不可用，可手工接收结果包"}
                 }
             }
         }catch {store.error=error.localizedDescription}

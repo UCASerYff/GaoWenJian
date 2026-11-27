@@ -2,12 +2,15 @@ import AppKit
 import SwiftUI
 import UniformTypeIdentifiers
 
-struct RootWorkspace: View {
+@MainActor struct RootWorkspace: View {
     @ObservedObject var store: WorkspaceStore
     @ObservedObject var stickyNotes: StickyNotesStore
     let stickyWindows: StickyNotesWindowManager
     @State private var sidebar = true
     @State private var search = ""
+    @StateObject private var ocrReturns = OCRReturnCenter()
+    @State private var showingOCRInbox = false
+    @State private var ocrReview: OCRReturnCandidate? = nil
     @Environment(\.openSettings) private var openSettings
 
     var body: some View {
@@ -15,6 +18,24 @@ struct RootWorkspace: View {
             if sidebar { sidebarView.frame(width: 230); Divider() }
             VStack(spacing: 0) {
                 if !store.tabs.isEmpty { tabStrip }
+                if let active = store.active, isSelected(active) {
+                    let matching = ocrReturns.matching(active.url)
+                    if !matching.isEmpty {
+                        OCRReturnDocumentNotice(count: matching.count) { showOCRInbox(matching.count == 1 ? matching.first : nil) }
+                    }
+                    if !store.unavailableProjectFiles.isEmpty {
+                        HStack {
+                            Label("项目中有 \(store.unavailableProjectFiles.count) 项无法打开，已有草稿已保留",
+                                  systemImage: "exclamationmark.triangle")
+                            Spacer()
+                            Button("查看项目") { store.showWritingProjects() }
+                        }
+                        .font(.callout)
+                        .padding(10)
+                        .background(Color.orange.opacity(0.08), in: RoundedRectangle(cornerRadius: 8))
+                        .padding(.horizontal, 12)
+                    }
+                }
                 ZStack {
                     // Keep every editor alive when navigating to another part of the app.
                     ForEach(store.tabs) { session in
@@ -27,6 +48,8 @@ struct RootWorkspace: View {
                         OrganizerHostView(host: store.organizerHost, openDocument: { store.open($0) }, goHome: store.showHome)
                     } else if store.showingNotes {
                         StickyNotesWorkspace(store: stickyNotes, windows: stickyWindows, onGoHome: store.showHome, onOpenMarkdown: { store.newText(.markdown, text: $0) })
+                    } else if store.showingProjects {
+                        WritingProjectsWorkspace(store: store)
                     } else if store.active == nil { welcome }
                 }.frame(maxWidth: .infinity, maxHeight: .infinity)
                 Divider()
@@ -36,6 +59,12 @@ struct RootWorkspace: View {
         .background(WorkspaceStyle.canvas)
         .tint(WorkspaceStyle.accent)
         .background(WindowCloseGuard(store: store, stickyNotes: stickyNotes))
+        .background(OCRReturnWindowProbe(visibility: ocrReturns.setVisible).allowsHitTesting(false))
+        .onDisappear { ocrReturns.setVisible(false) }
+        .onReceive(NotificationCenter.default.publisher(for: OCRReturnCenter.mailboxChanged)) { _ in ocrReturns.refresh() }
+        .sheet(isPresented: $showingOCRInbox) {
+            OCRReturnInbox(center: ocrReturns, store: store, review: $ocrReview)
+        }
         .toolbar {
             ToolbarItem(placement: .navigation) {
                 Button { sidebar.toggle() } label: { Image(systemName: "sidebar.left") }.help("显示 / 隐藏侧边栏")
@@ -56,7 +85,7 @@ struct RootWorkspace: View {
                         else if let active = store.active { store.save(active) }
                     } label: { Label("保存", systemImage: "square.and.arrow.down") }
                     .help("保存 ⌘S")
-                    .disabled(store.showingOrganizer || (store.active?.kind.canSave != true && !store.showingNotes))
+                    .disabled(store.showingOrganizer || store.showingProjects || (store.active?.kind.canSave != true && !store.showingNotes))
                 }
             }
         }
@@ -80,7 +109,12 @@ struct RootWorkspace: View {
     }
 
     private func isSelected(_ session: FileSession) -> Bool {
-        !store.showingNotes && !store.showingOrganizer && store.selection == session.id
+        !store.showingNotes && !store.showingOrganizer && !store.showingProjects && store.selection == session.id
+    }
+
+    private func showOCRInbox(_ candidate: OCRReturnCandidate? = nil) {
+        ocrReview = candidate
+        showingOCRInbox = true
     }
 
     private var tabStrip: some View {
@@ -106,13 +140,15 @@ struct RootWorkspace: View {
                 }
             }.padding(.horizontal, 19).padding(.top, 23).padding(.bottom, 24)
             VStack(alignment: .leading, spacing: 4) {
-                sidebarShortcut("工作台", symbol: "square.grid.2x2", selected: !store.showingNotes && !store.showingOrganizer && store.active == nil, action: store.showHome)
+                sidebarShortcut("工作台", symbol: "square.grid.2x2", selected: !store.showingNotes && !store.showingOrganizer && !store.showingProjects && store.active == nil, action: store.showHome)
+                sidebarShortcut("写作项目", symbol: "folder", selected: store.showingProjects, action: store.showWritingProjects)
                 sidebarHeading("写作")
                 sidebarShortcut("LaTeX", symbol: "function", color: WorkspaceStyle.latex) { store.openPanel(for: [.latex]) }
                 sidebarShortcut("Markdown", symbol: "text.alignleft", color: WorkspaceStyle.markdown) { store.openPanel(for: [.markdown]) }
                 sidebarHeading("文档工具")
                 sidebarShortcut("PDF 编辑", symbol: "doc.richtext", color: WorkspaceStyle.pdf) { store.openPanel(for: [.pdf]) }
                 sidebarShortcut("Office 查看", symbol: "doc.viewfinder") { store.openPanel(for: [.word, .spreadsheet, .presentation]) }
+                sidebarShortcut(ocrReturns.current.isEmpty ? "OCR 与交接" : "OCR 与交接 · \(ocrReturns.current.count)", symbol: "text.viewfinder") { showOCRInbox() }
                 sidebarShortcut("整理与查找", symbol: "folder.badge.gearshape", selected: store.showingOrganizer, action: store.showOrganizer)
             }.padding(.horizontal, 12)
             Rectangle().fill(WorkspaceStyle.line).frame(height: 1).padding(.horizontal, 20).padding(.vertical, 18)
@@ -182,6 +218,13 @@ struct RootWorkspace: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 27) {
                     welcomeHeader
+                    HStack {
+                        Button(action: store.showWritingProjects) { Label("写作项目", systemImage: "folder") }
+                        if let id = store.writingProjects.lastOpened,
+                           let project = store.writingProjects.projects.first(where: { $0.id == id }) {
+                            Button("继续 \(project.name)") { store.promptToRestoreWritingProject(id) }
+                        }
+                    }
                     if store.restoredCount > 0 {
                         Label("已恢复 \(store.restoredCount) 个未保存草稿，请检查后保存。", systemImage: "arrow.counterclockwise")
                             .font(.callout).padding(13).frame(maxWidth: .infinity, alignment: .leading)
@@ -431,10 +474,11 @@ struct TabWorkspace:View{
         if let incoming=session.incoming{IncomingDocumentBanner(incoming:incoming)}
         Group{switch session.kind{
         case .markdown:MarkdownWorkspace(text:binding,baseURL:session.url,onError:{store.error=$0})
-        case .latex:LaTeXWorkspace(text:binding,url:session.url,save:{store.save(session) ? session.url : nil},onError:{store.error=$0})
+        case .latex:LaTeXWorkspace(text:binding,url:session.url,save:{store.save(session) ? session.url : nil},onError:{store.error=$0},
+                                   projectReading:session.projectReading,projectMain:store.writingProjectMain(for:session))
         case .csv:CSVWorkspace(text:binding,delimiter:session.url?.pathExtension.lowercased()=="tsv" ? "\t" : ",")
         case .text:SourceEditor(text:binding)
-        case .pdf:if let url=session.url{PDFWorkspace(url:url,onSaved:{store.moduleDidSave(url)},onError:{store.error=$0})}
+        case .pdf:if let url=session.url{PDFWorkspace(url:url,onSaved:{store.moduleDidSave(url)},onError:{store.error=$0},projectReading:session.projectReading)}
         case .word,.spreadsheet,.presentation:if let url=session.url{OfficeViewer(url:url,onError:{store.error=$0})}
         case .richText:if let url=session.url{RichTextWorkspace(url:url,onSaved:{store.moduleDidSave(url)},onError:{store.error=$0})}
         case .image:if let url=session.url{ImageWorkspace(url:url)}

@@ -120,8 +120,17 @@ enum GaoActionTransport {
     static func receive(packageURL: URL, exchangeRoot: URL, expectedTargetBundleID: String = GaoActionContract.bundleID, now: Date = Date(), chunkObserver: (() throws -> Void)? = nil) throws -> GaoValidatedPackage {
         guard packageURL.pathExtension.lowercased() == "gaoaction" else { throw GaoActionContract.reject("invalidPackage","请选择 .gaoaction 交接包。") }
         let package = try GaoPrivateIO.directory(packageURL)
+        return try receive(package: package, exchangeRoot: exchangeRoot, expectedTargetBundleID: expectedTargetBundleID, now: now, chunkObserver: chunkObserver)
+    }
+
+    static func receive(package: GaoFixedFD, exchangeRoot: URL, expectedTargetBundleID: String = GaoActionContract.bundleID,
+                        expectedManifestSHA256: String? = nil, now: Date = Date(), chunkObserver: (() throws -> Void)? = nil) throws -> GaoValidatedPackage {
         let manifestFD = try GaoPrivateIO.regular(package,components:["manifest.json"])
         let bytes = try GaoPrivateIO.read(manifestFD,maximum:Int64(GaoActionContract.maximumManifestBytes))
+        let sha256 = FileSafety.digest(bytes)
+        guard expectedManifestSHA256 == nil || expectedManifestSHA256 == sha256 else {
+            throw GaoActionContract.reject("resultManifestChanged", "交接包在审核后发生变化，请重新审核。")
+        }
         let manifest = try decodeManifest(bytes)
         try GaoActionContract.validate(manifest,expectedTargetBundleID:expectedTargetBundleID,now:now)
         let payload = try GaoPrivateIO.childDirectory(package,"payload")
@@ -144,7 +153,7 @@ enum GaoActionTransport {
             if manifest.kind == "request", ["documents.newText","text.translate"].contains(manifest.action) {
                 guard let text = stagedItems.first, String(data:try Data(contentsOf:text.url),encoding:.utf8) != nil else { throw GaoActionContract.reject("invalidUTF8","文字交接必须是有效 UTF-8 文件。") }
             }
-            return GaoValidatedPackage(manifest:manifest,manifestSHA256:FileSafety.digest(bytes),stagingURL:stagingURL,stagedItems:stagedItems)
+            return GaoValidatedPackage(manifest:manifest,manifestSHA256:sha256,stagingURL:stagingURL,stagedItems:stagedItems)
         } catch {
             // This fresh UUID directory belongs only to this failed receive operation.
             try? FileManager.default.removeItem(at:stagingURL)
