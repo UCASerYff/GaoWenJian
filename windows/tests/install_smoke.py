@@ -40,7 +40,7 @@ def running_app(cli: Path, profile: Path):
                 child.wait(timeout=15)
 
 
-def smoke(installer: Path, *, native: bool = False, provider: Path | None = None,
+def smoke(installer: Path, *, native: bool = False, tray: bool = False, provider: Path | None = None,
           previous: Path | None = None, evidence: Path | None = None) -> None:
     verify_checksum(installer)
     target = re.fullmatch(r"GaoWenJian-Windows-(\d+\.\d+)-build(\d+)-x64-Setup\.exe", installer.name)
@@ -82,9 +82,12 @@ def smoke(installer: Path, *, native: bool = False, provider: Path | None = None
             app("api/shutdown", {})
             assert child.wait(timeout=20) == 0
         scripts = Path(__file__).resolve().parent
+        capture = [str(evidence.resolve())] if evidence else []
         if native:
-            capture = [str(evidence.resolve())] if evidence else []
             subprocess.run(["node", str(scripts / "native_desktop_smoke.mjs"), str(cli), *capture], check=True, timeout=150)
+        if tray:
+            subprocess.run(["node", str(scripts / "tray_desktop_smoke.mjs"), str(program / "GaoWenJian.exe"),
+                            sys.executable, *capture], check=True, timeout=240)
         if provider:
             subprocess.run([sys.executable, str(scripts / "ocr_interop_smoke.py"), "--provider-setup", str(provider),
                             "--client-cli", str(cli)], check=True, timeout=180)
@@ -157,9 +160,10 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("installer", type=Path)
     parser.add_argument("--native", action="store_true", help="test hidden WebView2 windows using Node.js 24")
+    parser.add_argument("--tray", action="store_true", help="test the installed GUI and Win32 tray on an inactive desktop")
     parser.add_argument("--ocr-provider", type=Path)
     parser.add_argument("--previous", type=Path, help="install the previous build first to verify an in-place upgrade")
-    parser.add_argument("--evidence", type=Path, help="save screenshots of hidden native windows when --native is set")
+    parser.add_argument("--evidence", type=Path, help="save screenshots from --native or --tray")
     args = parser.parse_args()
-    smoke(args.installer.resolve(strict=True), native=args.native, provider=args.ocr_provider,
+    smoke(args.installer.resolve(strict=True), native=args.native, tray=args.tray, provider=args.ocr_provider,
           previous=args.previous.resolve(strict=True) if args.previous else None, evidence=args.evidence)

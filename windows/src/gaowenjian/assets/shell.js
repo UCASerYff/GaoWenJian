@@ -5,6 +5,8 @@ const surface = ({"/settings": "settings", "/note": "note"})[location.pathname] 
 const pendingEdits = new Map();
 const localEdits = new Map();
 let editQueue = Promise.resolve();
+let workspaceExitTask;
+let desktopOpenQueue = Promise.resolve();
 
 function mergePendingEdits() {
   for (const [id, body] of localEdits) {
@@ -255,17 +257,33 @@ async function navigate(target) {
   render();
 }
 
-async function workspaceExit() {
+function workspaceExit() {
+  workspaceExitTask ??= finishWorkspaceExit().finally(() => { workspaceExitTask = undefined; });
+  return workspaceExitTask;
+}
+
+async function exitFromTray(wasHidden) {
+  if (await workspaceExit() === false && wasHidden) await window.pywebview.api.hide_workspace();
+}
+
+function openFromDesktop(path) {
+  desktopOpenQueue = desktopOpenQueue.then(async () => {
+    if (workspaceExitTask) await workspaceExitTask.catch(fail);
+    if (!state) await refresh();
+    await openPath(path);
+  }).catch(fail);
+}
+
+async function finishWorkspaceExit() {
   if (!(await leaveCurrent())) return;
   if (window.pywebview?.api) {
     if (await window.pywebview.api.close_workspace()) return;
     const dirty = state.tabs.filter((item) => item.dirty);
     if (!dirty.length) throw new Error("仍有窗口的修改待保存。请检查桌面便笺后重试。");
     const choice = await closeDocumentChoice(`还有 ${dirty.length} 个文件未保存`, true);
-    if (choice === "save") {
-      for (const tab of dirty) if (!(await saveDocument(tab))) return;
-      if (!(await window.pywebview.api.close_workspace())) throw new Error("还有修改待保存，请检查文档或桌面便笺。");
-    }
+    if (choice !== "save") return false;
+    for (const tab of dirty) if (!(await saveDocument(tab))) return false;
+    if (!(await window.pywebview.api.close_workspace())) throw new Error("还有修改待保存，请检查文档或桌面便笺。");
   } else await api("/api/shutdown", {}).then(() => window.close());
 }
 

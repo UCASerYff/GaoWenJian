@@ -30,6 +30,29 @@ def main(argv: list[str] | None = None) -> int:
         _out(VERSION_LABEL)
         return 0
     directory = default_data_dir() if not args.data_dir else Path(args.data_dir)
+    tray = None
+    try:
+        if os.name == "nt" and not (args.no_browser or args.serve or args.hidden or args.self_check or args.inspect):
+            from gaowenjian.tray_win import DesktopTray
+
+            tray = DesktopTray(directory)
+            is_gui = not getattr(sys, "frozen", False) or Path(sys.executable).stem.casefold() != "gaowenjian-cli"
+            if not tray.claim_or_forward(args.open, show_icon=is_gui):
+                return 0
+        return _run(args, directory, tray)
+    except (AppError, OSError) as exc:
+        _err(str(exc))
+        if tray and not sys.stderr:
+            from ctypes import windll
+
+            windll.user32.MessageBoxW(None, str(exc), "搞文件", 0x10)
+        return 2
+    finally:
+        if tray:
+            tray.close()
+
+
+def _run(args, directory, tray) -> int:
     try:
         workspace = Workspace(directory)
         if args.open:
@@ -51,7 +74,7 @@ def main(argv: list[str] | None = None) -> int:
         elif os.name == "nt":
             from gaowenjian.desktop import run_desktop
 
-            run_desktop(server, activate=args.open is not None, hidden=args.hidden)
+            run_desktop(server, activate=args.open is not None, hidden=args.hidden, tray=tray)
         else:
             import webbrowser
 

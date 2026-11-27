@@ -1,8 +1,14 @@
 # 搞文件 1.11 · Windows x64
 
-安装文件为 `GaoWenJian-Windows-1.11-build3-x64-Setup.exe`，旁附同名 `.sha256`。安装器针对 Windows 10/11 x64，默认按当前用户安装。通过开始菜单启动“搞文件”，或在安装目录用 `GaoWenJian.exe --open 文件路径` 打开文档。主窗口、设置和桌面便笺使用 Microsoft Edge WebView2 Runtime。命令行版为 `GaoWenJian-cli.exe`，版本号输出 `1.11+3`。Windows 安装器和程序未做 Authenticode 签名。
+安装文件为 `GaoWenJian-Windows-1.11-build4-x64-Setup.exe`，旁附同名 `.sha256`。安装器针对 Windows 10/11 x64，默认按当前用户安装。通过开始菜单启动“搞文件”，或在安装目录用 `GaoWenJian.exe --open 文件路径` 打开文档。主窗口、设置和桌面便笺使用 Microsoft Edge WebView2 Runtime。命令行版为 `GaoWenJian-cli.exe`，版本号输出 `1.11+4`。Windows 安装器和程序未做 Authenticode 签名。
 
 用户资料仍位于 `%APPDATA%\GaoSeries\GaoWenJian`。卸载移除程序，用户资料和原路径文档继续保留。`--data-dir` 可指定隔离资料目录，`--no-browser` 启动仅监听 `127.0.0.1` 的本机接口。工作区、恢复稿、便笺和设置记录在原目录读取，兼容已存在的 Windows 记录。遇到损坏或冲突时保留现有记录。
+
+## 通知区域
+
+正常启动会在 Windows 通知区域显示搞文件图标。关掉工作台后，图标仍在表示应用继续在后台运行。单击图标、选择「打开 搞文件」或再次从开始菜单启动，都可回到同一资料目录的工作台。Windows 也可能把图标显示在任务栏的隐藏图标菜单中。命令行、只读检查和隐藏测试入口无需托盘。
+
+通过托盘或工作台菜单选择「退出」可完整关闭应用。若有未保存的文档，工作台会提示保存。取消退出会保留未保存内容和托盘图标。工作台原先处于后台时会继续隐藏，原先可见时可继续编辑。退出时会保存桌面便笺的正文和位置，已放到桌面的便笺会在下次启动时恢复。
 
 ## 工作流
 
@@ -27,7 +33,7 @@ Windows 使用 WebView2、Segoe UI 和 Windows 文件对话框。系统控件、
 
 ```powershell
 .\windows\build.ps1 -InnoCompiler 'C:\Program Files (x86)\Inno Setup 6\ISCC.exe'
-python .\windows\tests\install_smoke.py .\Release\GaoWenJian-Windows-1.11-build3-x64-Setup.exe --previous .\Release\GaoWenJian-Windows-1.11-x64-Setup.exe --native
+python .\windows\tests\install_smoke.py .\Release\GaoWenJian-Windows-1.11-build4-x64-Setup.exe --previous .\Release\GaoWenJian-Windows-1.11-build3-x64-Setup.exe --native --tray
 ```
 
-`install_smoke.py` 使用隔离安装和合成资料，核验 SHA-256、版本、离线编译、保存和卸载。提供 `--previous` 可将上一版原地升级并核验恢复稿、设置、便笺和附件。`--native` 通过 Node.js 24 验证隐藏的设置窗口、桌面便笺和 LaTeX PDF 阅读窗口。`workspace_visual_smoke.mjs` 和 `organizer_browser_smoke.mjs` 用 Edge 检查浅深色、两种窗宽及 100% 和 150% 缩放。`ocr_interop_smoke.py` 可传入两款应用的安装后程序做真实 OCR 往返。日常使用请通过开始菜单启动。
+`install_smoke.py` 使用隔离安装和合成资料，核验 SHA-256、版本、离线编译、保存和卸载。提供 `--previous` 可将上一版原地升级并核验恢复稿、设置、便笺和附件。`--native` 通过 Node.js 24 验证隐藏的设置窗口、桌面便笺和 LaTeX PDF 阅读窗口。`--tray` 在非活动的私有桌面上运行已安装的 GUI，用测试通知区接收真实的 `Shell_NotifyIconW` 调用并验证关窗留驻、恢复、取消退出和最终清理。Explorer 的图标显示位置需在日常桌面另行查看。`workspace_visual_smoke.mjs` 和 `organizer_browser_smoke.mjs` 用 Edge 检查浅深色、两种窗宽及 100% 和 150% 缩放。`ocr_interop_smoke.py` 可传入两款应用的安装后程序做真实 OCR 往返。

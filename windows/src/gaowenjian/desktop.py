@@ -22,10 +22,10 @@ FILE_TYPES = {
 }
 
 
-def run_desktop(server, *, activate: bool = False, hidden: bool = False) -> None:
+def run_desktop(server, *, activate: bool = False, hidden: bool = False, tray=None) -> None:
     import webview
 
-    desktop = Desktop(webview, server, hidden=hidden)
+    desktop = Desktop(webview, server, hidden=hidden, tray=tray)
     desktop.start(activate)
 
 
@@ -50,8 +50,10 @@ class WindowActions:
         self._desktop.show_settings()
 
     def focus_workspace(self):
-        if not self._desktop.hidden:
-            self._desktop.main.show()
+        self._desktop.show_workspace()
+
+    def hide_workspace(self):
+        self._desktop.hide_workspace()
 
     def show_note(self, note_id: str):
         self._desktop.show_note(note_id)
@@ -85,10 +87,11 @@ class WindowActions:
 
 
 class Desktop:
-    def __init__(self, webview, server, *, hidden=False):
+    def __init__(self, webview, server, *, hidden=False, tray=None):
         self.webview = webview
         self.server = server
         self.hidden = hidden
+        self.tray = tray
         self.main = None
         self.settings = None
         self.notes = {}
@@ -96,6 +99,8 @@ class Desktop:
         self.frames = {}
         self.closing_notes = set()
         self.closing = False
+        self._close_lock = threading.Lock()
+        self._main_hidden = hidden
 
     def _create(self, title, endpoint="", note_id="", **options):
         actions = WindowActions(self, note_id)
@@ -108,7 +113,54 @@ class Desktop:
         self.main = self._create(WINDOW_TITLE, "?view=editor" if activate else "", width=1160, height=820, min_size=(770, 560))
         self.main.events.closing += self._request_workspace_close
         self.main.events.loaded += self._attach_file_drop
+        if self.tray:
+            threading.Thread(target=self._handle_tray_events, name="GaoWenJian desktop activation", daemon=True).start()
         self.webview.start(gui="edgechromium", private_mode=True)
+
+    def _handle_tray_events(self):
+        from gaowenjian.tray_win import EXIT_APPLICATION
+
+        self.main.events.loaded.wait()
+        while (command := self.tray.events.get()) is not None:
+            if self.closing:
+                return
+            action, path = command
+            was_hidden = self._main_hidden
+            self.show_workspace()
+            if action == EXIT_APPLICATION:
+                self.main.run_js(f"exitFromTray({json.dumps(was_hidden)}).catch(fail)")
+            elif path:
+                self.main.run_js(f"openFromDesktop({json.dumps(path)})")
+
+    def show_workspace(self):
+        if self.hidden or self.closing:
+            return
+        from System import Action
+        from System.Windows.Forms import FormWindowState
+
+        native = self.main.native
+        if native is None or native.IsDisposed:
+            return
+        self._main_hidden = False
+
+        def show():
+            if not native.IsDisposed:
+                if native.WindowState == FormWindowState.Minimized:
+                    native.WindowState = FormWindowState.Normal
+                native.Show()
+                native.Activate()
+
+        native.BeginInvoke(Action(show))
+
+    def hide_workspace(self):
+        native = self.main.native
+        if self.tray and self.tray.available and native is not None and not native.IsDisposed and not self.closing:
+            from System import Action
+
+            self._main_hidden = True
+            native.BeginInvoke(Action(lambda: native.Hide()))
+            return True
+        return False
 
     def _attach_file_drop(self):
         from webview.dom import DOMEventHandler
@@ -125,8 +177,12 @@ class Desktop:
     def _request_workspace_close(self):
         if self.closing:
             return True
-        threading.Thread(target=self.main.run_js, args=("workspaceExit().catch(fail)",), daemon=True).start()
+        if not self.hide_workspace():
+            threading.Thread(target=self._request_exit, daemon=True).start()
         return False
+
+    def _request_exit(self):
+        self.main.run_js("workspaceExit().catch(fail)")
 
     def print_markdown(self, window, tab_id, destination, rendered):
         from pathlib import Path
@@ -164,9 +220,33 @@ class Desktop:
         window.events.closed += lambda: self.readers.pop(tab_id, None)
 
     def close_workspace(self, allow_dirty):
-        with self.server.lock:
-            if self.server.workspace.dirty_count() and not allow_dirty:
+        with self._close_lock:
+            if self.closing:
+                return True
+            with self.server.lock:
+                if self.server.workspace.dirty_count() and not allow_dirty:
+                    return False
+            if not self._save_desktop_notes():
                 return False
+            with self.server.lock:
+                if self.server.workspace.dirty_count() and not allow_dirty:
+                    return False
+                self.closing = True
+                self.server.desktop_closing = True
+            if self.tray:
+                self.tray.stop_accepting()
+            for timer in list(self.frames.values()):
+                timer.cancel()
+            for window in list(self.notes.values()):
+                window.destroy()
+            for window in list(self.readers.values()):
+                window.destroy()
+            if self.settings:
+                self.settings.destroy()
+            self.main.destroy()
+            return True
+
+    def _save_desktop_notes(self):
         for note_id, window in list(self.notes.items()):
             if window.events.loaded.is_set():
                 complete = threading.Event()
@@ -180,14 +260,6 @@ class Desktop:
                 if not complete.wait(8) or not outcome[0]:
                     return False
             self._save_frame(note_id)
-        self.closing = True
-        for window in list(self.notes.values()):
-            window.destroy()
-        for window in list(self.readers.values()):
-            window.destroy()
-        if self.settings:
-            self.settings.destroy()
-        self.main.destroy()
         return True
 
     def show_settings(self):
@@ -295,6 +367,8 @@ class Desktop:
                 native.BeginInvoke(Action(adjust))
 
     def _schedule_frame(self, note_id):
+        if self.closing:
+            return
         previous = self.frames.pop(note_id, None)
         if previous:
             previous.cancel()
@@ -310,6 +384,8 @@ class Desktop:
         try:
             x, y, width, height = window.x, window.y, window.width, window.height
             with self.server.lock:
+                if self.closing:
+                    return
                 store = self.server.workspace.notes
                 note = store._live(note_id)
                 saved = note["frame"]

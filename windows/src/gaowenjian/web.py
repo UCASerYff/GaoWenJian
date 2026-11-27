@@ -38,6 +38,7 @@ class DocumentServer(ThreadingHTTPServer):
         self.lock = threading.Lock()
         self.revision = 0
         self.shutdown_requested = threading.Event()
+        self.desktop_closing = False
         super().__init__((host, port), Handler)
 
     @property
@@ -200,6 +201,8 @@ class Handler(BaseHTTPRequestHandler):
         try:
             payload = self._body()
             with self.server.lock:
+                if self.server.desktop_closing:
+                    raise AppError("搞文件正在退出。", "closing")
                 result = dispatch(self.server.workspace, parsed.path, payload)
                 state = self.server.snapshot()
             self._json({"ok": True, "result": result, "state": state})
