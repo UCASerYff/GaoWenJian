@@ -11,3 +11,10 @@ def asset_dir() -> Path:
     if frozen:
         return Path(frozen) / "gaowenjian_assets"
     return Path(__file__).resolve().parent / "assets"
+
+
+def app_icon() -> Path:
+    frozen = getattr(sys, "_MEIPASS", None)
+    if frozen:
+        return Path(frozen) / "gao_app_icon" / "AppIcon.png"
+    return Path(__file__).resolve().parents[3] / "Assets" / "AppIcon.png"

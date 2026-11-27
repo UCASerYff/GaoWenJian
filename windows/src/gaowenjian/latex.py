@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import re
+import gzip
 from pathlib import Path
+
+from gaowenjian.errors import AppError
 
 _ROOT = re.compile(r"(?i)%\s*!TeX\s+root\s*=\s*([^\r\n]+)")
 _SECTION = re.compile(r"\\(part|chapter|section|subsection|subsubsection)\*?(?:\[[^\]]*\])?\{([^}]+)\}")
@@ -12,6 +15,8 @@ _CAPTION = re.compile(r"\\caption(?:\[[^\]]*\])?\{([^}]+)\}")
 _LABEL = re.compile(r"\\label\{([^}]+)\}")
 _BIB = re.compile(r"(?:\\(?:cite|citep|citet|parencite|autocite)\{([^}]+)\}|\\bibitem\{([^}]+)\}|@\w+\s*[\{\(]\s*([^,\s\}]+))")
 _FILE_LINE = re.compile(r"^(.+?\.tex):(\d+):(?:\s*(\d+):)?\s*(.*)$")
+_TECTONIC_LINE = re.compile(r"^(.+?):(\d+):\s*(.*)$")
+_FONT_RESOURCE_NOTICE = re.compile(r"^warning: accessing absolute path `[^`]+\.(?:otf|ttf|ttc)`;", re.IGNORECASE)
 _LINE_MARK = re.compile(r"^l\.(\d+)\s*(.*)$")
 _INPUT_LINE = re.compile(r"on input line (\d+)")
 _BOX_LINE = re.compile(r"(?:at lines|on input line)\s+(\d+)")
@@ -107,7 +112,10 @@ def parse_log(log: str) -> list[dict]:
     index = 0
     while index < len(lines):
         line = lines[index].strip()
-        file_line = _FILE_LINE.match(line)
+        if _FONT_RESOURCE_NOTICE.match(line):
+            index += 1
+            continue
+        file_line = None if line.startswith(("error:", "warning:")) else _FILE_LINE.match(line)
         if file_line:
             message = file_line.group(4).strip() or "编译问题"
             lowered = message.lower()
@@ -115,19 +123,13 @@ def parse_log(log: str) -> list[dict]:
             results.append({"severity": severity, "message": message, "file": file_line.group(1), "line": int(file_line.group(2)), "detail": line})
             index += 1
             continue
-        if line.startswith("error:"):
-            rest = line[6:].strip()
-            file_name = None
-            line_number = None
-            message = rest
-            if ":" in rest:
-                candidate, _, after = rest.partition(":")
-                number, separator, tail = after.partition(":")
-                if separator and number.strip().isdigit():
-                    file_name = candidate
-                    line_number = int(number.strip())
-                    message = tail.strip()
-            results.append({"severity": "error", "message": message, "file": file_name, "line": line_number, "detail": line})
+        if line.startswith(("error:", "warning:")):
+            severity, _, rest = line.partition(":")
+            rest = rest.strip()
+            located = _TECTONIC_LINE.match(rest)
+            message = located.group(3) if located else rest
+            results.append({"severity": severity, "message": message, "file": located.group(1) if located else None,
+                            "line": int(located.group(2)) if located else None, "detail": line})
             index += 1
             continue
         if line.startswith("!"):
@@ -205,3 +207,79 @@ def complete(text: str, cursor: int, labels: list[str], citations: list[str]) ->
             items = [{"title": item, "subtitle": "常用宏包", "insert": item + "}", "caretFromEnd": 0} for item in _rank(token, PACKAGES, 16)]
         return {"kind": kind, "start": start, "length": len(token), "items": items}
     return None
+
+
+_SYNC_NODE = re.compile(r"^([\[\(hvkxg$])(-?\d+),(\d+)(?:,\d+)?:(-?\d+),(-?\d+)(?::(-?\d+))?")
+
+
+def synctex_location(pdf: Path, root: Path, direction: str, *, source: Path | None = None,
+                     line: int = 1, page: int = 1, x: float = 0, y: float = 0) -> dict:
+    """Use SyncTeX's page and horizontal box records when no native query tool is present."""
+    compressed = pdf.with_suffix(".synctex.gz")
+    plain = pdf.with_suffix(".synctex")
+    try:
+        if compressed.is_file():
+            with gzip.open(compressed, "rb") as stream:
+                data = stream.read(32 * 1024 * 1024 + 1)
+        else:
+            with plain.open("rb") as stream:
+                data = stream.read(32 * 1024 * 1024 + 1)
+    except (OSError, EOFError) as exc:
+        raise AppError("当前编译结果没有可读取的 SyncTeX 数据。", "synctex") from exc
+    if len(data) > 32 * 1024 * 1024:
+        raise AppError("SyncTeX 数据超过读取上限。", "synctex")
+    for encoding in ("utf-8", "mbcs", "gb18030", "latin-1"):
+        try:
+            content = data.decode(encoding)
+            break
+        except (UnicodeError, LookupError):
+            continue
+    inputs: dict[int, Path] = {}
+    params = {"Magnification": 1000, "Unit": 1, "X Offset": 0, "Y Offset": 0}
+    boxes = []
+    current_page = 0
+    for entry in content.splitlines():
+        if entry.startswith("Input:"):
+            _, tag, name = entry.split(":", 2)
+            if tag.isdecimal() and name.strip():
+                inputs[int(tag)] = (root.parent / name.strip().strip('"')).resolve()
+            continue
+        if entry.startswith("{") and entry[1:].isdecimal():
+            current_page = int(entry[1:])
+            continue
+        if entry.startswith("}"):
+            current_page = 0
+        name, _, value = entry.partition(":")
+        if name in params and value.strip().lstrip("-").isdecimal():
+            params[name] = int(value.strip())
+        match = _SYNC_NODE.match(entry) if current_page else None
+        if match:
+            kind, tag, row, left, top, width = match.groups()
+            if int(row) > 0:
+                boxes.append((current_page, kind, int(tag), int(row), int(left), int(top), int(width or 0)))
+    factor = params["Unit"] * params["Magnification"] / 1000 * 72 / (65536 * 72.27)
+    if not inputs or factor <= 0:
+        raise AppError("SyncTeX 数据无法读取。", "synctex")
+
+    def location(box):
+        number, _, tag, row, left, top, _ = box
+        return {"Page": number, "Input": str(inputs[tag]), "Line": row, "Column": 1,
+                "x": (left + params["X Offset"]) * factor, "y": (top + params["Y Offset"]) * factor}
+
+    if direction == "forward" and source:
+        tags = {tag for tag, path in inputs.items() if path == source.resolve()}
+        matches = [box for box in boxes if box[2] in tags]
+        if matches:
+            return location(min(matches, key=lambda box: (abs(box[3] - line), box[1] not in {"h", "x", "("}, box[5])))
+    if direction == "inverse":
+        allowed = [box for box in boxes if box[0] == page and box[2] in inputs and box[1] in {"(", "h", "x", "g", "k"}]
+
+        def distance(box):
+            left = (box[4] + params["X Offset"]) * factor
+            top = (box[5] + params["Y Offset"]) * factor
+            right = left + box[6] * factor
+            return (abs(top - y), max(left - x, 0, x - right), box[1] not in {"h", "x"})
+
+        if allowed:
+            return location(min(allowed, key=distance))
+    raise AppError("SyncTeX 没有返回对应位置。", "synctex")

@@ -1,3 +1,6 @@
 pytest>=8.2
 pyinstaller>=6.10
-pypdf>=5.1,<6
+pypdf[crypto]>=5.9,<6
+pypdfium2>=4.30,<5
+Pillow>=11,<13
+pywebview>=6.2,<7

@@ -1,0 +1,35 @@
+:root[data-theme="light"] {
+  color-scheme: light;
+  --bg: #fff;
+  --paper: #fff;
+  --text: #282d34;
+  --secondary: #76808d;
+  --line: #e6e8ec;
+  --accent: #596879;
+  --active: #f3f5f8;
+  --code: #f4f5f7;
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #1f2227;
+  --paper: #24272d;
+  --text: #e1e5eb;
+  --secondary: #929daa;
+  --line: #353b44;
+  --accent: #adbccf;
+  --active: #303740;
+  --code: #2c323a;
+}
+
+@font-face {
+  font-family: "Gao CJK";
+  src: url("/md-assets/NotoSansSC-Regular.otf") format("opentype");
+}
+body { font-family: "Segoe UI", "Microsoft YaHei UI", "Microsoft YaHei", SimSun, "Gao CJK", sans-serif; }
+#source-pane { overflow: hidden; }
+#source, #preview-pane, #outline { scrollbar-width: thin; }
+#source, .block-editor {
+  font-family: Consolas, "Microsoft YaHei UI", "Microsoft YaHei", SimSun, "Gao CJK", monospace;
+  font-size: var(--md-editor-size, 15px);
+}

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import uuid
+from copy import deepcopy
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -83,18 +84,20 @@ class NotesStore:
                 body = self._load_body(note, version)
                 loaded.append(note)
                 self._bodies[note["id"]] = body
+                if ours and version == 2 and body.get("opaque"):
+                    raise AppError("便笺正文格式无法读取。")
             self.notes = loaded
             self.defaults = defaults
             self.owned = bool(ours and version == 2)
             self.read_only = not self.owned
             if self.read_only:
                 self.blocked = "这是 macOS 或其他写入器的便笺记录。Windows 版只读打开，不会覆盖 notes.json。可以导出副本。"
-        except (AppError, OSError) as exc:
+        except (AppError, OSError, ValueError, TypeError, AttributeError) as exc:
             self.notes = []
             self._bodies = {}
             self.read_only = True
             self.owned = False
-            self.blocked = exc.message + " 原资料已保留，未进行覆盖。"
+            self.blocked = (exc.message if isinstance(exc, AppError) else "便笺正文、附件或元数据无法读取。") + " 原资料已保留，未进行覆盖。"
 
     def snapshot(self) -> dict:
         visible = []
@@ -115,6 +118,7 @@ class NotesStore:
                 "frame": note.get("frame") or {},
                 "plainText": note.get("plainText") or "",
                 "html": body.get("html") or "",
+                "bodyDigest": note.get("rtfdDigest") or "",
                 "attachments": [item["name"] for item in body.get("attachments") or []],
                 "editable": self.owned and not note.get("deletedAt"),
             })
@@ -126,12 +130,12 @@ class NotesStore:
             "notes": visible,
         }
 
-    def create(self, title: str = "", html: str = "", plain: str = "") -> str:
+    def create(self, title: str = "", html: str = "", plain: str = "", *, attachments: list[dict] | None = None) -> str:
         self._require_writable(create=True)
         note_id = str(uuid.uuid4())
         now = _now()
         frame = {"x": 180, "y": 180, "width": self.defaults["width"], "height": self.defaults["height"]}
-        body = {"format": "gaowenjian-html-1", "html": html, "attachments": []}
+        body = {"format": "gaowenjian-html-1", "html": html, "attachments": attachments or []}
         note = {
             "id": note_id,
             "title": title,
@@ -160,14 +164,27 @@ class NotesStore:
             raise
         return note_id
 
-    def update(self, note_id: str, html: str, plain: str) -> None:
+    def update(self, note_id: str, html: str, plain: str, *, expected: str | None = None, changes: dict | None = None) -> None:
         self._require_writable()
         note = self._live(note_id)
+        if expected is not None and expected != note.get("rtfdDigest", ""):
+            raise AppError("便笺已在其他窗口修改。请保留当前编辑，核对其他窗口里的正文后再试。", "conflict")
+        if not isinstance(plain, str) or not isinstance(html, str) or len(plain) + len(html) > 4_000_000:
+            raise AppError("便笺正文超过长度限制。", "notes")
         body = {"format": "gaowenjian-html-1", "html": html, "attachments": self._bodies.get(note_id, {}).get("attachments") or []}
-        note["plainText"] = plain
-        note["updatedAt"] = _now()
-        self._bodies[note_id] = body
-        self._flush()
+        previous = dict(note)
+        previous_body = self._bodies[note_id]
+        try:
+            self._metadata_changes(note, changes or {})
+            note["plainText"] = plain
+            note["updatedAt"] = _now()
+            self._bodies[note_id] = body
+            self._flush()
+        except Exception:
+            note.clear()
+            note.update(previous)
+            self._bodies[note_id] = previous_body
+            raise
 
     def attach(self, note_id: str, name: str, content: bytes) -> None:
         self._require_writable()
@@ -180,23 +197,54 @@ class NotesStore:
             raise AppError("一张便笺的附件合计不能超过 64 MB。", "notes")
         attachments.append({"name": Path(name).name or "附件", "sha256": digest(content), "content": content})
         body["attachments"] = attachments
+        previous = self._bodies[note_id]
+        before = note["updatedAt"]
         note["updatedAt"] = _now()
         self._bodies[note_id] = body
-        self._flush()
+        try:
+            self._flush()
+        except Exception:
+            self._bodies[note_id] = previous
+            note["updatedAt"] = before
+            raise
 
     def metadata(self, note_id: str, changes: dict) -> None:
         self._require_writable()
         note = self._find(note_id)
+        previous = dict(note)
+        try:
+            self._metadata_changes(note, changes)
+            note["updatedAt"] = _now()
+            self._flush()
+        except Exception:
+            note.clear()
+            note.update(previous)
+            raise
+
+    def _metadata_changes(self, note, changes):
         allowed = {"title", "group", "color", "isPinned", "isTranslucent", "isCollapsed", "isOnDesktop", "frame"}
         for key, value in changes.items():
             if key not in allowed:
                 continue
+            if key in {"title", "group"} and (not isinstance(value, str) or len(value) > 512):
+                raise AppError("便笺标题或分组过长。", "notes")
+            if key.startswith("is") and not isinstance(value, bool):
+                raise AppError("便笺开关值无效。", "notes")
             note[key] = value
         if note.get("color") not in COLORS:
             raise AppError("便笺颜色无效。", "notes")
         self._validate_note(note)
-        note["updatedAt"] = _now()
-        self._flush()
+
+    def export_attachment(self, note_id: str, index: int, path: Path) -> None:
+        self._find(note_id)
+        attachments = self._bodies[note_id].get("attachments") or []
+        if not 0 <= index < len(attachments):
+            raise AppError("便笺附件不存在。", "notes")
+        try:
+            with path.open("xb") as target:
+                target.write(attachments[index]["content"])
+        except FileExistsError as exc:
+            raise AppError("附件导出目标已存在。请选择新文件名。", "export") from exc
 
     def trash(self, note_id: str) -> None:
         self._require_writable()
@@ -232,18 +280,29 @@ class NotesStore:
         if destination.exists():
             raise AppError("导出目标已存在。请换一个新路径，不能覆盖已有文件。", "export")
         if fmt == "txt":
-            destination.write_text(plain, encoding="utf-8")
+            with destination.open("x", encoding="utf-8") as handle:
+                handle.write(plain)
             return
+        if body.get("opaque"):
+            raise AppError("当前便笺的 macOS 富文本包只能以纯文本导出。原正文和附件已保留。", "export")
         if fmt == "rtf":
             if attachments:
                 raise AppError("这张便笺包含附件。请导出为 RTFD，RTF 无法完整保留附件。", "export")
-            destination.write_bytes(from_html(body.get("html") or _escape(plain)))
+            with destination.open("xb") as handle:
+                handle.write(from_html(body.get("html") or _escape(plain)))
             return
         if fmt == "rtfd":
             destination.mkdir()
             (destination / "TXT.rtf").write_bytes(from_html(body.get("html") or _escape(plain)))
+            used = {"txt.rtf"}
             for item in attachments:
-                (destination / Path(item["name"]).name).write_bytes(item["content"])
+                name = Path(item["name"]).name or "附件"
+                candidate = name
+                while candidate.casefold() in used:
+                    candidate = f"附件-{len(used)}-{candidate}"
+                used.add(candidate.casefold())
+                with (destination / candidate).open("xb") as handle:
+                    handle.write(item["content"])
             return
         raise AppError("便笺可导出 TXT、RTF 和 RTFD。", "export")
 
@@ -254,13 +313,20 @@ class NotesStore:
             rtf_path = path / "TXT.rtf"
             if not rtf_path.is_file():
                 raise AppError("RTFD 的正文 TXT.rtf 缺失或无法读取，原件已保留。", "notes")
+            reject_symlink(rtf_path)
             parsed = parse_rtf(rtf_path.read_bytes())
-            note_id = self.create(path.stem, parsed["html"], parsed["plain"])
+            attachments = []
+            total = 0
             for child in path.iterdir():
                 if child.name.lower() == "txt.rtf" or not child.is_file() or child.is_symlink():
                     continue
-                self.attach(note_id, child.name, child.read_bytes())
-            return note_id
+                size = child.stat().st_size
+                total += size
+                if size > 20 * 1024 * 1024 or total > 64 * 1024 * 1024:
+                    raise AppError("RTFD 附件超过便笺导入限制。", "notes")
+                content = child.read_bytes()
+                attachments.append({"name": child.name, "content": content, "sha256": digest(content)})
+            return self.create(path.stem, parsed["html"], parsed["plain"], attachments=attachments)
         if path.suffix.lower() == ".txt":
             text = path.read_text(encoding="utf-8")
             return self.create(path.stem, _escape(text).replace("\n", "<br>"), text)
@@ -353,14 +419,28 @@ class NotesStore:
         return self.contents / f"{digest_hex}.rtfd"
 
     def _flush(self) -> None:
-        for note in self.notes:
+        previous = self.guard.data.get("payload", {}).get("notes", []) if self.guard.exists else []
+        previous_digests = {item["rtfdDigest"] for item in previous if item.get("rtfdDigest")}
+        next_notes = deepcopy(self.notes)
+        for note in next_notes:
             body = self._bodies[note["id"]]
             if body.get("format") == "gaowenjian-html-1":
                 note["rtfd"] = ""
                 note["rtfdDigest"] = self._store_body(note, body)
-        payload = {"defaults": self.defaults, "notes": self.notes}
+        payload = {"defaults": self.defaults, "notes": next_notes}
         archive = {"payload": payload, "payloadDigest": digest(canonical_json(payload)), "version": SCHEMA, "writer": WRITER}
         self.guard.save(archive)
+        for current, saved in zip(self.notes, next_notes):
+            current["rtfdDigest"] = saved["rtfdDigest"]
+        keep = {item["rtfdDigest"] for item in next_notes}
+        for old in previous_digests - keep:
+            try:
+                target = self._blob_path(old)
+                reject_symlink(target)
+                if target.is_file() and digest(target.read_bytes()) == old:
+                    target.unlink()
+            except (AppError, OSError):
+                continue
         self.owned = True
         self.read_only = False
         self.blocked = ""

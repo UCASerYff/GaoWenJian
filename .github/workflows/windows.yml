@@ -13,70 +13,37 @@ concurrency:
 jobs:
   package:
     runs-on: windows-latest
-    defaults:
-      run:
-        working-directory: windows
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - name: Test and build executables
-        run: powershell -ExecutionPolicy Bypass -File .\build.ps1
-      - name: Smoke-test the packaged exe
+          architecture: x64
+      - name: Locate or provision Inno Setup
+        shell: pwsh
         run: |
-          $ErrorActionPreference = "Stop"
-          $root = Join-Path $env:TEMP ("gaowenjian-smoke-" + [guid]::NewGuid().ToString("n"))
-          $dest = Join-Path $root "data"
-          New-Item -ItemType Directory -Force -Path $dest | Out-Null
-          $port = 18767
-          $exe = Join-Path (Get-Location) "dist\GaoWenJian.exe"
-          $proc = Start-Process -FilePath $exe -ArgumentList @(
-            "--data-dir", $dest, "--serve", "--no-browser", "--port", "$port"
-          ) -PassThru -WindowStyle Hidden
-          try {
-            $page = $null
-            $deadline = (Get-Date).AddSeconds(90)
-            do {
-              if ($proc.HasExited) { throw "GaoWenJian.exe exited early with code $($proc.ExitCode)" }
-              try {
-                $response = Invoke-WebRequest -Uri "http://127.0.0.1:$port/" -UseBasicParsing -TimeoutSec 3 -NoProxy
-                if ($response.StatusCode -eq 200) { $page = $response; break }
-              } catch {}
-              Start-Sleep -Seconds 1
-            } while ((Get-Date) -lt $deadline)
-            if (-not $page) { throw "packaged exe did not return HTTP 200" }
-            $token = [regex]::Match($page.Content, 'name="gao-token" content="([^"]+)"').Groups[1].Value
-            if (-not $token) { throw "HTTP 200 page did not include a session token" }
-            $headers = @{ "X-Gao-Token" = $token }
-            $created = Invoke-RestMethod -Method POST -Uri "http://127.0.0.1:$port/api/tabs/new" -Headers $headers -ContentType "application/json; charset=utf-8" -Body '{"kind":"markdown","text":"CI smoke document"}' -NoProxy
-            if (-not $created.result.id) { throw "creating a markdown tab did not return an id" }
-            $target = Join-Path $root "smoke.md"
-            $saveBody = @{ id = $created.result.id; path = $target } | ConvertTo-Json -Compress
-            Invoke-RestMethod -Method POST -Uri "http://127.0.0.1:$port/api/tabs/save" -Headers $headers -ContentType "application/json; charset=utf-8" -Body $saveBody -NoProxy | Out-Null
-            if (-not (Test-Path $target)) { throw "saving the tab did not write smoke.md" }
-            $saved = Get-Content -Raw -Encoding UTF8 $target
-            if ($saved -notmatch "CI smoke document") { throw "smoke.md does not contain the written text" }
-            $listed = Invoke-RestMethod -Uri "http://127.0.0.1:$port/api/state" -Headers $headers -NoProxy
-            $found = $false
-            foreach ($tab in @($listed.tabs)) {
-              if ($tab.text -match "CI smoke document") { $found = $true }
-            }
-            if (-not $found) { throw "reading the workspace did not return the written document" }
-            Write-Output "smoke ok: HTTP 200, wrote and read smoke.md"
-            try {
-              Invoke-RestMethod -Method POST -Uri "http://127.0.0.1:$port/api/shutdown" -Headers $headers -ContentType "application/json; charset=utf-8" -Body "{}" -NoProxy | Out-Null
-            } catch {}
-            $exitDeadline = (Get-Date).AddSeconds(20)
-            while (-not $proc.HasExited -and (Get-Date) -lt $exitDeadline) { Start-Sleep -Milliseconds 500 }
-          } finally {
-            if (-not $proc.HasExited) { & taskkill.exe /PID $proc.Id /T /F | Out-Null }
-            if (Test-Path $root) { Remove-Item -Recurse -Force $root }
+          $tool = Join-Path ${env:ProgramFiles(x86)} 'Inno Setup 6\ISCC.exe'
+          if (-not (Test-Path -LiteralPath $tool -PathType Leaf)) {
+            $download = Join-Path $env:RUNNER_TEMP 'innosetup-6.7.4.exe'
+            Invoke-WebRequest 'https://github.com/jrsoftware/issrc/releases/download/is-6_7_4/innosetup-6.7.4.exe' -OutFile $download
+            $expected = 'A549929319F9120716677C685535CA4671E4B937B5FDC87E2585F32D8EB30E8C'
+            if ((Get-FileHash -LiteralPath $download -Algorithm SHA256).Hash -ne $expected) { throw 'Inno Setup checksum mismatch' }
+            $target = Join-Path $env:RUNNER_TEMP 'InnoSetup'
+            $result = Start-Process -FilePath $download -ArgumentList @('/VERYSILENT','/SUPPRESSMSGBOXES','/SP-','/NOICONS','/TASKS=','/PORTABLE=1',('/DIR="' + $target + '"')) -WindowStyle Hidden -Wait -PassThru
+            if ($result.ExitCode -ne 0) { throw 'Inno Setup installation failed' }
+            $tool = Join-Path $target 'ISCC.exe'
           }
+          "GAO_INNO_COMPILER=$tool" >> $env:GITHUB_ENV
+      - name: Build and exercise the installed package
+        shell: pwsh
+        run: |
+          .\windows\build.ps1 -InnoCompiler $env:GAO_INNO_COMPILER
+          $version = (Get-Content -Raw -LiteralPath VERSION).Trim()
+          python .\windows\tests\install_smoke.py ".\Release\GaoWenJian-Windows-$version-x64-Setup.exe"
       - uses: actions/upload-artifact@v4
         with:
-          name: GaoWenJian-Windows-1.11
+          name: GaoWenJian-Windows-x64
           if-no-files-found: error
           path: |
-            windows/dist/GaoWenJian.exe
-            windows/dist/GaoWenJian-cli.exe
+            Release/GaoWenJian-Windows-*-x64-Setup.exe
+            Release/GaoWenJian-Windows-*-x64-Setup.exe.sha256

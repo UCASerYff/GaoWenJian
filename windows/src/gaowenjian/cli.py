@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 from pathlib import Path
 
@@ -19,6 +20,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--data-dir", default=None)
     parser.add_argument("--serve", action="store_true")
     parser.add_argument("--no-browser", action="store_true")
+    parser.add_argument("--hidden", action="store_true", help="start the native Windows windows hidden for smoke tests")
     parser.add_argument("--port", type=int, default=0)
     parser.add_argument("--inspect", action="store_true")
     parser.add_argument("--self-check", action="store_true")
@@ -40,12 +42,32 @@ def main(argv: list[str] | None = None) -> int:
     except AppError as exc:
         _err(exc.message)
         return 2
-    server = serve(workspace, port=args.port, open_browser=not args.no_browser and not args.inspect)
+    server = serve(workspace, port=args.port, open_browser=False)
+    if args.no_browser:
+        _out(server.url)
     try:
-        server.shutdown_requested.wait()
+        if args.no_browser:
+            server.shutdown_requested.wait()
+        elif os.name == "nt":
+            from gaowenjian.desktop import run_desktop
+
+            run_desktop(server, activate=args.open is not None, hidden=args.hidden)
+        else:
+            import webbrowser
+
+            webbrowser.open(server.url + ("?view=editor" if args.open else ""))
+            server.shutdown_requested.wait()
     except KeyboardInterrupt:
         pass
+    except Exception as exc:
+        _err(f"无法打开 Windows 工作台：{exc}")
+        if os.name == "nt" and not args.no_browser and not args.hidden:
+            from ctypes import windll
+
+            windll.user32.MessageBoxW(None, "无法启动搞文件窗口。请确认 Microsoft Edge WebView2 Runtime 可用。\n\n" + str(exc), "搞文件", 0x10)
+        return 2
     finally:
+        server.shutdown()
         server.server_close()
     return 0
 
@@ -73,7 +95,7 @@ def _inspect(workspace: Workspace) -> None:
 
 def _out(message: str) -> None:
     if sys.stdout:
-        print(message)
+        print(message, flush=True)
 
 
 def _err(message: str) -> None:

@@ -1,0 +1,7 @@
+Noto Sans SC Regular 2.004
+Release: https://github.com/notofonts/noto-cjk/releases/tag/Sans2.004
+Original subset OTF: https://github.com/notofonts/noto-cjk/blob/Sans2.004/Sans/SubsetOTF/SC/NotoSansSC-Regular.otf
+Font SHA-256: faa6c9df652116dde789d351359f3d7e5d2285a2b2a1f04a2d7244df706d5ea9
+Font Git blob: fc0fda9394367c16c1af7555a2ae4d5e2e6a6f02
+License SHA-256: 6a73f9541c2de74158c0e7cf6b0a58ef774f5a780bf191f2d7ec9cc53efe2bf2
+License Git blob: d952d62c065f3f35fb83a173496e90b21525aef3

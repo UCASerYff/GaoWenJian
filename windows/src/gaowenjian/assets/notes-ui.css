@@ -1,0 +1,54 @@
+.row-spacer { flex: 1; }
+.document-dialog { background: var(--panel); color: var(--ink); border: 1px solid var(--line); border-radius: 14px; padding: 22px; box-shadow: 0 18px 45px #0003; }
+.document-dialog::backdrop { background: #0005; }
+.document-dialog h2 { margin: 0 0 12px; font-size: 16px; }
+.document-dialog .row > span { flex: 1; }
+.notes-workspace { display: flex; flex-direction: column; min-width: 0; min-height: 100%; }
+.notes-header { padding: 2px 0 12px; border-bottom: 1px solid var(--line); }
+.notes-header strong { font-size: 15px; }
+.notes-grid { display: grid; grid-template-columns: minmax(174px, 270px) minmax(300px, 1fr); flex: 1; min-width: 0; }
+.notes-browser { background: var(--sidebar); padding: 16px; display: flex; flex-direction: column; gap: 10px; min-height: 540px; border-right: 1px solid var(--line); }
+.notes-browser small { color: var(--muted); }
+.notes-filters { display: flex; align-items: center; justify-content: space-between; gap: 9px; }
+.notes-filters select { width: auto; min-width: 0; padding: 4px 6px; }
+.notes-filters small { white-space: nowrap; }
+#note-list { flex: 1; max-height: 470px; overflow: auto; }
+.note-no-results { text-align: center; padding: 20px 0; }
+#notes-trash-view { border-top-color: var(--line); border-radius: 0; text-align: left; }
+.note-yellow { --note-paper: #fff5b8; }
+.note-blue { --note-paper: #cce8ff; }
+.note-green { --note-paper: #d6f2c9; }
+.note-pink { --note-paper: #ffdae0; }
+.note-purple { --note-paper: #e8dbfc; }
+.note-gray { --note-paper: #e8e8e3; }
+.note-card { display: grid; gap: 5px; width: 100%; min-height: 84px; text-align: left; padding: 10px 12px; margin-bottom: 8px; border-radius: 10px; border-inline-start: 5px solid var(--note-paper); }
+.note-card.selected { background: var(--green-soft); border-color: var(--green); border-inline-start-color: var(--note-paper); }
+.note-card b, .note-card span { word-break: break-word; }
+.note-card span { font-size: 12px; color: var(--muted); }
+.note-card small { display: flex; justify-content: space-between; gap: 4px; }
+.note-detail { display: flex; padding: 12px; min-width: 0; }
+.note-empty { margin: auto; padding: 14px; color: var(--muted); text-align: center; }
+.note-empty > svg { font-size: 42px; }
+.note-empty h2 { color: var(--ink); font-size: 17px; }
+.note-paper, .desktop-note { background: var(--note-paper); color: #1d211b; }
+.note-paper { display: flex; flex: 1; flex-direction: column; gap: 8px; min-width: 0; padding: 14px; border-radius: 11px; }
+.note-paper button, .note-paper input, .note-paper select, .desktop-note-title button { color: #20241e; background: #fff5; border-color: #0002; }
+.note-paper .action-menu > div { background: var(--note-paper); }
+.note-title-row > input { width: auto; min-width: 0; flex: 1; font-size: 17px; font-weight: 600; }
+.note-metadata input { flex: 1; width: auto; min-width: 85px; }
+.note-metadata select, .note-metadata button { width: auto; padding: 5px 8px; }
+.note-metadata button[aria-pressed="true"] { background: #0002; }
+.note-body { flex: 1; min-height: 95px; padding: 10px; border-radius: 8px; background: #fff5; border: 1px solid #0002; color: #20241e; overflow: auto; overflow-wrap: anywhere; font-size: var(--note-size); }
+.note-body:focus-visible { outline: 2px solid #255d47; }
+#note-status { color: #445046; font-size: 11px; min-height: 15px; }
+.note-actions .action-menu > div { top: auto; bottom: calc(100% + 3px); }
+.desktop-note { display: flex; flex-direction: column; height: 100%; overflow: hidden; }
+.desktop-note-title { color: inherit; background: transparent; border-color: #0002; height: 55px; flex: 0 0 55px; padding: 5px 8px; }
+.desktop-note-title b { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; pointer-events: none; }
+.desktop-note-title button { border: 0; padding: 4px 7px; }
+.desktop-note-title button:hover { background: #0002; }
+.desktop-note .note-paper { overflow: auto; border-radius: 0; padding: 8px; }
+.desktop-note .note-title-row, .desktop-note .note-metadata, .desktop-note .note-format, .desktop-note .note-actions { gap: 4px; }
+.desktop-note .note-paper button { padding: 3px 6px; }
+.desktop-note .note-title-row input { padding: 3px 6px; font-size: 14px; }
+@media (max-width: 865px) { .notes-grid { grid-template-columns: 175px minmax(260px, 1fr); } .notes-browser, .note-detail, .note-paper { padding: 8px; } .notes-header > .muted { display: none; } }

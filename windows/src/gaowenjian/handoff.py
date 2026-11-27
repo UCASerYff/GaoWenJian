@@ -1,15 +1,19 @@
-"""GaoAction V1 目录包。不注册 URL 协议，也不代替其他搞系列应用执行动作。"""
+"""GaoAction V1 目录包、请求与回执。"""
 
 from __future__ import annotations
 
 import base64
 import json
 import os
-import shutil
+import re
+import stat
+import tempfile
 import uuid
 import zipfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from urllib.parse import unquote, urlsplit
+from urllib.request import url2pathname
 
 from gaowenjian.errors import AppError
 from gaowenjian.safety import GuardedJSON, digest, reject_symlink, safe_replace
@@ -19,6 +23,8 @@ TTL = timedelta(seconds=120)
 MAX_ITEMS = 256
 MAX_MANIFEST = 1_048_576
 MAX_TEXT = 8_388_608
+MAX_ITEM_BYTES = 128 * 1024 * 1024
+MAX_PACKAGE_BYTES = 512 * 1024 * 1024
 TEXT_UTIS = {"public.utf8-plain-text", "public.plain-text", "text/plain", "net.daringfireball.markdown", "public.markdown", "text/markdown"}
 PDF_UTIS = {"com.adobe.pdf", "application/pdf"}
 KNOWN_ACTIONS = {
@@ -45,21 +51,24 @@ class HandoffBook:
             raise AppError(self.journal.error or "交接日志损坏，已停止处理。", "handoff")
         if self.outgoing.exists and not self.outgoing.readable:
             raise AppError(self.outgoing.error or "交接发送记录损坏，已停止处理。", "handoff")
+        for guard, key in ((self.journal, "entries"), (self.outgoing, "sessions")):
+            if guard.exists and (not isinstance(guard.data, dict) or guard.data.get("version") != 1
+                                 or not isinstance(guard.data.get(key), list)
+                                 or not all(isinstance(item, dict) for item in guard.data[key])):
+                raise AppError("交接记录版本或格式无效，已保留原件。", "handoff")
 
-    def import_package(self, path: Path, now: datetime | None = None) -> dict:
+    def import_package(self, path: Path, now: datetime | None = None, *, remember=True) -> dict:
         if not self.journal.readable or not self.outgoing.readable:
             raise AppError("交接日志或发送记录无法读取，已停止处理。", "handoff")
         now = now or datetime.now(timezone.utc)
-        manifest, files = _read_package(path)
-        _validate(manifest, BUNDLE_ID, now)
-        digest_hex = digest(_manifest_bytes(path))
+        manifest, files, digest_hex = read_package(path, now=now)
         if _already(self.journal.data, manifest.get("requestID"), digest_hex):
             return {"duplicate": True, "requestID": manifest.get("requestID"), "opened": []}
         action = manifest["action"]
         opened = []
         if action == "documents.open" and manifest.get("items") and manifest.get("references"):
             raise AppError("打开文档的交接不能同时携带附件和原件引用。", "invalidActionInput")
-        if action == "documents.newText" and len(files) != 1:
+        if action == "documents.newText" and (len(files) != 1 or manifest["references"] or manifest["items"][0]["uti"] not in TEXT_UTIS):
             raise AppError("新建文字交接必须正好包含一个文本附件。", "invalidActionInput")
         if manifest["kind"] == "result" and action == "research.importDocuments":
             self._accept_research_result(manifest)
@@ -68,12 +77,19 @@ class HandoffBook:
             text = _read_text(files[0])
             opened.append({"kind": "newText", "text": text, "title": (manifest.get("parameters") or {}).get("suggestedTitle"), "manifest": _public_manifest(manifest)})
         elif action == "documents.open" or (manifest["kind"] == "result" and action == "ocr.files"):
-            for item, file_path in zip(manifest.get("items") or [], files):
+            if action == "ocr.files":
+                from gaowenjian.ocr_handoff import validate_result
+
+                if validate_result(manifest, files, self.outgoing.data, self.journal.data):
+                    return {"duplicate": True, "requestID": manifest["requestID"], "opened": []}
+                if not files:
+                    opened.append({"kind": "receipt", "action": action, "status": manifest["status"]})
+            for item, content in zip(manifest["items"], files, strict=True):
                 uti = item["uti"]
-                if uti in TEXT_UTIS or uti in {"application/json", "text/json"}:
-                    opened.append({"kind": "newText", "text": _read_text(file_path), "title": Path(item["relativePath"]).name, "manifest": _public_manifest(manifest)})
+                if uti in TEXT_UTIS or uti in {"public.json", "application/json", "text/json"}:
+                    opened.append({"kind": "newText", "text": _read_text(content), "title": Path(item["relativePath"]).name, "manifest": _public_manifest(manifest)})
                 elif uti in PDF_UTIS:
-                    opened.append({"kind": "pdf", "bytes": file_path.read_bytes(), "title": Path(item["relativePath"]).name, "manifest": _public_manifest(manifest)})
+                    opened.append({"kind": "pdf", "bytes": content, "title": Path(item["relativePath"]).name, "manifest": _public_manifest(manifest)})
                 else:
                     raise AppError("交接文件类型目前不能在 Windows 版打开，原文档未修改。", "handoff")
             for reference in manifest.get("references") or []:
@@ -83,37 +99,40 @@ class HandoffBook:
                 opened.append({"kind": "reference", "reference": reference})
         else:
             raise AppError("这个交接动作在 Windows 版不能执行。可以保留交接包，但不会改动当前文档。", "unsupported")
-        _remember(self.journal, {"requestID": manifest["requestID"], "manifestSHA256": digest_hex, "action": action})
-        if files:
-            hold = files[0].parent
-            if hold.name.startswith(".handoff-files-"):
-                shutil.rmtree(hold, ignore_errors=True)
-        return {"duplicate": False, "requestID": manifest["requestID"], "opened": opened}
+        record = {"requestID": manifest["requestID"], "manifestSHA256": digest_hex, "action": action}
+        if action == "ocr.files":
+            record["inReplyTo"] = manifest["inReplyTo"]
+        if remember:
+            self.finish_import(record)
+        return {"duplicate": False, "requestID": manifest["requestID"], "opened": opened, "record": record}
 
-    def resolve_reference(self, reference: dict, selected: Path) -> None:
+    def finish_import(self, record: dict) -> None:
+        _remember(self.journal, record)
+
+    def resolve_reference(self, reference: dict, selected: Path, *, directory=False) -> None:
         declared = _file_url(reference["fileURL"])
-        if declared is not None and selected.resolve() != declared.resolve() and os.name != "nt":
+        if declared is not None and selected.resolve() != declared.resolve():
             raise AppError("所选对象与交接原件不匹配，请重新复核。", "referenceMismatch")
-        reject_symlink(selected)
-        if not selected.is_file():
-            raise AppError("交接原件不存在或不是普通文件。", "reference")
-        stat = selected.stat()
+        try:
+            info = regular_path(selected, directory=directory)
+        except OSError as exc:
+            raise AppError("交接原件不存在或不是普通文件。", "reference") from exc
         identity = reference.get("declaredIdentity") or {}
-        if identity.get("byteCount") is not None and int(identity["byteCount"]) != stat.st_size:
+        if identity.get("byteCount") is not None and identity["byteCount"] != info.st_size:
             raise AppError("原件大小已变化，请重新发送。", "referenceChanged")
-        if identity.get("device") is not None and int(identity["device"]) != int(stat.st_dev):
+        if identity.get("device") is not None and identity["device"] != info.st_dev:
             raise AppError("原件身份已变化，请重新发送。", "referenceChanged")
-        if identity.get("inode") is not None and int(identity["inode"]) != int(stat.st_ino):
+        if identity.get("inode") is not None and identity["inode"] != info.st_ino:
             raise AppError("原件身份已变化，请重新发送。", "referenceChanged")
         if identity.get("modifiedAt"):
             expected = _parse_time(identity["modifiedAt"])
-            actual = datetime.fromtimestamp(stat.st_mtime, timezone.utc)
+            actual = datetime.fromtimestamp(info.st_mtime, timezone.utc)
             if abs((actual - expected).total_seconds()) >= 0.001:
                 raise AppError("原件修改时间已变化，请重新发送。", "referenceChanged")
-        if identity.get("volumeUUID"):
+        if identity.get("volumeUUID") and (directory or not reference.get("sha256")):
             raise AppError("Windows 版不能核对 macOS 卷标识。请让发送方带上 SHA-256，或在本机重新选择文件后只核对该摘要。", "volume")
-        if reference.get("sha256"):
-            if digest(selected.read_bytes()) != reference["sha256"]:
+        if reference.get("sha256") and not directory:
+            if digest(read_regular(selected, MAX_ITEM_BYTES)) != reference["sha256"]:
                 raise AppError("原件内容已变化，请重新发送。", "referenceChanged")
 
     def export_research(self, destination: Path, filename: str, content: bytes, uti: str, target_record: str | None, now: datetime | None = None) -> dict:
@@ -164,6 +183,8 @@ class HandoffBook:
         session = next((item for item in sessions or [] if item.get("requestID") == manifest.get("inReplyTo")), None)
         if not session:
             raise AppError("没有找到对应的研究导入请求，不能把回执当成已导入。", "research")
+        if manifest["sourceBundleID"] != session.get("targetBundleID") or session.get("action") != manifest["action"]:
+            raise AppError("研究导入回执来源与所选目标应用不一致。", "research")
         status = manifest.get("status")
         provenance = manifest.get("provenance") or {}
         if provenance.get("requestManifestSHA256") != session.get("manifestSHA256"):
@@ -201,77 +222,108 @@ class HandoffBook:
             raise AppError("研究导入回执不能携带文档、原件引用或请求参数。", "research")
 
 
-def _read_package(path: Path) -> tuple[dict, list[Path]]:
-    if path.is_file() and zipfile.is_zipfile(path):
-        return _read_zip(path)
-    if not path.is_dir() or path.suffix.lower() != ".gaoaction":
-        raise AppError("请选择 .gaoaction 交接目录，或相同结构的 zip。", "invalidPackage")
-    manifest_path = path / "manifest.json"
-    reject_symlink(manifest_path)
-    manifest = _decode_manifest(manifest_path.read_bytes())
-    files = []
-    for item in manifest.get("items") or []:
-        files.append(_payload_file(path, item["relativePath"]))
-    return manifest, files
-
-
-def _read_zip(path: Path) -> tuple[dict, list[Path]]:
-    staging = path.parent / f".handoff-{uuid.uuid4().hex}"
+def read_package(path: Path, *, now=None, target=BUNDLE_ID) -> tuple[dict, list[bytes], str]:
+    """Read exact attachment bytes once, without extracting a zip beside the user file."""
+    now = now or datetime.now(timezone.utc)
+    path = path.absolute()
     try:
-        with zipfile.ZipFile(path) as archive:
-            for info in archive.infolist():
-                name = info.filename.replace("\\", "/")
-                if name.startswith("/") or ".." in name.split("/"):
-                    raise AppError("交接包路径不安全。", "invalidPath")
-            archive.extractall(staging)
-        root = staging
-        if not (root / "manifest.json").exists():
-            children = [item for item in root.iterdir()]
-            if len(children) == 1 and (children[0] / "manifest.json").exists():
-                root = children[0]
-        manifest, files = _read_package_dir(root)
-        copied = []
-        hold = path.parent / f".handoff-files-{uuid.uuid4().hex}"
-        hold.mkdir()
-        for file_path in files:
-            target = hold / file_path.name
-            shutil.copyfile(file_path, target)
-            copied.append(target)
-        return manifest, copied
-    finally:
-        shutil.rmtree(staging, ignore_errors=True)
+        if path.is_file():
+            regular_path(path)
+            with zipfile.ZipFile(path) as archive:
+                entries = archive.infolist()
+                names = {}
+                if len(entries) > 1024:
+                    raise AppError("交接包成员过多。", "itemLimit")
+                for entry in entries:
+                    name = entry.filename.rstrip("/")
+                    _path_parts(name)
+                    if name.casefold() in names or stat.S_ISLNK(entry.external_attr >> 16):
+                        raise AppError("交接包存在不安全或重复的路径。", "invalidPath")
+                    names[name.casefold()] = entry
+                manifests = [entry.filename for entry in entries if entry.filename.split("/")[-1] == "manifest.json"]
+                if len(manifests) != 1 or manifests[0].count("/") > 1:
+                    raise AppError("交接清单缺失或重复。", "invalidManifest")
+                prefix = manifests[0][:-len("manifest.json")]
+
+                def read_member(relative: str, maximum: int) -> bytes:
+                    entry = names.get((prefix + relative).casefold())
+                    if entry is None or entry.is_dir() or entry.file_size > maximum:
+                        raise AppError("交接附件缺失或超过限制。", "invalidItem")
+                    with archive.open(entry) as stream:
+                        return stream.read(maximum + 1)
+
+                return _read_contents(read_member, now, target)
+        if not path.is_dir() or path.suffix.lower() not in {".gaoaction", ".gaoresult"}:
+            raise AppError("请选择 .gaoaction 交接目录，或相同结构的 zip。", "invalidPackage")
+        regular_path(path, directory=True)
+        return _read_contents(lambda relative, limit: read_regular(path.joinpath(*relative.split("/")), limit), now, target)
+    except (OSError, zipfile.BadZipFile, RuntimeError) as exc:
+        raise AppError("交接包、清单或附件无法读取。", "invalidPackage") from exc
 
 
-def _read_package_dir(path: Path) -> tuple[dict, list[Path]]:
-    manifest = _decode_manifest((path / "manifest.json").read_bytes())
-    files = [_payload_file(path, item["relativePath"]) for item in manifest.get("items") or []]
-    return manifest, files
+def _read_contents(read, now: datetime, target: str) -> tuple[dict, list[bytes], str]:
+    raw = read("manifest.json", MAX_MANIFEST)
+    manifest = _decode_manifest(raw)
+    _validate(manifest, target, now)
+    files = []
+    for item in manifest["items"]:
+        member = "payload/" + "/".join(_components(item["relativePath"]))
+        data = read(member, item["byteCount"])
+        if len(data) != item["byteCount"] or digest(data) != item["sha256"]:
+            raise AppError("交接附件的大小或 SHA-256 与清单不匹配。", "changed")
+        files.append(data)
+    return manifest, files, digest(raw)
 
 
-def _payload_file(root: Path, relative: str) -> Path:
-    parts = _components(relative)
-    file_path = root / "payload"
-    for part in parts:
-        file_path = file_path / part
-    reject_symlink(file_path)
-    resolved = file_path.resolve()
-    if not str(resolved).startswith(str((root / "payload").resolve())):
-        raise AppError("交接附件路径不安全。", "invalidPath")
-    if not file_path.is_file():
-        raise AppError("交接附件缺失。", "invalidPath")
-    return file_path
+def regular_path(path: Path, *, directory=False) -> os.stat_result:
+    """Reject Windows reparse points and POSIX symlinks at every selected component."""
+    for parent in reversed(path.absolute().parents):
+        record = parent.lstat()
+        if not stat.S_ISDIR(record.st_mode) or getattr(record, "st_file_attributes", 0) & 0x400:
+            raise AppError("路径包含重解析点或链接，已停止操作。", "invalidPath")
+    record = path.lstat()
+    mode_ok = stat.S_ISDIR(record.st_mode) if directory else stat.S_ISREG(record.st_mode) and record.st_nlink == 1
+    if not mode_ok or getattr(record, "st_file_attributes", 0) & 0x400:
+        raise AppError("路径包含重解析点、链接或不受支持的对象。", "invalidPath")
+    return record
+
+
+def read_regular(path: Path, maximum: int) -> bytes:
+    before = regular_path(path)
+    if before.st_size > maximum:
+        raise AppError("附件超过本机交接大小限制。", "itemLimit")
+    with path.open("rb") as stream:
+        opened = os.fstat(stream.fileno())
+        def stamp(item):
+            # Windows lstat and fstat can report creation and metadata-change times differently.
+            return (item.st_dev, item.st_ino, item.st_size, item.st_mtime_ns, item.st_nlink)
+        if stamp(before) != stamp(opened):
+            raise AppError("文件在校验时已变化，请重试。", "changed")
+        data = stream.read(maximum + 1)
+        if len(data) != before.st_size or stamp(before) != stamp(os.fstat(stream.fileno())) or stamp(before) != stamp(regular_path(path)):
+            raise AppError("文件在读取时已变化，请重试。", "changed")
+    return data
 
 
 def _components(path: str) -> list[str]:
-    if not path or len(path.encode()) > 4096 or path.startswith("/") or "\\" in path or "\x00" in path:
-        raise AppError("交接附件路径不安全。", "invalidPath")
-    parts = path.split("/")
-    if any(part in {"", ".", ".."} for part in parts):
-        raise AppError("交接附件路径不安全。", "invalidPath")
+    parts = _path_parts(path)
     if parts[0] == "payload":
         parts = parts[1:]
     if not parts:
         raise AppError("交接附件不是普通文件。", "invalidPath")
+    return parts
+
+
+def _path_parts(path: str) -> list[str]:
+    if not isinstance(path, str) or not path or len(path) > 4096:
+        raise AppError("交接附件路径不安全。", "invalidPath")
+    parts = path.split("/")
+    for part in parts:
+        stem = part.split(".")[0].upper()
+        if (not part or part[-1] in " ." or any(ord(char) < 32 or char in '\\:<>\"|?*' for char in part)
+                or stem in {"CON", "PRN", "AUX", "NUL", "CONIN$", "CONOUT$"}
+                or re.fullmatch(r"(COM|LPT)[1-9¹²³]", stem)):
+            raise AppError("交接附件路径不安全。", "invalidPath")
     return parts
 
 
@@ -305,13 +357,13 @@ def _decode_manifest(data: bytes) -> dict:
 
 
 def _validate(manifest: dict, expected_target: str, now: datetime) -> None:
-    if manifest.get("schemaVersion") != 1:
+    if type(manifest.get("schemaVersion")) is not int or manifest["schemaVersion"] != 1:
         raise AppError("交接包版本暂不支持，原文档未修改。", "unsupportedSchema")
     if manifest.get("kind") not in {"request", "result"} or not _uuid(manifest.get("requestID")):
         raise AppError("交接包类型或请求编号无效。", "invalidManifest")
     if not _bundle(manifest.get("sourceBundleID")) or manifest.get("targetBundleID") != expected_target:
         raise AppError("交接包的目标应用不匹配。", "wrongTarget")
-    if manifest.get("action") not in KNOWN_ACTIONS:
+    if not isinstance(manifest.get("action"), str) or manifest["action"] not in KNOWN_ACTIONS:
         raise AppError("交接动作暂不支持。", "unsupportedAction")
     try:
         nonce = base64.b64decode(manifest.get("nonce") or "", validate=True)
@@ -323,24 +375,41 @@ def _validate(manifest: dict, expected_target: str, now: datetime) -> None:
     expires = _parse_time(manifest.get("expiresAt"))
     if expires <= created or expires - created > TTL or created > now or now >= expires:
         raise AppError("交接包已过期或时间无效，请重新发送。", "expired")
+    if not isinstance(manifest.get("parameters"), dict):
+        raise AppError("交接参数无效。", "invalidManifest")
     items = manifest.get("items") or []
     references = manifest.get("references") or []
     if len(items) > MAX_ITEMS or len(references) > MAX_ITEMS or len(items) + len(references) > MAX_ITEMS:
         raise AppError("交接文件过多，请分批发送。", "itemLimit")
     seen = set()
     paths = set()
+    total = 0
     for item in items:
-        if not item["id"] or len(item["id"].encode()) > 256 or item["id"] in seen or not _sha(item.get("sha256")):
+        if (not isinstance(item["id"], str) or not 1 <= len(item["id"]) <= 256 or item["id"] in seen
+                or not _sha(item.get("sha256")) or not isinstance(item["uti"], str) or not item["uti"]):
             raise AppError("交接文件信息无效。", "invalidItem")
         seen.add(item["id"])
-        relative = "/".join(_components(item["relativePath"]))
+        relative = "/".join(_components(item["relativePath"])).casefold()
         if relative in paths:
             raise AppError("交接包存在重复附件路径。", "duplicatePath")
         paths.add(relative)
-        if not isinstance(item["byteCount"], int) or item["byteCount"] < 0:
+        if type(item["byteCount"]) is not int or not 0 <= item["byteCount"] <= MAX_ITEM_BYTES:
             raise AppError("交接文件信息无效。", "invalidItem")
+        total += item["byteCount"]
+    if total > MAX_PACKAGE_BYTES:
+        raise AppError("交接文件总大小超过限制，请分批发送。", "itemLimit")
+    for reference in references:
+        _file_url(reference["fileURL"])
+        if reference["kind"] not in ("file", "directory", "application") or not isinstance(reference["displayName"], str):
+            raise AppError("原件引用格式无效。", "invalidReference")
+        identity = reference["declaredIdentity"]
+        if any(identity.get(key) is not None and (type(identity[key]) is not int or identity[key] < 0)
+               for key in ("device", "inode", "byteCount")):
+            raise AppError("原件身份无效。", "invalidReference")
+        if reference.get("sha256") is not None and not _sha(reference["sha256"]):
+            raise AppError("原件摘要无效。", "invalidReference")
     if manifest["kind"] == "result":
-        if not _uuid(manifest.get("inReplyTo")) or manifest.get("status") not in {"pending", "completed", "partial", "cancelled", "failed", "unsupported"}:
+        if not _uuid(manifest.get("inReplyTo")) or manifest.get("status") not in ("pending", "completed", "partial", "cancelled", "failed", "unsupported"):
             raise AppError("交接结果缺少关联编号或状态。", "invalidResult")
         if not isinstance(manifest.get("provenance"), dict):
             raise AppError("交接结果缺少关联编号或状态。", "invalidResult")
@@ -367,33 +436,24 @@ def _request(action: str, request_id: str, target: str, parameters: dict, now: d
 
 
 def _write_package(directory: Path, manifest: dict, files: dict[str, bytes]) -> None:
-    payload = directory / "payload"
-    payload.mkdir(parents=True)
-    for name, content in files.items():
-        target = payload / name
-        safe_replace(target, content, None)
-        if digest(target.read_bytes()) != digest(content):
-            raise AppError("交接附件写入后核验失败，未保留半份交接包。", "handoff")
-    raw = json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True).encode("utf-8") + b"\n"
-    safe_replace(directory / "manifest.json", raw, None)
-
-
-def _canonical_manifest(manifest: dict) -> bytes:
-    return json.dumps(manifest, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
-
-
-def _manifest_bytes(path: Path) -> bytes:
-    return _manifest_from(path)
-
-
-def _manifest_from(path: Path) -> bytes:
-    if path.is_dir():
-        return (path / "manifest.json").read_bytes()
-    with zipfile.ZipFile(path) as archive:
-        names = [name for name in archive.namelist() if name.endswith("manifest.json")]
-        if not names:
-            raise AppError("交接清单缺失。", "invalidManifest")
-        return archive.read(names[0])
+    try:
+        regular_path(directory.parent, directory=True)
+        if os.path.lexists(directory):
+            raise AppError("交接目标已存在。", "conflict")
+        with tempfile.TemporaryDirectory(prefix=".gaoaction-", dir=directory.parent) as parent:
+            staging = Path(parent) / "package"
+            payload = staging / "payload"
+            payload.mkdir(parents=True)
+            for name, content in files.items():
+                target = payload / name
+                safe_replace(target, content, None)
+                if digest(read_regular(target, len(content))) != digest(content):
+                    raise AppError("交接附件写入后核验失败，未保留半份交接包。", "handoff")
+            raw = json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True).encode("utf-8") + b"\n"
+            safe_replace(staging / "manifest.json", raw, None)
+            staging.rename(directory)
+    except OSError as exc:
+        raise AppError("交接包无法写入所选目录。", "handoff") from exc
 
 
 def _remember(guard: GuardedJSON, record: dict, key: str = "entries") -> None:
@@ -408,11 +468,15 @@ def _remember(guard: GuardedJSON, record: dict, key: str = "entries") -> None:
 def _already(data, request_id: str, manifest_sha: str) -> bool:
     if not isinstance(data, dict):
         return False
-    return any(item.get("requestID") == request_id or item.get("manifestSHA256") == manifest_sha for item in data.get("entries") or [])
+    for item in data.get("entries") or []:
+        if item.get("requestID") == request_id:
+            if item.get("manifestSHA256") != manifest_sha:
+                raise AppError("同一交接编号已对应不同的清单。", "handoffConflict")
+            return True
+    return False
 
 
-def _read_text(path: Path) -> str:
-    data = path.read_bytes()
+def _read_text(data: bytes) -> str:
     if len(data) > MAX_TEXT or b"\x00" in data:
         raise AppError("交接正文超过限制或含无效字符，未改变当前文档。", "handoff")
     try:
@@ -422,18 +486,24 @@ def _read_text(path: Path) -> str:
 
 
 def _public_manifest(manifest: dict) -> dict:
-    return {"action": manifest.get("action"), "requestID": manifest.get("requestID"), "status": manifest.get("status"), "sourceBundleID": manifest.get("sourceBundleID")}
+    info = {key: manifest.get(key) for key in ("action", "requestID", "inReplyTo", "status", "sourceBundleID")}
+    if manifest["action"] == "ocr.files":
+        provenance = manifest["provenance"]
+        info["pages"] = [{"pageNumber": page["pageNumber"], "status": page["status"], "lineCount": page["lineCount"]}
+                         for source in provenance.get("sources", []) for page in source["pages"]]
+        info["failureCount"] = len(provenance.get("exportFailures", []))
+    return info
 
 
 def _file_url(value: str) -> Path | None:
-    if not isinstance(value, str) or len(value.encode()) > 16384 or not value.startswith("file://"):
+    if not isinstance(value, str) or len(value) > 16384 or not value.startswith("file://"):
         raise AppError("仅接受规范化的本机原件引用。", "invalidReference")
-    if "?" in value or "#" in value or ".." in value:
+    parsed = urlsplit(value)
+    decoded = unquote(parsed.path)
+    if (parsed.netloc not in {"", "localhost"} or parsed.query or parsed.fragment or not decoded.startswith("/")
+            or any(part in {".", ".."} for part in decoded.split("/")) or "\\" in decoded or "\x00" in decoded):
         raise AppError("仅接受规范化的本机原件引用。", "invalidReference")
-    raw = value[7:]
-    if raw.startswith("localhost"):
-        raw = raw[len("localhost"):]
-    path = Path(raw)
+    path = Path(url2pathname(parsed.path))
     if not path.is_absolute():
         return None
     return path

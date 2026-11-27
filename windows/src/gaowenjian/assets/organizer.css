@@ -1,0 +1,62 @@
+.handoff-card {
+  display: grid;
+  gap: 12px;
+  margin-block: 14px;
+  padding: 16px 20px;
+  overflow-wrap: anywhere;
+  box-shadow: none;
+  border: 1px solid var(--line);
+}
+
+.handoff-card h2,
+.handoff-card p,
+.handoff-card .banner p {
+  margin: 0;
+}
+
+.handoff-card fieldset {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  margin: 0;
+}
+
+.handoff-card fieldset label {
+  white-space: nowrap;
+}
+
+.handoff-card #ocr-language {
+  width: min(460px, 100%);
+}
+
+.organizer-nav {
+  border-bottom: 1px solid var(--line);
+  padding-bottom: 12px;
+  margin-bottom: 16px;
+}
+
+.organizer-record {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--line);
+  overflow-wrap: anywhere;
+}
+
+.organizer-record > :first-child {
+  min-width: min(260px, 100%);
+  flex: 1;
+}
+
+.organizer-record p {
+  margin-block: 4px 0;
+}
+
+#organizer-search {
+  margin-block: 12px;
+}
+
+#organizer-search :is(input, select) {
+  max-width: min(270px, 55vw);
+}

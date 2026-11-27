@@ -1,0 +1,76 @@
+.writing-panel {
+  display: flex;
+  flex-direction: column;
+  min-height: min(680px, 72vh);
+  height: 100%;
+  min-width: 0;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  overflow: hidden;
+}
+.writing-toolbar { flex: 0 0 auto; flex-wrap: wrap; min-height: 42px; padding: 7px 10px; border-bottom: 1px solid var(--line); }
+.writing-toolbar select, .writing-toolbar button, .latex-preview-toolbar button { min-height: 29px; }
+.writing-panel .writing-toolbar select { flex: 0 0 auto; width: auto; max-width: 12rem; }
+.writing-spacer { flex: 1; }
+.writing-modes { display: inline-flex; }
+.writing-modes button { border-radius: 0; margin-left: -1px; }
+.writing-modes button:first-child { border-radius: 6px 0 0 6px; margin-left: 0; }
+.writing-modes button:last-child { border-radius: 0 6px 6px 0; }
+.writing-panel button[aria-pressed="true"] { background: var(--green-soft); color: var(--green); border-color: var(--green); }
+#markdown-frame { display: block; flex: 1 1 auto; width: 100%; min-height: 420px; border: 0; }
+.latex-layout { flex: 1 1 auto; min-height: 350px; display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+.latex-layout.latex-show-sidebar { grid-template-columns: minmax(126px, .48fr) minmax(0, 1fr) minmax(0, 1fr); }
+.latex-index { display: none; min-width: 0; overflow: auto; border-right: 1px solid var(--line); background: var(--sidebar); padding: 9px; }
+.latex-show-sidebar .latex-index { display: block; }
+#latex-index-items { padding: 9px 0; color: var(--muted); }
+#latex-index-items button { text-align: left; display: block; border: 0; background: transparent; overflow-wrap: anywhere; width: 100%; }
+#latex-index-items button:hover { background: var(--green-soft); }
+.latex-source-panel, .latex-preview { display: flex; flex-direction: column; position: relative; min-width: 0; min-height: 0; }
+.latex-source-panel { border-right: 1px solid var(--line); }
+.latex-source-title, .latex-preview-toolbar { min-height: 41px; padding: 5px 9px; border-bottom: 1px solid var(--line); }
+.latex-preview-toolbar { column-gap: 4px; row-gap: 4px; }
+.latex-preview-toolbar button { padding-inline: 6px; }
+#latex-page-count { white-space: nowrap; }
+.latex-source-area { display: flex; flex: 1; min-height: 0; overflow: hidden; }
+.latex-source-area .latex-numbers, .latex-source-area .latex-source, .latex-line-measure, .latex-highlight {
+  margin: 0;
+  padding: 12px 8px;
+  border: 0;
+  border-radius: 0;
+  font: var(--editor-size, 15px)/1.57 Consolas, "Microsoft YaHei UI", monospace;
+  tab-size: 4;
+}
+.latex-source-area .latex-numbers { flex: 0 0 38px; overflow: hidden; text-align: right; color: var(--muted); background: var(--sidebar); }
+.latex-code-surface { position: relative; flex: 1; min-width: 0; min-height: 0; }
+.latex-source-area .latex-source { position: absolute; inset: 0; width: 100%; height: 100%; min-width: 0; min-height: 100%; outline-offset: -2px; resize: none; color: transparent; caret-color: var(--ink); background: transparent; }
+.latex-source::selection { background: #588c7255; }
+.latex-highlight { position: absolute; inset: 0; color: var(--ink); pointer-events: none; overflow: hidden; overflow-wrap: break-word; }
+.latex-tone-comment { color: var(--muted); }
+.latex-tone-command { color: var(--green); }
+.latex-tone-math { color: var(--markdown); }
+.latex-tone-group { color: var(--pdf); }
+.latex-code-surface.is-composing .latex-source { color: var(--ink); background: var(--panel); }
+@media (forced-colors: active) {
+  .latex-source-area .latex-source { color: CanvasText; }
+  .latex-highlight { display: none; }
+}
+.latex-line-measure { position: absolute; visibility: hidden; padding: 0; white-space: pre-wrap; overflow-wrap: break-word; }
+.latex-completions { position: absolute; inset: 40px 10px auto 10px; max-height: 280px; overflow: auto; z-index: 2; background: var(--panel); padding: 4px; border: 1px solid var(--line); box-shadow: var(--shadow); }
+.latex-completions button { display: block; width: 100%; text-align: left; margin-top: 2px; }
+.latex-preview-scroll { flex: 1; min-height: 0; overflow: auto; background: var(--sidebar); padding: 10px; container-type: size; }
+.latex-empty { height: 100%; display: grid; place-items: center; }
+.latex-paper { position: relative; margin: 0 auto 10px; line-height: 0; background: white; box-shadow: 0 1px 5px #0003; }
+.latex-paper img { width: 100%; max-width: none; vertical-align: top; user-select: none; }
+.latex-pin { position: absolute; width: 14px; height: 14px; border-radius: 50%; border: 3px solid #946600; background: #ffd764; transform: translate(-50%, -50%); pointer-events: none; }
+.latex-log { max-height: 160px; overflow: auto; margin: 0; padding: 10px 12px; border-top: 1px solid var(--line); background: var(--sidebar); white-space: pre-wrap; }
+.writing-status { color: var(--muted); padding: 2px 8px; min-height: 22px; border-top: 1px solid var(--line); }
+@media (max-width: 960px) {
+  .latex-layout.latex-show-sidebar { grid-template-columns: minmax(96px, .42fr) minmax(0, 1fr) minmax(0, 1fr); }
+}
+@media (max-width: 680px) {
+  .latex-layout, .latex-layout.latex-show-sidebar { display: flex; flex-direction: column; }
+  .latex-index { max-height: 125px; }
+  .latex-source-panel, .latex-preview { min-height: 325px; }
+  .latex-preview-scroll { max-height: 48vh; }
+}

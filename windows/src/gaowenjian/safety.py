@@ -5,10 +5,37 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import stat
 import uuid
+from dataclasses import dataclass
 from pathlib import Path
+from typing import BinaryIO, Callable, TypeVar
 
 from gaowenjian.errors import AppError
+
+_MISSING = "原文件已被移动或删除，请另存为，避免在旧位置静默重建文件。"
+_CONFLICT = "文件已被其他程序修改。请重新打开或另存为，避免覆盖外部修改。"
+_ReadResult = TypeVar("_ReadResult")
+
+
+@dataclass(frozen=True)
+class FileIdentity:
+    device: int
+    index: int
+    fallback_path: str = ""
+    creation: int | None = None
+
+    @classmethod
+    def from_record(cls, record) -> FileIdentity | None:
+        if not isinstance(record, list) or len(record) != 2:
+            return None
+        device, index = record
+        if type(device) is not int or type(index) is not int or device < 0 or index <= 0:
+            return None
+        return cls(device, index)
+
+    def as_record(self) -> list[int] | None:
+        return [self.device, self.index] if self.index else None
 
 
 def digest(data: bytes) -> str:
@@ -28,36 +55,108 @@ def reject_symlink(path: Path) -> None:
         raise AppError("路径指向符号链接，已停止操作以保护原文件。", "symlink")
 
 
-def atomic_write(path: Path, data: bytes) -> None:
-    """同目录临时文件写入后替换。失败时不先删除目标。"""
+def _identity(info: os.stat_result, path: Path) -> FileIdentity:
+    if info.st_ino:
+        return FileIdentity(info.st_dev, info.st_ino)
+    normalized_path = os.path.normcase(os.path.abspath(path))
+    return FileIdentity(info.st_dev, 0, normalized_path, getattr(info, "st_birthtime_ns", None))
+
+
+def _read_stamp(info: os.stat_result, path: Path) -> tuple:
+    # Win32 path and handle queries expose different st_ctime semantics.
+    change = getattr(info, "st_birthtime_ns", None) if os.name == "nt" else info.st_ctime_ns
+    return _identity(info, path), info.st_size, info.st_mtime_ns, change
+
+
+def _read_stable(path: Path, consume: Callable[[BinaryIO], _ReadResult], limit: int | None = None) -> tuple[_ReadResult, FileIdentity]:
+    reject_symlink(path)
+    with path.open("rb") as handle:
+        initial = os.fstat(handle.fileno())
+        if not stat.S_ISREG(initial.st_mode):
+            raise AppError("请选择普通文件。", "path")
+        if limit is not None and initial.st_size > limit:
+            raise AppError("文件超过可处理大小。", "limit")
+        stamp = _read_stamp(initial, path)
+        result = consume(handle)
+        if stamp != _read_stamp(os.fstat(handle.fileno()), path):
+            raise AppError(_CONFLICT, "conflict")
+        if stamp != _read_stamp(path.stat(follow_symlinks=False), path):
+            raise AppError(_CONFLICT, "conflict")
+    return result, stamp[0]
+
+
+def read_file_snapshot(path: Path, limit: int | None = None) -> tuple[bytes, FileIdentity]:
+    """绑定来自同一实际文件的内容与身份。"""
+    try:
+        data, identity = _read_stable(path, lambda handle: handle.read() if limit is None else handle.read(limit + 1), limit)
+    except FileNotFoundError as exc:
+        raise AppError(_MISSING, "missing") from exc
+    except OSError as exc:
+        raise AppError(f"无法读取文件：{path.name}", "file") from exc
+    if limit is not None and len(data) > limit:
+        raise AppError("文件超过可处理大小。", "limit")
+    return data, identity
+
+
+def _atomic_write(path: Path, data: bytes, before_replace: Callable[[], None] | None = None) -> FileIdentity:
     path.parent.mkdir(parents=True, exist_ok=True)
     reject_symlink(path.parent)
-    if path.exists():
-        reject_symlink(path)
+    reject_symlink(path)
     temporary = path.with_name(f".pending-{uuid.uuid4().hex}-{path.name}")
+    created = False
     try:
-        with temporary.open("wb") as handle:
+        with temporary.open("xb") as handle:
+            created = True
             handle.write(data)
             handle.flush()
             os.fsync(handle.fileno())
+            staged = _identity(os.fstat(handle.fileno()), path)
+        if before_replace is not None:
+            before_replace()
+        else:
+            reject_symlink(path)
         os.replace(temporary, path)
+        return staged
     finally:
-        if temporary.exists():
+        if created and temporary.exists():
             temporary.unlink()
 
 
-def safe_replace(path: Path, data: bytes, expected_digest: str | None) -> None:
-    """覆盖前核对原件摘要。原件消失时不在旧位置重建。"""
-    if expected_digest is not None:
-        if not path.is_file():
-            raise AppError("原文件已被移动或删除，请另存为，避免在旧位置静默重建文件。", "missing")
-        reject_symlink(path)
-        current = path.read_bytes()
-        if digest(current) != expected_digest:
-            raise AppError("文件已被其他程序修改。请重新打开或另存为，避免覆盖外部修改。", "conflict")
-    elif path.exists():
-        reject_symlink(path)
-    atomic_write(path, data)
+def atomic_write(path: Path, data: bytes) -> None:
+    """同目录临时文件写入后替换。失败时不先删除目标。"""
+    _atomic_write(path, data)
+
+
+def _checked_replace(path: Path, data: bytes, expected_digest: str | None, expected_identity: FileIdentity | None) -> FileIdentity:
+    if expected_digest is None and expected_identity is None:
+        return _atomic_write(path, data)
+    if not path.is_file():
+        raise AppError(_MISSING, "missing")
+
+    def verify_current() -> None:
+        try:
+            current, identity = _read_stable(path, lambda handle: hashlib.file_digest(handle, "sha256").hexdigest())
+        except FileNotFoundError as exc:
+            raise AppError(_MISSING, "missing") from exc
+        except OSError as exc:
+            raise AppError(f"无法核对原文件：{path.name}", "file") from exc
+        if (expected_identity is not None and identity != expected_identity) or (expected_digest is not None and current != expected_digest):
+            raise AppError(_CONFLICT, "conflict")
+
+    return _atomic_write(path, data, before_replace=verify_current)
+
+
+def safe_replace(path: Path, data: bytes, expected_digest: str | None, *, expected_identity: FileIdentity | None = None) -> None:
+    """在同目录暂存完成后核对原件，再原子替换。"""
+    _checked_replace(path, data, expected_digest, expected_identity)
+
+
+def write_document(path: Path, data: bytes, expected_digest: str | None, expected_identity: FileIdentity | None) -> FileIdentity:
+    staged = _checked_replace(path, data, expected_digest, expected_identity)
+    written, current = read_file_snapshot(path)
+    if written != data or (staged.index and current != staged):
+        raise AppError("保存后读回核验失败，请检查磁盘。", "verify")
+    return current
 
 
 def canonical_json(value) -> bytes:
