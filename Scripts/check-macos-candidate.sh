@@ -16,7 +16,7 @@ xcrun --sdk macosx swiftc -swift-version 5 -Xfrontend -disable-sandbox -O \
   Sources/*.swift -framework AppKit -framework SwiftUI -framework PDFKit -framework WebKit \
   -framework UniformTypeIdentifiers -framework CryptoKit -framework Security -framework CoreServices \
   -lsqlite3 -o "$STAGING/GaoWenJian"
-xcrun lipo -verify_arch arm64 "$STAGING/GaoWenJian"
+xcrun lipo "$STAGING/GaoWenJian" -verify_arch arm64
 
 # The production generator can update a neighboring capabilities resource. Give it a private copy.
 mkdir -p "$STAGING/Scripts" "$STAGING/Contents/Resources"
