@@ -32,6 +32,10 @@ def main(argv: list[str] | None = None) -> int:
     directory = default_data_dir() if not args.data_dir else Path(args.data_dir)
     tray = None
     try:
+        if os.name == "nt" and not (args.no_browser or args.inspect or args.self_check):
+            from gaowenjian.icons_win import enable_per_monitor_dpi
+
+            enable_per_monitor_dpi()
         if os.name == "nt" and not (args.no_browser or args.serve or args.hidden or args.self_check or args.inspect):
             from gaowenjian.tray_win import DesktopTray
 

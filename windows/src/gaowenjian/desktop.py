@@ -29,6 +29,17 @@ def run_desktop(server, *, activate: bool = False, hidden: bool = False, tray=No
     desktop.start(activate)
 
 
+def _set_window_icons(window):
+    from gaowenjian.icons_win import set_window_icons
+
+    def apply(native, _event):
+        set_window_icons(native.Handle.ToInt64())
+
+    native = window.native
+    native.HandleCreated += apply
+    apply(native, None)
+
+
 class WindowActions:
     def __init__(self, desktop, note_id: str = ""):
         self._desktop = desktop
@@ -114,6 +125,7 @@ class Desktop:
         actions = WindowActions(self, note_id)
         window = self.webview.create_window(title, self.server.url + endpoint, js_api=actions, hidden=self.hidden, text_select=True, **options)
         actions._window = window
+        window.events.before_show += _set_window_icons
         return window
 
     def start(self, activate):

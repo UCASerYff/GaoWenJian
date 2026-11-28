@@ -15,8 +15,12 @@ from uuid import uuid4
 
 
 WM_COPYDATA = 0x4A
+WM_GETICON = 0x7F
+WM_DPICHANGED = 0x02E0
 DRIVER_REQUEST = 0x8000
 TRAY_CLASS = "GaoWenJian.TrayWindow"
+PER_MONITOR_AWARE_V2 = -4
+DPI_UNAWARE = -1
 LRESULT = c.c_ssize_t
 WindowProc = c.WINFUNCTYPE(LRESULT, w.HWND, w.UINT, w.WPARAM, w.LPARAM)
 EnumProc = c.WINFUNCTYPE(w.BOOL, w.HWND, w.LPARAM)
@@ -50,6 +54,15 @@ class CopyData(c.Structure):
     _fields_ = [("kind", w.WPARAM), ("size", w.DWORD), ("data", c.c_void_p)]
 
 
+class IconInfo(c.Structure):
+    _fields_ = [("icon", w.BOOL), ("x", w.DWORD), ("y", w.DWORD), ("mask", w.HBITMAP), ("color", w.HBITMAP)]
+
+
+class Bitmap(c.Structure):
+    _fields_ = [("type", w.LONG), ("width", w.LONG), ("height", w.LONG), ("stride", w.LONG),
+                ("planes", w.WORD), ("bits_per_pixel", w.WORD), ("bits", c.c_void_p)]
+
+
 def bind(library, name, result, *args):
     method = getattr(library, name)
     method.restype = result
@@ -59,6 +72,7 @@ def bind(library, name, result, *args):
 
 user = c.WinDLL("user32", use_last_error=True)
 kernel = c.WinDLL("kernel32", use_last_error=True)
+gdi = c.WinDLL("gdi32", use_last_error=True)
 create_desktop = bind(user, "CreateDesktopW", w.HANDLE, w.LPCWSTR, w.LPCWSTR, c.c_void_p, w.DWORD, w.DWORD, c.c_void_p)
 thread_desktop = bind(user, "GetThreadDesktop", w.HANDLE, w.DWORD)
 set_desktop = bind(user, "SetThreadDesktop", w.BOOL, w.HANDLE)
@@ -69,6 +83,15 @@ class_name = bind(user, "GetClassNameW", c.c_int, w.HWND, w.LPWSTR, c.c_int)
 window_title = bind(user, "GetWindowTextW", c.c_int, w.HWND, w.LPWSTR, c.c_int)
 is_visible = bind(user, "IsWindowVisible", w.BOOL, w.HWND)
 post = bind(user, "PostMessageW", w.BOOL, w.HWND, w.UINT, w.WPARAM, w.LPARAM)
+send_timeout = bind(user, "SendMessageTimeoutW", LRESULT, w.HWND, w.UINT, w.WPARAM, w.LPARAM,
+                    w.UINT, w.UINT, c.POINTER(c.c_size_t))
+dpi_for_window = bind(user, "GetDpiForWindow", w.UINT, w.HWND)
+metric_for_dpi = bind(user, "GetSystemMetricsForDpi", c.c_int, c.c_int, w.UINT)
+get_icon_info = bind(user, "GetIconInfo", w.BOOL, w.HICON, c.POINTER(IconInfo))
+get_window_rect = bind(user, "GetWindowRect", w.BOOL, w.HWND, c.POINTER(w.RECT))
+set_dpi_context = bind(user, "SetThreadDpiAwarenessContext", w.HANDLE, w.HANDLE)
+get_object = bind(gdi, "GetObjectW", c.c_int, w.HGDIOBJ, c.c_int, c.c_void_p)
+delete_object = bind(gdi, "DeleteObject", w.BOOL, w.HGDIOBJ)
 post_thread = bind(user, "PostThreadMessageW", w.BOOL, w.DWORD, w.UINT, w.WPARAM, w.LPARAM)
 register_message = bind(user, "RegisterWindowMessageW", w.UINT, w.LPCWSTR)
 register_class = bind(user, "RegisterClassW", w.ATOM, c.POINTER(WindowClass))
@@ -101,6 +124,48 @@ def checked(result):
 
 def reply(**result):
     print(json.dumps(result), flush=True)
+
+
+def icon_pixels(handle):
+    if not handle:
+        return None
+    info = IconInfo()
+    if not get_icon_info(handle, c.byref(info)):
+        return None
+    try:
+        bitmap = Bitmap()
+        source = info.color or info.mask
+        if not info.icon or not source or not get_object(source, c.sizeof(bitmap), c.byref(bitmap)):
+            return None
+        height = bitmap.height if info.color else bitmap.height // 2
+        return [bitmap.width, height]
+    finally:
+        for bitmap_handle in (info.color, info.mask):
+            if bitmap_handle:
+                delete_object(bitmap_handle)
+
+
+def icon_metrics(dpi):
+    return {"small": [metric_for_dpi(i, dpi) for i in (49, 50)], "large": [metric_for_dpi(i, dpi) for i in (11, 12)]}
+
+
+def attached_icons(hwnd, requested_dpi):
+    icons = {}
+    for name, kind in (("small", 0), ("large", 1)):
+        handle = c.c_size_t()
+        checked(send_timeout(hwnd, WM_GETICON, kind, requested_dpi, 0x0002, 500, c.byref(handle)))
+        icons[name] = icon_pixels(handle.value)
+    return icons
+
+
+def window_icons(hwnd, dpis):
+    native_dpi = checked(dpi_for_window(hwnd))
+    requested = list(dict.fromkeys([native_dpi, *dpis]))
+    if any(type(dpi) is not int or not 72 <= dpi <= 768 for dpi in requested):
+        raise ValueError("Invalid DPI for icon sampling")
+    native = {"dpi": native_dpi, "expected": icon_metrics(native_dpi), "icons": attached_icons(hwnd, 0)}
+    samples = [{"dpi": dpi, "expected": icon_metrics(dpi), "icons": attached_icons(hwnd, dpi)} for dpi in requested]
+    return {"native": native, "samples": samples}
 
 
 def process_tree(root):
@@ -137,27 +202,60 @@ class Driver:
         self.desktop = checked(create_desktop(self.desktop_name, None, None, 0, 0x01FF, None))
         self.shell = None
 
-    def create_shell(self):
-        return checked(create_window(0, "Shell_TrayWnd", "GaoWenJian test shell", 0, 0, 0, 0, 0,
-                                     None, None, self.instance, None))
+    def create_shell(self, dpi_context=PER_MONITOR_AWARE_V2):
+        previous = checked(set_dpi_context(c.c_void_p(dpi_context)))
+        try:
+            return checked(create_window(0, "Shell_TrayWnd", "GaoWenJian test shell", 0, 0, 0, 0, 0,
+                                         None, None, self.instance, None))
+        finally:
+            checked(set_dpi_context(previous))
 
     def shell_proc(self, hwnd, message, wparam, lparam):
         if message != WM_COPYDATA:
             return default_proc(hwnd, message, wparam, lparam)
+        if not lparam:
+            return 0
         package = CopyData.from_address(lparam)
-        if package.kind != 1 or not 24 <= package.size <= 4096:
+        if package.kind != 1 or not package.data or not 24 <= package.size <= 4096:
             return 0
         # Shell_NotifyIcon emits a cross-process packet containing the operation and a marshaled notification record.
-        signature, event, _, callback, icon_id = struct.unpack_from("<IIIII", c.string_at(package.data, package.size))
+        raw = c.string_at(package.data, package.size)
+        signature, event, _, window, icon_id, flags = struct.unpack_from("<6I", raw)
         if signature != 0x34753423:
             return 0
-        marker = (callback, icon_id)
+        marker = (window, icon_id)
         if event == 0:
             self.icons.add(marker)
         elif event == 2:
             self.icons.discard(marker)
-        self.events.append({"event": event, "icon": icon_id})
-        return 1
+        observed = {"event": event, "icon": icon_id}
+        if event in {0, 1} and flags & 2:
+            # The shell packet uses a packed 32-bit notification prefix even on x64.
+            observed["pixels"] = icon_pixels(struct.unpack_from("<I", raw, 28)[0]) if len(raw) >= 32 else None
+        self.events.append(observed)
+        return int(event != 1 or marker in self.icons)
+
+    def notify_tray_dpi(self, hwnd, request):
+        before = checked(dpi_for_window(self.shell))
+        if request.get("change_shell"):
+            # Keep logical tray entries while giving the replacement test HWND a different awareness.
+            # On a 96-dpi monitor both test HWNDs report 96, so leave the current shell in place.
+            replacement = self.create_shell(DPI_UNAWARE)
+            if checked(dpi_for_window(replacement)) == before:
+                checked(destroy_window(replacement))
+            else:
+                checked(destroy_window(self.shell))
+                self.shell = replacement
+        after = checked(dpi_for_window(self.shell))
+        dpi = request.get("dpi", after if before != after else (144 if after != 144 else 96))
+        if type(dpi) is not int or not 72 <= dpi <= 768:
+            raise ValueError("Invalid synthetic DPI")
+        rectangle = w.RECT()
+        checked(get_window_rect(hwnd, c.byref(rectangle)))
+        result = c.c_size_t()
+        # The system message requires a synchronous send. Only the tray receives it here.
+        checked(send_timeout(hwnd, WM_DPICHANGED, dpi << 16 | dpi, c.addressof(rectangle), 0x0002, 1000, c.byref(result)))
+        return {"beforeDpi": before, "afterDpi": after, "messageDpi": dpi, "expected": icon_metrics(after)["small"]}
 
     def windows(self, pid):
         result = []
@@ -202,14 +300,20 @@ class Driver:
         if command == "status":
             return self.status(request["pid"])
         if command == "shell":
-            return {"events": list(self.events), "icons": len(self.icons)}
+            dpi = checked(dpi_for_window(self.shell))
+            return {"events": list(self.events), "icons": len(self.icons), "dpi": dpi, "expected": icon_metrics(dpi)["small"]}
         pid = request["pid"]
         hwnd = request["hwnd"]
-        if pid not in self.processes or not any(window["hwnd"] == hwnd for window in self.windows(pid)):
+        window = next((item for item in self.windows(pid) if item["hwnd"] == hwnd), None) if pid in self.processes else None
+        if window is None:
             raise ValueError("Target is not a window owned by the test process")
+        if command == "window-icons":
+            return window_icons(hwnd, request.get("dpis", []))
+        if command in {"tray-dpi-notification", "restart-shell"} and window["class"] != TRAY_CLASS:
+            raise ValueError("Expected the test process tray window")
+        if command == "tray-dpi-notification":
+            return self.notify_tray_dpi(hwnd, request)
         if command == "restart-shell":
-            if not any(window["hwnd"] == hwnd and window["class"] == TRAY_CLASS for window in self.windows(pid)):
-                raise ValueError("Expected the test process tray window")
             checked(destroy_window(self.shell))
             self.icons.clear()
             self.shell = self.create_shell()

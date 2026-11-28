@@ -130,6 +130,23 @@ const start = (...args) => operation("start", {args: [...launcher, ...args]});
 const status = (pid) => operation("status", {pid});
 const post = (pid, hwnd, message, wparam = 0, lparam = 0) => operation("post", {pid, hwnd, message, wparam, lparam});
 const shell = () => operation("shell");
+const iconSamples = {};
+
+async function checkWindowIcons(pid, window, name, dpis = []) {
+  const observed = await until(async () => {
+    const icons = await operation("window-icons", {pid, hwnd: window.hwnd, dpis});
+    return icons.native.icons.small && icons.native.icons.large && icons;
+  }, `WM_GETICON returned native small and large handles for ${name}`);
+  assert.deepEqual(observed.native.icons, observed.native.expected, `${name} default icons at native ${observed.native.dpi} DPI`);
+  for (const sample of observed.samples) {
+    assert.deepEqual(sample.icons, sample.expected, `${name} requested icons at ${sample.dpi} DPI`);
+  }
+  iconSamples[name] = observed;
+}
+
+function shellIcon(observation, event) {
+  return observation.events.findLast((entry) => entry.event === event && entry.icon === 1);
+}
 
 async function manualReviewFixture() {
   const folder = join(root, "启动待审核.gaoaction");
@@ -177,10 +194,15 @@ try {
   assert.equal(tray.visible, false);
   const registered = await until(async () => {
     const observed = await shell();
-    return observed.icons === 1 && observed.events.some(({event, icon}) => event === 0 && icon === 1) && observed;
+    return observed.icons === 1 && shellIcon(observed, 0) && shellIcon(observed, 4) && observed;
   }, "Shell_NotifyIcon NIM_ADD for one logical icon");
   const main = await target("/");
   await until(() => main.evaluate('Boolean(document.querySelector(".welcome") && window.pywebview?.api?.show_settings)'), "workspace ready");
+  if (!source) {
+    assert.deepEqual(shellIcon(registered, 0).pixels, registered.expected, `initial notification icon at ${registered.dpi} DPI`);
+    await checkWindowIcons(pid, mainWindow, "workspace", [96, 120, 144, 168, 192]);
+    assert.deepEqual(iconSamples.workspace.samples.find(({dpi}) => dpi === 96).icons, {small: [16, 16], large: [32, 32]});
+  }
   const token = await main.evaluate('document.querySelector("meta[name=gao-token]").content');
   assert.deepEqual(await api("handoff/ocr-returns", token), {pending: false, results: [], issues: []});
   await main.evaluate('document.querySelector("#workspace-nav [data-go=projects]").click()');
@@ -190,12 +212,20 @@ try {
   await main.evaluate('showSettings()');
   const settings = await target("/settings");
   await until(() => settings.evaluate('Boolean(document.querySelector("#appearance"))'), "settings window ready");
+  if (!source) {
+    const settingsWindow = await until(async () => (await status(pid)).windows.find(({title, visible}) => visible && title === "搞文件设置"), "native settings window");
+    await checkWindowIcons(pid, settingsWindow, "settings");
+  }
   await settings.evaluate('(() => { const select=document.querySelector("#appearance"); select.value="dark"; select.dispatchEvent(new Event("change")); })()');
   await until(() => main.evaluate('document.documentElement.dataset.theme === "dark"'), "settings update reached workspace");
   const noteId = await main.evaluate('(async () => (await api("/api/notes/create", {title:"托盘隔离便笺"})).result.id)()');
   await main.evaluate(`(async () => { await api('/api/notes/metadata', {id:${JSON.stringify(noteId)}, changes:{isOnDesktop:true}}); await window.pywebview.api.show_note(${JSON.stringify(noteId)}); })()`);
   const note = await target("/note?");
   await until(() => note.evaluate('Boolean(document.querySelector("#note-body"))'), "desktop note ready");
+  if (!source) {
+    const noteWindow = await until(async () => (await status(pid)).windows.find(({title, visible}) => visible && title === "托盘隔离便笺"), "native note window");
+    await checkWindowIcons(pid, noteWindow, "note");
+  }
   await note.evaluate('(() => {const body=document.querySelector("#note-body"); body.textContent="后台保存便笺"; body.dispatchEvent(new Event("input")); })()');
   const hasTex = Boolean((await api("state", token)).engines.tectonic);
   const hasReader = !source || hasTex;
@@ -214,6 +244,7 @@ Tray reader smoke test.
     await until(() => reader.evaluate("document.querySelector('#reader-canvas img')?.naturalWidth > 0"), "native PDF reader ready");
     readerWindow = (await status(pid)).windows.find((window) => window.title === "后台读窗.pdf");
     assert.ok(readerWindow?.visible);
+    if (!source) await checkWindowIcons(pid, readerWindow, "reader");
   }
 
   await main.evaluate(`openPath(${JSON.stringify(draft)})`);
@@ -241,11 +272,33 @@ Tray reader smoke test.
   assert.equal(trays((await status(pid)).windows).length, 1);
   assert.deepEqual((await shell()).events, registered.events, "duplicate startup must not send another icon registration");
 
+  let dpiEvidence;
+  if (!source) {
+    const unchanged = await operation("tray-dpi-notification", {pid, hwnd: tray.hwnd});
+    assert.equal(unchanged.beforeDpi, unchanged.afterDpi);
+    assert.deepEqual((await shell()).events, registered.events, "unchanged shell DPI leaves the registered icon in place even if the message suggests a different DPI");
+    const change = await operation("tray-dpi-notification", {pid, hwnd: tray.hwnd, change_shell: true});
+    let modified = null;
+    if (change.beforeDpi !== change.afterDpi) {
+      modified = await until(async () => {
+        const observed = await shell();
+        return observed.icons === 1 && observed.events.slice(registered.events.length).find(({event}) => event === 1);
+      }, "changed test shell DPI led to Shell_NotifyIcon NIM_MODIFY");
+      assert.deepEqual(modified.pixels, change.expected, `modified notification icon at ${change.afterDpi} DPI`);
+      assert.equal((await shell()).events.filter(({event}) => event === 0).length, 1, "DPI update kept the same logical notification icon");
+    } else {
+      assert.deepEqual((await shell()).events, registered.events, "the two test shell windows report the same DPI on this monitor");
+    }
+    dpiEvidence = {unchanged, changedFixture: change, modified};
+  }
+
   await operation("restart-shell", {pid, hwnd: tray.hwnd});
-  await until(async () => {
+  const replacement = await until(async () => {
     const observed = await shell();
-    return observed.icons === 1 && observed.events.filter(({event}) => event === 0).length === 2;
+    return observed.icons === 1 && observed.events.filter(({event}) => event === 0).length === 2
+      && observed.events.filter(({event}) => event === 4).length === 2 && observed;
   }, "TaskbarCreated registered the icon with the replacement notification area");
+  if (!source) assert.deepEqual(shellIcon(replacement, 0).pixels, replacement.expected, `re-registered notification icon at ${replacement.dpi} DPI`);
   await post(pid, mainWindow.hwnd, 0x10);
   await until(async () => !workspace((await status(pid)).windows)?.visible, "main window returned to tray before quit");
   await post(pid, tray.hwnd, 0x111, 1);
@@ -314,8 +367,17 @@ Tray reader smoke test.
   await hiddenMain.evaluate('setTimeout(() => workspaceExit().catch(fail),100); true');
   await until(async () => (await status(hidden)).exit === 0, "hidden native test shut down completely");
   assert.deepEqual(await shell(), finished, "CLI and hidden test startup did not touch the notification area");
-  if (evidence) await writeFile(join(evidence, "tray-shell-events.json"), `${JSON.stringify(finished, null, 2)}\n`);
-  console.log("tray smoke OK: actual Shell_NotifyIcon ADD/re-add/DELETE received by the isolated test notification area, same-window restoration, single instance, cancel, save and complete exit; Explorer rendering was outside this desktop");
+  if (evidence) {
+    await writeFile(join(evidence, "tray-shell-events.json"), `${JSON.stringify(finished, null, 2)}\n`);
+    if (dpiEvidence) await writeFile(join(evidence, "window-icon-samples.json"), `${JSON.stringify({windows: iconSamples,
+      notificationArea: {initial: shellIcon(registered, 0), ...dpiEvidence, readded: shellIcon(replacement, 0)}}, null, 2)}\n`);
+  }
+  if (dpiEvidence) {
+    const {modified, changedFixture} = dpiEvidence;
+    const dpiChange = modified ? `MODIFY ${modified.pixels.join("×")} at ${changedFixture.afterDpi} DPI, ` : "same fixture DPI, ";
+    console.log(`native icon sizes OK: window handles, Shell_NotifyIcon ADD ${shellIcon(registered, 0).pixels.join("×")}, ${dpiChange}TaskbarCreated re-ADD ${shellIcon(replacement, 0).pixels.join("×")}`);
+  }
+  console.log("tray smoke OK: Shell_NotifyIcon ADD/re-add/DELETE, workspace restoration, save, cancel and full exit in the private desktop");
 } finally {
   for (const socket of sockets) socket.close();
   lines.close();

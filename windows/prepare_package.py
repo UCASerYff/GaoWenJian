@@ -5,17 +5,58 @@ import shutil
 import sys
 from pathlib import Path
 
-from PIL import Image
+from PIL import Image, ImageChops, ImageOps
 
 sys.path.insert(0, str(Path(__file__).resolve().parent / "src"))
 from gaowenjian.version import MARKETING_VERSION, WINDOWS_BUILD
 
 
+WINDOWS_ICON_SIZES = (16, 20, 24, 28, 32, 40, 48, 56, 64, 96, 128, 256)
+ICON_GRAY = 119  # The neutral gray used by Scripts/ComposeIcon.swift.
+
+
+def write_windows_icon(source: Path, destination: Path) -> None:
+    with Image.open(source) as artwork:
+        master = artwork.convert("RGBA")
+    bounds = master.getchannel("A").getbbox()
+    if master.width != master.height or not bounds:
+        raise ValueError("The application icon must have square, non-empty artwork.")
+    face = master.crop(bounds)
+    if face.width != face.height:
+        raise ValueError("The application icon face must be square.")
+
+    # Resample opacity and the white lettering independently so transparent
+    # pixels cannot leave light fringes along the edges of the gray plate.
+    alpha = face.getchannel("A")
+    from_gray = [max(0, round(255 * (value - ICON_GRAY) / (255 - ICON_GRAY))) for value in range(256)]
+    lettering = ImageChops.multiply(ImageOps.grayscale(face).point(from_gray), alpha)
+    small_ink = [round(255 * ((value - 5) / 250) ** 0.8) if value > 5 else 0 for value in range(256)]
+    frames = []
+    for size in WINDOWS_ICON_SIZES:
+        # Align straight edges to whole pixels while preserving the artwork's
+        # centered padding, rounded corners, and lettering scale.
+        padding = round(size * (master.width - face.width) / (2 * master.width))
+        side = size - 2 * padding
+        extent = (side, side)
+        plate = Image.new("RGBA", extent, (ICON_GRAY,) * 3)
+        plate.putalpha(alpha.resize(extent, Image.Resampling.BOX))
+        strokes = lettering.resize(extent, Image.Resampling.LANCZOS)
+        if size <= 32:
+            # Give the fine brush strokes a little more contrast at shell sizes.
+            strokes = strokes.point(small_ink)
+        mark = Image.new("RGBA", extent, "white")
+        mark.putalpha(strokes)
+        frame = Image.new("RGBA", (size, size))
+        frame.paste(Image.alpha_composite(plate, mark), (padding, padding))
+        frames.append(frame)
+
+    frames[-1].save(destination, format="ICO", sizes=[frame.size for frame in frames], append_images=frames[:-1])
+
+
 def generate(stage: Path) -> None:
     stage.mkdir(parents=True, exist_ok=True)
     icon = Path(__file__).resolve().parents[1] / "Assets" / "AppIcon.png"
-    with Image.open(icon) as source:
-        source.save(stage / "app.ico", sizes=[(size, size) for size in (16, 24, 32, 48, 64, 96, 128, 256)])
+    write_windows_icon(icon, stage / "app.ico")
     major, minor = map(int, MARKETING_VERSION.split("."))
     number = (major, minor, int(WINDOWS_BUILD), 0)
     stage.joinpath("file-version.txt").write_text(f"""# coding: utf-8
