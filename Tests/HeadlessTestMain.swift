@@ -101,6 +101,19 @@ import Darwin
         guard root.path.hasPrefix(FileSafety.root.path + "/") else {
             throw FileIssue.message("An isolated launch must use its injected OCR mailbox")
         }
+        let input = FileSafety.root.deletingLastPathComponent().appendingPathComponent("mailbox-first-launch.png")
+        try Data("Synthetic transport fixture".utf8).write(to: input)
+        let exchange = GaoHandoffService.exchangeRoot
+        let packageURL = try GaoActionWriter.writeRequest(action: "ocr.files", items: [.init(url: input, uti: "public.png")],
+            targetBundleID: OCRReturnMailbox.provider, exchangeRoot: exchange)
+        let journal = try GaoOutgoingJournal(exchangeRoot: exchange)
+        let outgoing = try journal.registerOutgoing(packageURL: packageURL, expectedTargetBundleID: OCRReturnMailbox.provider)
+        let ticket = try OCRReturnMailbox.publishTicket(for: outgoing, packageURL: packageURL,
+                                                        exchangeRoot: exchange, mailboxRoot: root)
+        guard ticket.deletingLastPathComponent().deletingLastPathComponent().path == root.path,
+              try OCRReturnMailbox.scan(exchangeRoot: exchange, mailboxRoot: root).pending else {
+            throw FileIssue.message("A fresh isolated launch did not create its private OCR mailbox and wait for a result")
+        }
         let package = root.appendingPathComponent(UUID().uuidString.lowercased(), isDirectory: true)
             .appendingPathComponent("result.gaoaction", isDirectory: true)
         let member = package.appendingPathComponent("manifest.json")

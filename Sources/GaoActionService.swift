@@ -61,7 +61,7 @@ final class GaoHandoffCancellation: @unchecked Sendable {
     // An explicit --data-dir launch must never use the production shared mailbox.
     static var ocrMailboxRoot: URL {
         CommandLine.arguments.contains("--data-dir")
-            ? FileSafety.root.appendingPathComponent("GaoAction/OcrReturns-v1", isDirectory: true)
+            ? FileSafety.root.appendingPathComponent("GaoSeries/GaoAction/OcrReturns-v1", isDirectory: true)
             : OCRReturnMailbox.defaultRoot
     }
     private enum Inbound {
