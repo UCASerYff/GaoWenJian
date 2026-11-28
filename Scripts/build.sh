@@ -61,7 +61,7 @@ fi
 ditto "$PROJECT_DIR/Resources" "$APP/Contents/Resources"
 cp "$PROJECT_DIR/Assets/AppIcon.icns" "$APP/Contents/Resources/AppIcon.icns"
 cp "$PROJECT_DIR/Assets/AppIcon.png" "$APP/Contents/Resources/AppIcon.png"
-[[ ! -f "$PROJECT_DIR/使用说明.txt" ]] || cp "$PROJECT_DIR/使用说明.txt" "$APP/Contents/Resources/使用说明.txt"
+cp "$PROJECT_DIR/README.md" "$APP/Contents/Resources/使用说明.txt"
 ditto "$PROJECT_DIR/Docs" "$APP/Contents/Resources/Docs"
 python3 "$PROJECT_DIR/Scripts/make_plist.py" "$APP/Contents/Info.plist" "$APP_VERSION" "$BUILD_NUMBER"
 plutil -lint "$APP/Contents/Info.plist"
@@ -81,7 +81,7 @@ if ! python3 "$PROJECT_DIR/Scripts/sign_bundle.py" verify --app "$STAGING/disk/�
   exit 1
 fi
 ln -s /Applications "$STAGING/disk/Applications"
-[[ ! -f "$PROJECT_DIR/使用说明.txt" ]] || cp "$PROJECT_DIR/使用说明.txt" "$STAGING/disk/使用说明.txt"
+cp "$APP/Contents/Resources/使用说明.txt" "$STAGING/disk/使用说明.txt"
 hdiutil create -quiet -volname "搞文件 V$APP_VERSION" -srcfolder "$STAGING/disk" -format UDZO "$STAGING/GaoWenJian-$APP_VERSION.dmg"
 hdiutil verify -quiet "$STAGING/GaoWenJian-$APP_VERSION.dmg"
 mv "$STAGING/GaoWenJian-$APP_VERSION.dmg" "$PROJECT_DIR/Release/GaoWenJian-$APP_VERSION.dmg"

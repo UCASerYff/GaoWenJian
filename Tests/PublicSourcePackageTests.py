@@ -8,7 +8,7 @@ spec=importlib.util.spec_from_file_location('public_source_package',SCRIPTS/'pac
 
 class PublicSourcePackageTests(unittest.TestCase):
     def test_public_code_resources_and_licenses_allowed(self):
-        for name in ['VERSION','BUILD','README.md','使用说明.txt','Sources/App.swift','Scripts/install_safety.py','Tests/InstallTests.py','Docs/Licenses/Organizer-MIT.txt','Resources/Fonts/font.woff2','Assets/AppIcon.svg','Tools/OrganizerMigrationCLI.swift']:
+        for name in ['VERSION','BUILD','README.md','Sources/App.swift','Scripts/install_safety.py','Tests/InstallTests.py','Docs/Licenses/Organizer-MIT.txt','Resources/Fonts/font.woff2','Assets/AppIcon.svg','Tools/OrganizerMigrationCLI.swift']:
             with self.subTest(name=name):self.assertTrue(module.public_path(name))
 
     def test_private_runtime_program_and_generated_paths_refuse(self):

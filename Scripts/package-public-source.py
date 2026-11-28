@@ -9,7 +9,7 @@ from pathlib import Path
 sys.dont_write_bytecode=True
 PROJECT=Path(__file__).resolve().parent.parent
 DIRECTORIES={'Sources','Resources','Assets','Scripts','Tests','Tools','Docs'}
-FILES={'.gitignore','AGENTS.md','BUILD','README.md','VERSION','使用说明.txt','LICENSE','LICENSE.txt'}
+FILES={'.gitignore','AGENTS.md','BUILD','README.md','VERSION','LICENSE','LICENSE.txt'}
 PRIVATE_COMPONENTS={'.git','安全备份','Safety','Reports','Backups','keys','Release','build','.build','TestResults','dist','tmp','__pycache__','StickyNotes','History','.DS_Store','workspace.json','recovery.json'}
 PRIVATE_COMPONENT_NAMES={item.casefold() for item in PRIVATE_COMPONENTS}
 PRIVATE_SUFFIXES={'.p12','.p8','.key','.mobileprovision','.sqlite','.sqlite3','.db','.pyc','.dmg'}
