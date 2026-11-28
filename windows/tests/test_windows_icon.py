@@ -10,7 +10,7 @@ def test_windows_icon_has_crisp_square_frames(tmp_path):
     target = tmp_path / "app.ico"
     write_icon(root / "Assets" / "AppIcon.png", target)
 
-    sizes = (16, 20, 24, 28, 32, 40, 48, 56, 64, 96, 128, 256)
+    sizes = (16, 20, 24, 28, 30, 32, 36, 40, 42, 48, 56, 64, 96, 128, 256)
     with Image.open(target) as icon:
         assert icon.ico.sizes() == {(size, size) for size in sizes}
         for size in sizes:
