@@ -39,6 +39,7 @@ jobs:
           cp "$staging/provider/compile-evidence.json" "$RUNNER_TEMP/gaowenjian-vision-compile.json"
           GAO_OCR_RETURN_PROVIDER_PROJECT="$GITHUB_WORKSPACE/provider" /bin/zsh Scripts/test-headless.sh --ocr-provider "$staging/provider/RealOCRProvider" | tee "$RUNNER_TEMP/gaowenjian-real-ocr.log"
       - uses: actions/upload-artifact@v4
+        continue-on-error: true
         if: always()
         with:
           name: GaoWenJian-macOS-isolated-native-evidence
