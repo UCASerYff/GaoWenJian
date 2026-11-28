@@ -11,7 +11,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent / "src"))
 from gaowenjian.version import MARKETING_VERSION, WINDOWS_BUILD
 
 
-WINDOWS_ICON_SIZES = (16, 20, 24, 28, 32, 40, 48, 56, 64, 96, 128, 256)
+# Cover the 16 px notification, 24 px Windows 11 taskbar, and 32 px large window/Start icon sizes at 100–200%.
+WINDOWS_ICON_SIZES = (16, 20, 24, 28, 30, 32, 36, 40, 42, 48, 56, 64, 96, 128, 256)
 ICON_GRAY = 119  # The neutral gray used by Scripts/ComposeIcon.swift.
 
 
