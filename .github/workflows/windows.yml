@@ -5,6 +5,7 @@ on:
   push:
     branches:
       - main
+      - codex/windows-icons-verify-20261128
 
 concurrency:
   group: windows-${{ github.workflow }}-${{ github.ref }}
