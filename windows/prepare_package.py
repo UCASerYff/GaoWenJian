@@ -5,15 +5,29 @@ import shutil
 import sys
 from pathlib import Path
 
-from PIL import Image, ImageChops, ImageOps
+from PIL import Image, ImageChops, ImageDraw, ImageOps
 
 sys.path.insert(0, str(Path(__file__).resolve().parent / "src"))
 from gaowenjian.version import MARKETING_VERSION, WINDOWS_BUILD
 
 
-# Cover the 16 px notification, 24 px Windows 11 taskbar, and 32 px large window/Start icon sizes at 100–200%.
-WINDOWS_ICON_SIZES = (16, 20, 24, 28, 30, 32, 36, 40, 42, 48, 56, 64, 96, 128, 256)
+# Cover 16 px notification, 24 px taskbar, 32 px large window and 48 px desktop icons at 100–200%.
+WINDOWS_ICON_SIZES = (16, 20, 24, 28, 30, 32, 36, 40, 42, 48, 56, 60, 64, 72, 84, 96, 128, 256)
 ICON_GRAY = 119  # The neutral gray used by Scripts/ComposeIcon.swift.
+PLATE_RADIUS_PERCENT = 20
+
+
+def plate_alpha(size: int) -> Image.Image:
+    # Use the same edge-to-edge rounded square as the GaoSeries Windows shortcuts.
+    # Supersampling keeps rounded corners smooth even in the 16 px frame.
+    sample_size = size * 8
+    mask = Image.new("L", (sample_size, sample_size))
+    ImageDraw.Draw(mask).rounded_rectangle(
+        (0, 0, sample_size - 1, sample_size - 1),
+        radius=round(sample_size * PLATE_RADIUS_PERCENT / 100),
+        fill=255,
+    )
+    return mask.resize((size, size), Image.Resampling.BOX)
 
 
 def write_windows_icon(source: Path, destination: Path) -> None:
@@ -26,30 +40,21 @@ def write_windows_icon(source: Path, destination: Path) -> None:
     if face.width != face.height:
         raise ValueError("The application icon face must be square.")
 
-    # Resample opacity and the white lettering independently so transparent
-    # pixels cannot leave light fringes along the edges of the gray plate.
+    # Extract the original calligraphy from its 860 px plate without the Mac canvas inset.
+    # Preserve the size and aspect of the lettering relative to its plate.
     alpha = face.getchannel("A")
     from_gray = [max(0, round(255 * (value - ICON_GRAY) / (255 - ICON_GRAY))) for value in range(256)]
     lettering = ImageChops.multiply(ImageOps.grayscale(face).point(from_gray), alpha)
     small_ink = [round(255 * ((value - 5) / 250) ** 0.8) if value > 5 else 0 for value in range(256)]
     frames = []
     for size in WINDOWS_ICON_SIZES:
-        # Align straight edges to whole pixels while preserving the artwork's
-        # centered padding, rounded corners, and lettering scale.
-        padding = round(size * (master.width - face.width) / (2 * master.width))
-        side = size - 2 * padding
-        extent = (side, side)
-        plate = Image.new("RGBA", extent, (ICON_GRAY,) * 3)
-        plate.putalpha(alpha.resize(extent, Image.Resampling.BOX))
+        extent = (size, size)
         strokes = lettering.resize(extent, Image.Resampling.LANCZOS)
         if size <= 32:
             # Give the fine brush strokes a little more contrast at shell sizes.
             strokes = strokes.point(small_ink)
-        mark = Image.new("RGBA", extent, "white")
-        mark.putalpha(strokes)
-        frame = Image.new("RGBA", (size, size))
-        frame.paste(Image.alpha_composite(plate, mark), (padding, padding))
-        frames.append(frame)
+        shade = Image.composite(Image.new("L", extent, 255), Image.new("L", extent, ICON_GRAY), strokes)
+        frames.append(Image.merge("RGBA", (shade, shade, shade, plate_alpha(size))))
 
     frames[-1].save(destination, format="ICO", sizes=[frame.size for frame in frames], append_images=frames[:-1])
 
