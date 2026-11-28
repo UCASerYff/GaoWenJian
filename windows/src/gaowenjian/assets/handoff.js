@@ -12,6 +12,7 @@ let handoffLoading = false;
 let ocrReturns = {results: [], issues: [], pending: false};
 let ocrReturnNativeVisible = true;
 let ocrReturnTimer = 0;
+let ocrReturnExpiryTimer = 0;
 let ocrReturnRequest = null;
 let ocrReturnRefreshQueued = false;
 let ocrVisibilityGeneration = 0;
@@ -25,6 +26,10 @@ const handoffActions = {
   "research.importDocuments": "导入研究资料", "files.search": "查找文件", "files.choose": "选择文件",
   "files.reveal": "定位原件", "associations.manage": "管理文件关联",
 };
+
+function supportsOcrImage(path) {
+  return /\.(?:png|jpe?g|tiff?|gif|webp|heic|heif)$/i.test(path || "");
+}
 
 function handoffPanel() {
   const current = state.tabs.find((tab) => tab.id === ocrCurrentTab);
@@ -182,17 +187,31 @@ async function refreshHandoff() {
   handoffState = (await api("/api/handoff/state", {})).result;
 }
 
-async function reviewHandoff(path, expectedDigest = null) {
+async function reviewHandoff(path, expectedReturn = null) {
   if (!path) return;
-  const review = (await api("/api/handoff/inspect", {path})).result;
-  if (expectedDigest && review.sha256 !== expectedDigest) {
-    checkOcrReturns();
-    throw new Error("回传结果已变化，请重新查看待审核列表。");
+  const deadline = expectedReturn ? Date.parse(expectedReturn.expiresAt) : Infinity;
+  const expired = () => !(Date.now() < deadline);
+  let review;
+  try {
+    if (expired()) throw new Error("OCR 回传已过期，可通过搞操作手工导出结果包。");
+    review = (await api("/api/handoff/inspect", {path})).result;
+    if (expectedReturn && review.sha256 !== expectedReturn.sha256) {
+      throw new Error("回传结果已变化，请重新查看待审核列表。");
+    }
+    if (expired()) throw new Error("OCR 回传已过期，可通过搞操作手工导出结果包。");
+  } catch (error) {
+    if (expectedReturn) {
+      refreshOcrReturnExpiry();
+      checkOcrReturns();
+    }
+    throw error;
   }
   handoffReview = {...review, path};
+  if (expectedReturn) handoffReview.returnExpiresAt = expectedReturn.expiresAt;
   message = "";
   view = "handoff";
   render();
+  if (expectedReturn) refreshOcrReturnExpiry();
   document.getElementById("handoff-review-title")?.focus();
 }
 
@@ -212,7 +231,43 @@ function setOcrReturnWindowVisible(visible, revision) {
 function updateOcrReturnVisibility() {
   ocrVisibilityGeneration++;
   clearTimeout(ocrReturnTimer);
-  if (ocrReturnWindowActive()) checkOcrReturns();
+  clearTimeout(ocrReturnExpiryTimer);
+  if (ocrReturnWindowActive()) {
+    refreshOcrReturnExpiry();
+    checkOcrReturns();
+  }
+}
+
+function refreshOcrReturnExpiry() {
+  clearTimeout(ocrReturnExpiryTimer);
+  if (!ocrReturnWindowActive()) return;
+  const now = Date.now();
+  let next = Infinity;
+  const results = ocrReturns.results.filter((item) => {
+    const deadline = Date.parse(item.expiresAt);
+    if (!(deadline > now)) return false;
+    next = Math.min(next, deadline);
+    return true;
+  });
+  ocrReturns = {...ocrReturns, results};
+  if (handoffReview?.returnExpiresAt) {
+    const deadline = Date.parse(handoffReview.returnExpiresAt);
+    if (deadline > now) {
+      next = Math.min(next, deadline);
+    } else {
+      handoffReview = null;
+      const card = document.querySelector(".handoff-review");
+      if (card) {
+        const notice = document.createElement("p");
+        notice.className = "doc-tools-status";
+        notice.setAttribute("role", "status");
+        notice.textContent = "OCR 回传已过期，可通过搞操作手工导出结果包。";
+        card.replaceWith(notice);
+      }
+    }
+  }
+  paintOcrReturns();
+  if (Number.isFinite(next)) ocrReturnExpiryTimer = setTimeout(refreshOcrReturnExpiry, next - now);
 }
 
 function checkOcrReturns() {
@@ -228,7 +283,7 @@ function checkOcrReturns() {
     .then((result) => {
       if (result && !result.paused && ocrReturnWindowActive() && generation === ocrVisibilityGeneration) {
         ocrReturns = result;
-        paintOcrReturns();
+        refreshOcrReturnExpiry();
       }
     }).catch(() => {}).finally(() => {
       ocrReturnRequest = null;
@@ -292,7 +347,7 @@ document.addEventListener("click", (event) => {
   if (button.hasAttribute("data-ocr-inbox")) navigate("handoff").catch(fail);
   else {
     const item = ocrReturns.results.find((result) => result.resultID === button.dataset.ocrReview);
-    if (item) leaveCurrent().then((ready) => ready && reviewHandoff(item.path, item.sha256)).catch(fail);
+    if (item) leaveCurrent().then((ready) => ready && reviewHandoff(item.path, item)).catch(fail);
   }
 });
 
@@ -389,8 +444,13 @@ function bindHandoff() {
       .catch((error) => { handoffState = {}; fail(error); }).finally(() => { handoffLoading = false; });
   }
   listenHandoff("ocr-choose", async () => {
-    try { ocrPaths = (await api("/api/handoff/choose-inputs", {})).result.paths; }
-    catch (error) { if (error.code !== "cancelled") throw error; return; }
+    const paths = await fileDialog("ocr-inputs");
+    if (!paths) return;
+    if (!Array.isArray(paths) || paths.some((path) => typeof path !== "string" || !path)) {
+      throw new Error("文件对话框未返回有效路径。");
+    }
+    if (!paths.length) return;
+    ocrPaths = paths;
     render();
   });
   listenHandoff("ocr-clear-current", () => { ocrCurrentTab = null; render(); });
@@ -418,7 +478,18 @@ function bindHandoff() {
   listenHandoff("handoff-choose-folder", async () => reviewHandoff(await pickHandoffPath("folder")));
   listenHandoff("handoff-choose-file", async () => reviewHandoff(await pickHandoffPath("open")));
   listenHandoff("handoff-accept", async () => {
-    const response = await api("/api/handoff/import", handoffReview);
+    if (!handoffReview) return;
+    const {path, sha256, returnExpiresAt} = handoffReview;
+    let response;
+    try {
+      response = await api("/api/handoff/import", {path, sha256});
+    } catch (error) {
+      if (returnExpiresAt) {
+        refreshOcrReturnExpiry();
+        checkOcrReturns();
+      }
+      throw error;
+    }
     handoffReview = null;
     await refreshHandoff();
     if (response.result.id) view = "editor";

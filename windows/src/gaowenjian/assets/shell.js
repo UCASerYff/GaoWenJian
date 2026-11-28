@@ -55,7 +55,12 @@ async function flushEdits(tabId) {
 }
 
 async function fileDialog(mode, name = "") {
-  if (window.pywebview?.api) return window.pywebview.api.file_dialog(mode, name);
+  const native = window.pywebview?.api;
+  if (typeof native?.file_dialog === "function") {
+    if (mode !== "ocr-inputs") return native.file_dialog(mode, name);
+    try { return await native.file_dialog(mode, name); }
+    catch (error) { if (error?.code === "cancelled") return []; }
+  }
   try { return (await api("/api/dialog", {mode, name})).result.path; }
   catch (error) { if (error.code !== "cancelled") throw error; return ""; }
 }

@@ -74,8 +74,8 @@ class DesktopTray:
         # Distinct test profiles stay independent. The ordinary path always maps to the same name.
         identity = os.path.normcase(str(profile.resolve())).encode("utf-8", errors="surrogatepass")
         self._name = "GaoWenJian-" + hashlib.sha256(identity).hexdigest()
-        self._mutex = None
-        self._owns_mutex = False
+        self._mutexes = []
+        self._owns_mutexes = False
         self._window = None
         self._thread = None
         self._ready = threading.Event()
@@ -84,28 +84,36 @@ class DesktopTray:
         self.available = False
         self.events = queue.SimpleQueue()
 
-    def claim_or_forward(self, path: str | None, *, show_icon: bool = True) -> bool:
+    def claim_or_forward(self, path: str | None, *, show_icon: bool = True, activate: bool = True,
+                         forward: bool = True) -> bool:
         """True runs a workspace. False means the existing workspace accepted the launch."""
         create = _bind(kernel, "CreateMutexW", w.HANDLE, w.LPVOID, w.BOOL, w.LPCWSTR)
-        wait = _bind(kernel, "WaitForSingleObject", w.DWORD, w.HANDLE, w.DWORD)
-        self._mutex = create(None, False, "Local\\" + self._name)
-        if not self._mutex:
-            raise c.WinError(c.get_last_error())
+        wait = _bind(kernel, "WaitForMultipleObjects", w.DWORD, w.DWORD, c.POINTER(w.HANDLE), w.BOOL, w.DWORD)
+        # Global blocks additional sessions. Local also respects an older desktop in this session.
+        for namespace in ("Global\\", "Local\\"):
+            mutex = create(None, False, namespace + self._name)
+            if not mutex:
+                raise c.WinError(c.get_last_error())
+            self._mutexes.append(mutex)
+        handles = (w.HANDLE * len(self._mutexes))(*self._mutexes)
         deadline = time.monotonic() + 10
         while time.monotonic() < deadline:
-            result = wait(self._mutex, 75)
-            if result in {0, 0x80}:  # WAIT_OBJECT_0 or WAIT_ABANDONED
-                self._owns_mutex = True
-                self._show_icon = show_icon
-                self._thread = threading.Thread(target=self._message_loop, name="GaoWenJian activation window", daemon=True)
-                self._thread.start()
-                self._ready.wait(5)
+            result = wait(len(handles), handles, True, 75 if forward else 0)
+            if result in {0, 1, 0x80, 0x81}:  # WAIT_OBJECT_0 or WAIT_ABANDONED_0 plus handle index.
+                self._owns_mutexes = True
+                if activate:
+                    self._show_icon = show_icon
+                    self._thread = threading.Thread(target=self._message_loop, name="GaoWenJian activation window", daemon=True)
+                    self._thread.start()
+                    self._ready.wait(5)
                 return True
             if result != 0x102:  # WAIT_TIMEOUT
                 raise c.WinError(c.get_last_error())
+            if not forward:
+                break
             if self._forward(path):
                 return False
-        raise AppError("正在运行的搞文件窗口还未响应。请通过通知区域打开窗口后重试。", "instance")
+        raise AppError("资料目录正在由另一个搞文件进程使用。请关闭原窗口或停止原服务后重试。", "instance")
 
     def _forward(self, path):
         hwnd = _find_window(WINDOW_CLASS, self._name)
@@ -133,11 +141,12 @@ class DesktopTray:
             _post_message(self._window, STOP_TRAY, 0, 0)
         if self._thread:
             self._thread.join(timeout=5)
-        if self._mutex:
-            if self._owns_mutex:
-                _bind(kernel, "ReleaseMutex", w.BOOL, w.HANDLE)(self._mutex)
-            _close_handle(self._mutex)
-            self._mutex = None
+        release = _bind(kernel, "ReleaseMutex", w.BOOL, w.HANDLE)
+        for mutex in reversed(self._mutexes):
+            if self._owns_mutexes:
+                release(mutex)
+            _close_handle(mutex)
+        self._mutexes.clear()
 
     def _receive(self, pointer):
         if self._stopping.is_set() or not pointer:

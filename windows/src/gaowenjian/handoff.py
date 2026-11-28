@@ -138,7 +138,15 @@ class HandoffBook:
         return {"duplicate": False, "requestID": manifest["requestID"], "opened": opened, "record": record}
 
     def finish_import(self, record: dict) -> None:
-        _remember(self.journal, record)
+        try:
+            _remember(self.journal, record)
+        except (AppError, OSError):
+            # The atomic write can succeed before its read-back fails.
+            persisted = GuardedJSON(self.journal.path)
+            entries = persisted.data.get("entries") if isinstance(persisted.data, dict) else None
+            if not isinstance(entries, list) or record not in entries:
+                raise
+            self.journal = persisted
 
     def incoming_pdf(self, path: Path, sha: str) -> dict | None:
         """Recover source pages only for an explicitly accepted, unchanged app-owned copy."""

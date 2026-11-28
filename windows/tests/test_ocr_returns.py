@@ -4,8 +4,9 @@ import json
 import os
 import subprocess
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -102,6 +103,35 @@ def test_ticket_is_written_only_after_outgoing_persistence(tmp_path, isolated_lo
     assert request["returnEnabled"]
 
 
+@pytest.mark.parametrize("selection", [None, "", "C:\\合成资料\\一 张.png",
+                                       ("C:\\合成资料\\一 张.png", "C:\\合成资料\\二 份.pdf")])
+def test_native_ocr_picker_uses_multiple_and_preserves_complete_paths(selection):
+    from gaowenjian.desktop import FILE_TYPES, WindowActions
+    from webview.util import parse_file_type
+
+    formats = SimpleNamespace(OPEN=1, FOLDER=2, SAVE=3)
+    actions = WindowActions(SimpleNamespace(webview=SimpleNamespace(FileDialog=formats)))
+
+    def choose(dialog_type, **options):
+        assert dialog_type == formats.OPEN
+        assert options["allow_multiple"] is True and options["file_types"][:-1] == FILE_TYPES["ocr-inputs"]
+        for filter_type in options["file_types"]:
+            parse_file_type(filter_type)
+        return selection
+
+    actions._window = SimpleNamespace(create_file_dialog=choose)
+    expected = [selection] if isinstance(selection, str) and selection else list(selection or ())
+    assert actions.file_dialog("ocr-inputs") == expected
+
+
+def test_native_note_import_filter_is_accepted():
+    from gaowenjian.desktop import FILE_TYPES
+    from webview.util import parse_file_type
+
+    _, patterns = parse_file_type(FILE_TYPES["note-import"][0])
+    assert patterns == "*.txt;*.rtf"
+
+
 def test_verified_return_is_review_only_until_explicit_digest_and_preserves_each_source(tmp_path, isolated_local):
     workspace = Workspace(tmp_path / "profile")
     draft = workspace.new_text("markdown", "未保存的原草稿")
@@ -140,6 +170,56 @@ def test_verified_return_is_review_only_until_explicit_digest_and_preserves_each
     journal = json.loads(book.journal.path.read_bytes())["entries"][0]
     assert journal["ocrSources"] == summary["sources"] and len(journal["ocrOutputs"]) == len(paths)
     assert [path.read_bytes() for path in paths] == [b"synthetic source 0", b"synthetic source 1"]
+    # Transport expiry does not affect either the accepted text drafts or their provenance.
+    reopened = Workspace(workspace.data_dir)
+    assert not scan_returns(reopened.handoff, now=now + TTL)["results"]
+    assert [tab.text for tab in reopened.tabs] == [draft.text, "经过审核的文字 1", "经过审核的文字 2"]
+    assert [tab.extra["incoming"]["sourcePath"] for tab in reopened.tabs[1:]] == list(map(str, paths))
+    assert returned.is_dir()
+
+
+@pytest.mark.parametrize("earlier", ["request", "result"])
+def test_ready_deadline_and_expired_review_do_not_modify_artifacts(tmp_path, isolated_local, monkeypatch, earlier):
+    from gaowenjian import handoff, ocr_returns
+
+    workspace = Workspace(tmp_path / "profile")
+    draft = workspace.new_text("markdown", "未保存的原草稿")
+    book, request, _, now = request_fixture(tmp_path, book=workspace.handoff, count=1)
+    if earlier == "request":
+        manifest, payloads = result_fixture(book, now + timedelta(seconds=30))
+        deadline = now + TTL
+    else:
+        manifest, payloads = result_fixture(book, now)
+        deadline = now + timedelta(seconds=45)
+        manifest["expiresAt"] = handoff._stamp(deadline)
+    returned = isolated_local / request["requestID"] / "result.gaoaction"
+    _write_package(returned, manifest, payloads)
+    tracked = [book.outgoing.path, workspace.recovery_guard.path, returned.parent / "request.json",
+               returned / "manifest.json", returned / "payload" / "OCR-1.txt"]
+    previous = [path.read_bytes() for path in tracked]
+
+    current = deadline - timedelta(seconds=2)
+    summary = scan_returns(book, now=current)["results"][0]
+    assert summary["expiresAt"] == handoff._stamp(deadline)
+    assert scan_returns(book, now=current)["results"] == [summary]
+    assert not scan_returns(book, now=deadline)["results"]
+
+    class ExpiredClock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return deadline
+
+    monkeypatch.setattr(handoff, "datetime", ExpiredClock)
+    monkeypatch.setattr(ocr_returns, "datetime", ExpiredClock)
+    with pytest.raises(AppError) as inspect_error:
+        workspace.inspect_handoff(returned)
+    assert inspect_error.value.code == "expired"
+    with pytest.raises(AppError) as import_error:
+        workspace.import_handoff(returned, summary["sha256"])
+    assert import_error.value.code == "expired"
+    assert workspace.tabs == [draft] and workspace.selection == draft.id and draft.dirty
+    assert not book.journal.exists
+    assert [path.read_bytes() for path in tracked] == previous
 
 
 @pytest.mark.parametrize("mismatch", ["old", "digest", "reverse-bundle", "source", "page", "failed"])
@@ -203,6 +283,13 @@ def test_explicit_pdf_receipt_can_recover_link_only_for_its_owned_copy(tmp_path,
     decoy.write_bytes(recognizable)
     assert reopened.incoming_pdf(decoy, digest(recognizable)) is None
     assert reopened.incoming_pdf(tab.path, digest(b"changed")) is None
+    journal = book.journal.path.read_bytes()
+    payload = returned / "payload" / "OCR-1.pdf"
+    assert scan_returns(reopened, now=now + TTL) == {"pending": False, "results": [], "issues": []}
+    restarted = Workspace(workspace.data_dir)
+    assert restarted.open_path(tab.path).extra["incoming"] == associated
+    assert tab.path.read_bytes() == payload.read_bytes() == recognizable
+    assert restarted.handoff.journal.path.read_bytes() == journal
 
 
 def test_auto_does_not_follow_reparse_mailbox(tmp_path, isolated_local):

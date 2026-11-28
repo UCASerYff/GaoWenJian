@@ -34,7 +34,7 @@ const root = await mkdtemp(join(tmpdir(), "gao-wenjian-tray-"));
 const profile = join(root, "profile");
 const driver = spawn(python, [fileURLToPath(new URL("tray_win32_driver.py", import.meta.url)), executable], {
   stdio: ["pipe", "pipe", "inherit"], windowsHide: true,
-  env: {...process.env, PYTHONUTF8: "1", WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS: `--remote-debugging-port=${debuggerPort} --disable-background-networking`},
+  env: {...process.env, HOMEPATH: root, PYTHONUTF8: "1", WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS: `--remote-debugging-port=${debuggerPort} --disable-background-networking`},
 });
 const driverExit = once(driver, "exit");
 const pending = new Map();
@@ -205,6 +205,28 @@ try {
   }
   const token = await main.evaluate('document.querySelector("meta[name=gao-token]").content');
   assert.deepEqual(await api("handoff/ocr-returns", token), {pending: false, results: [], issues: []});
+  await main.evaluate('navigate("handoff")');
+  await until(() => main.evaluate('Boolean(document.querySelector("#ocr-choose") && window.pywebview?.api?.file_dialog)'),
+    "OCR page and native file picker bridge");
+  const priorSelection = [join(root, "保留的第一项.png"), join(root, "保留的第二项.pdf")];
+  await main.evaluate("ocrPaths = " + JSON.stringify(priorSelection) + "; render(); true");
+  const beforePicker = new Set((await status(pid)).windows.map(({hwnd}) => hwnd));
+  await main.evaluate(`(() => {
+    window.testOcrPickerSettled = false;
+    document.querySelector("#ocr-choose").onclick().finally(() => { window.testOcrPickerSettled = true; });
+    return true;
+  })()`);
+  const picker = await until(async () => (await status(pid)).windows.find((window) =>
+    window.visible && window.class === "#32770" && !beforePicker.has(window.hwnd)), "owned native OCR file dialog", 10000);
+  await post(pid, picker.hwnd, 0x0010);  // WM_CLOSE, on the disposable private desktop only.
+  await until(async () => !(await status(pid)).windows.some(({hwnd}) => hwnd === picker.hwnd)
+    && await main.evaluate("window.testOcrPickerSettled === true"), "native OCR picker returned after cancel", 10000);
+  assert.deepEqual(await main.evaluate("ocrPaths"), priorSelection, "native cancel kept the existing multi-file selection");
+  assert.equal(await main.evaluate('message'), "", "native cancel did not show an error");
+  assert.equal(await main.evaluate(`performance.getEntriesByType("resource").some(({name}) =>
+    ["/api/dialog", "/api/handoff/choose-inputs"].includes(new URL(name).pathname))`),
+  false, "normal OCR picker did not use an HTTP dialog");
+  console.log("native OCR picker OK: opened and canceled its owned dialog on the inactive desktop");
   await main.evaluate('document.querySelector("#workspace-nav [data-go=projects]").click()');
   await until(() => main.evaluate('Boolean(document.querySelector("#projects-heading"))'), "writing projects in the normal native launcher");
   await main.evaluate('navigate("home")');

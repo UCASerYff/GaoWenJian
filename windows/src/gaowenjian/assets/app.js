@@ -97,7 +97,7 @@ function imagePanel(tab) {
   const zoom = imageZoom.get(tab.id) || 100;
   return `<div class="image-workspace"><div class="row image-toolbar"><b>${h(tab.title)}</b><span class="row-spacer"></span>
     ${preview.preview ? `<input type="range" min="10" max="300" value="${zoom}" id="image-zoom" aria-label="图片缩放"><span id="image-scale">${zoom}%</span>` : ""}
-    <button data-ocr-current>识别图片文字 (OCR)</button><button data-reveal>在资源管理器中显示</button></div>
+    ${supportsOcrImage(tab.path) ? '<button data-ocr-current>识别图片文字 (OCR)</button>' : ""}<button data-reveal>在资源管理器中显示</button></div>
     ${preview.preview ? `<div class="image-scroll"><img alt="${h(tab.title)}" src="${src}" style="--image-base:${Math.min(preview.width || 1000, 1200) * zoom / 100}px"></div>` : `<p class="banner warn">${h(preview.note || "无法解码这张图片。")}</p>`}</div>`;
 }
 

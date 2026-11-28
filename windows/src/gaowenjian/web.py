@@ -379,8 +379,6 @@ def dispatch(workspace: Workspace, path: str, payload: dict):
         return {"id": tab.id}
     if path == "/api/handoff/research":
         return workspace.export_research(payload["id"], Path(payload["directory"]), payload.get("targetRecordID"))
-    if path == "/api/handoff/choose-inputs":
-        return {"paths": choose_path("ocr-inputs")}
     if path == "/api/handoff/organizer":
         from gaowenjian.organizer_actions import complete
 
@@ -454,9 +452,7 @@ def choose_path(mode: str, name: str = "") -> str | list[str]:
         elif mode == "folder":
             selected = filedialog.askdirectory(title="打开文件夹")
         elif mode == "ocr-inputs":
-            selected = list(filedialog.askopenfilenames(title="选择 OCR 文件", filetypes=[
-                ("PDF 和图像", "*.pdf *.png *.jpg *.jpeg *.tif *.tiff *.gif *.webp *.heic *.heif"), ("所有文件", "*"),
-            ]))
+            selected = list(filedialog.askopenfilenames(title="选择 OCR 文件", filetypes=types + (("所有文件", "*"),)))
         elif mode == "multiple":
             selected = list(filedialog.askopenfilenames(title="选择要交接的文件"))
         else:

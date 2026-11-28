@@ -4,7 +4,7 @@ Windows 构建号独立递增，不改 Mac 的 CFBundleVersion。
 """
 
 MARKETING_VERSION = "1.11"
-WINDOWS_BUILD = "7"
+WINDOWS_BUILD = "8"
 VERSION_LABEL = f"{MARKETING_VERSION}+{WINDOWS_BUILD}"
 APP_NAME = "搞文件"
 BUNDLE_ID = "com.gaoseries.GaoWenJian"

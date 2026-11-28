@@ -2,12 +2,94 @@
 
 from __future__ import annotations
 
+import ctypes
+from importlib.util import find_spec
 import json
+from pathlib import Path
+import re
+import sys
 import threading
 from urllib.parse import urlencode
 
 from gaowenjian.errors import AppError
 from gaowenjian.version import WINDOW_TITLE
+
+WEBVIEW2_LOADER = Path("lib/runtimes/win-x64/native/WebView2Loader.dll")
+WEBVIEW2_ERROR = "请安装或修复 Microsoft Edge WebView2 Evergreen Runtime（x64），然后重新打开搞文件。"
+WEBVIEW2_INSTALL_ERROR = "无法读取搞文件的 WebView2 界面组件。请重新安装完整的 Windows 安装包。"
+_MSHTML = "webview.platforms.mshtml"
+
+
+class WebView2Unavailable(RuntimeError):
+    pass
+
+
+def installed_webview2_version(loader_path: Path) -> str:
+    """Query the runtime through the bundled x64 WebView2 SDK loader."""
+    try:
+        loader = ctypes.WinDLL(str(loader_path))
+        probe = loader.GetAvailableCoreWebView2BrowserVersionString
+        probe.argtypes = (ctypes.c_wchar_p, ctypes.POINTER(ctypes.c_void_p))
+        probe.restype = ctypes.c_long
+        release = ctypes.WinDLL("ole32").CoTaskMemFree
+        release.argtypes = (ctypes.c_void_p,)
+        release.restype = None
+    except (OSError, AttributeError) as exc:
+        raise WebView2Unavailable(WEBVIEW2_INSTALL_ERROR) from exc
+
+    pointer = ctypes.c_void_p()
+    try:
+        if probe(None, ctypes.byref(pointer)) < 0 or not pointer.value:
+            raise WebView2Unavailable(WEBVIEW2_ERROR)
+        version = ctypes.wstring_at(pointer)
+        if not re.fullmatch(r"[1-9][0-9]*(?:\.[0-9]+){3}(?: [A-Za-z]+)?", version):
+            raise WebView2Unavailable(WEBVIEW2_ERROR)
+        return version
+    finally:
+        if pointer.value:
+            release(pointer)
+
+
+def require_webview2():
+    if getattr(sys, "frozen", False):
+        package = Path(sys._MEIPASS) / "webview"
+    else:
+        spec = find_spec("webview")
+        if spec is None or spec.origin is None:
+            raise WebView2Unavailable(WEBVIEW2_INSTALL_ERROR)
+        package = Path(spec.origin).parent
+    loader = package / WEBVIEW2_LOADER
+    installed_webview2_version(loader)
+
+    # WinForms can otherwise initialize IE mode during import, before its renderer is inspectable.
+    if sys.modules.get(_MSHTML) is not None:
+        raise WebView2Unavailable(WEBVIEW2_ERROR)
+    sys.modules[_MSHTML] = None
+    try:
+        import webview
+        from webview import util
+        from webview.guilib import initialize
+
+        # pywebview 6.x probes all SDK runtime directory names when building PATH.
+        # This x64 package contains one native SDK directory for all those lookups.
+        original_lookup = util.interop_dll_path
+
+        def x64_lookup(name):
+            if name in {"win-x86", "win-arm64", "win-x64"}:
+                return str(loader.parent)
+            return original_lookup(name)
+
+        util.interop_dll_path = x64_lookup
+        try:
+            backend = initialize("edgechromium")
+        finally:
+            util.interop_dll_path = original_lookup
+    except Exception as exc:
+        raise WebView2Unavailable(WEBVIEW2_ERROR) from exc
+    if getattr(backend, "renderer", None) != "edgechromium":
+        raise WebView2Unavailable(WEBVIEW2_ERROR)
+    return webview
+
 
 FILE_TYPES = {
     "latex": ("LaTeX (*.tex;*.ltx;*.bib)",),
@@ -17,15 +99,13 @@ FILE_TYPES = {
     "word": ("Word (*.doc;*.docx;*.docm;*.odt)",),
     "spreadsheet": ("Excel (*.xls;*.xlsx;*.xlsm;*.ods)",),
     "presentation": ("PowerPoint (*.ppt;*.pptx;*.pptm;*.odp)",),
-    "ocr-inputs": ("PDF / image (*.pdf;*.png;*.jpg;*.jpeg;*.tif;*.tiff;*.gif;*.webp;*.heic;*.heif)",),
-    "note-import": ("Text / RTF (*.txt;*.rtf)",),
+    "ocr-inputs": ("PDF 和图像 (*.pdf;*.png;*.jpg;*.jpeg;*.tif;*.tiff;*.gif;*.webp;*.heic;*.heif)",),
+    "note-import": ("文本和 RTF (*.txt;*.rtf)",),
 }
 
 
 def run_desktop(server, *, activate: bool = False, hidden: bool = False, tray=None) -> None:
-    import webview
-
-    desktop = Desktop(webview, server, hidden=hidden, tray=tray)
+    desktop = Desktop(require_webview2(), server, hidden=hidden, tray=tray)
     desktop.start(activate)
 
 
@@ -63,6 +143,8 @@ class WindowActions:
             file_types=FILE_TYPES.get(mode, ()) + ("All files (*.*)",),
         )
         if mode == "ocr-inputs":
+            if isinstance(selected, str):
+                return [selected] if selected else []
             return list(selected or ())
         return selected[0] if selected else ""
 

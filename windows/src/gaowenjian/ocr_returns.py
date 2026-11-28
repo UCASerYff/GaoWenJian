@@ -295,11 +295,12 @@ def scan_returns(book, *, now: datetime | None = None) -> dict:
                         manifest, _, sha = _read_result(book, directory, ticket, now)
                         if sha != digest(raw) or stamps != tuple(_stamp(member) for member in members):
                             raise AppError("OCR 回传结果读取期间发生变化。", "changed")
+                        deadline = min(ticket["expiresAt"], manifest["expiresAt"], key=_parse_time)
                         summary = {"requestID": identifier, "resultID": manifest["requestID"], "path": str(path),
-                                   "sha256": sha, "status": manifest["status"], "expiresAt": manifest["expiresAt"],
+                                   "sha256": sha, "status": manifest["status"], "expiresAt": deadline,
                                    "failureCount": len(manifest["provenance"]["exportFailures"]),
                                    "sources": result_sources(book, manifest)}
-                        current[identifier] = ticket, _parse_time(manifest["expiresAt"]), members, stamps, summary
+                        current[identifier] = ticket, _parse_time(deadline), members, stamps, summary
                 response["results"].append(current[identifier][-1])
         except FileNotFoundError:
             continue  # Older sessions and missing tickets stay eligible for manual handoff.

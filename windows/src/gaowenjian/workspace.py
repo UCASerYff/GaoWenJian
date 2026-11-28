@@ -727,6 +727,7 @@ class Workspace:
             raise AppError("交接包自审核后发生变化，请重新审核。", "changed")
         last = None
         additions = []
+        new_copies = {}
         references = {}
         receipt = None
         for item in result["opened"]:
@@ -738,7 +739,19 @@ class Workspace:
                 tab.saved_text = ""
                 tab.dirty = True
                 tab.suggested_title = item.get("title") or "交接文档.txt"
-                tab.extra = {"incoming": item.get("manifest")}
+                incoming = item.get("manifest")
+                tab.extra = {"incoming": incoming}
+                if record["action"] == "ocr.files":
+                    # An interrupted receipt can leave an approved draft in recovery.
+                    # Match the output of the original request even if it was repackaged.
+                    output_format = incoming["output"]["format"]
+                    payload_digest = digest(item["text"].encode("utf-8"))
+                    identity = f'{incoming["sourceItemID"]}:{output_format}:{payload_digest}'
+                    tab.id = str(uuid.uuid5(uuid.UUID(incoming["inReplyTo"]), identity))
+                    existing = next((open_tab for open_tab in self.tabs if open_tab.id == tab.id), None)
+                    if existing is not None:
+                        last = existing
+                        continue
                 additions.append(tab)
                 last = tab
             elif item["kind"] == "pdf":
@@ -761,21 +774,31 @@ class Workspace:
                     if digest(target.read_bytes()) != sha:
                         raise AppError("已接收的 PDF 副本发生变化，无法导入到同一位置。", "changed")
                 else:
-                    safe_replace(target, item["bytes"], None)
+                    new_copies[target] = item["bytes"]
                 additions.append(tab)
                 last = tab
             elif item["kind"] == "receipt":
                 receipt = item
             elif item["kind"] == "reference":
                 references[str(uuid.uuid4())] = item["reference"]
+        for target, content in new_copies.items():
+            safe_replace(target, content, None)
+        previous_count = len(self.tabs)
         self.tabs.extend(additions)
-        if any(tab.kind in TEXT_KINDS for tab in additions):
-            try:
+        checkpointed = False
+        try:
+            if any(tab.kind in TEXT_KINDS for tab in additions):
                 self._checkpoint(strict=True)
-            except AppError:
-                self.tabs = [tab for tab in self.tabs if tab not in additions]
-                raise
-        self.handoff.finish_import(record)
+                checkpointed = True
+            self.handoff.finish_import(record)
+        except (AppError, OSError):
+            del self.tabs[previous_count:]
+            if checkpointed:
+                try:
+                    self._checkpoint(strict=True)
+                except (AppError, OSError):
+                    self.error = "交接记录写入失败，磁盘上的草稿待恢复，原件未改动。"
+            raise
         self.handoff_references.update(references)
         if last is not None:
             self.selection = last.id

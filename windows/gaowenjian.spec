@@ -24,9 +24,12 @@ a = Analysis(
     [str(here / "launch.py")],
     pathex=[str(here / "src")],
     binaries=[(str(tectonic), "gaowenjian_tex")] + collect_dynamic_libs("pypdfium2_raw") + collect_dynamic_libs("pythonnet"),
-    datas=[(str(source), target) for source, target in data] + collect_data_files("webview") + collect_data_files("pypdfium2_raw") + collect_data_files("pypdfium2"),
-    hiddenimports=["webview.platforms.winforms", "webview.platforms.edgechromium", "clr"],
-    excludes=["IPython", "matplotlib", "numpy", "pandas", "scipy"],
+    datas=[(str(source), target) for source, target in data] + collect_data_files("pypdfium2_raw") + collect_data_files("pypdfium2"),
+    hiddenimports=["clr"],
+    hookspath=[str(here / "hooks")],
+    excludes=["IPython", "matplotlib", "numpy", "pandas", "scipy",
+              "webview.platforms.android", "webview.platforms.cef", "webview.platforms.cocoa",
+              "webview.platforms.gtk", "webview.platforms.mshtml", "webview.platforms.qt"],
 )
 pyz = PYZ(a.pure)
 gui = EXE(pyz, a.scripts, [], exclude_binaries=True, name="GaoWenJian", console=False, icon=icon, version=version, upx=False)

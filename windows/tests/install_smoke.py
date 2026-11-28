@@ -133,6 +133,16 @@ def _check_app(app, root: Path, profile: Path, note_id: str | None) -> None:
     destination = root / "保存后的旧稿.md"
     app("api/tabs/save", {"id": "whats-new", "path": str(destination)})
     assert destination.read_text(encoding="utf-8") == "旧版本恢复稿"
+    draft = app("api/tabs/new", {"kind": "markdown", "text": "# 首次写作"})["result"]["id"]
+    assert app("api/state")["selection"] == draft
+    switched = app("api/tabs/select", {"id": "whats-new"})["state"]
+    assert switched["selection"] == "whats-new"
+    assert next(tab for tab in switched["tabs"] if tab["id"] == draft)["dirty"]
+    first_save = root / "新文稿.md"
+    app("api/tabs/select", {"id": draft})
+    app("api/tabs/save", {"id": draft, "path": str(first_save)})
+    app("api/tabs/close", {"id": draft})
+    assert first_save.read_text(encoding="utf-8") == "# 首次写作"
     app("api/settings", {"editorFontSize": 18})
     current_settings = json.loads((profile / "settings.json").read_text(encoding="utf-8"))
     assert current_settings["futureWindowsSetting"] == {"keep": True}
