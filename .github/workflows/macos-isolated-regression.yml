@@ -1,0 +1,44 @@
+name: macOS isolated full regression
+on:
+  push:
+    branches: ['codex/macos-regression-20261128']
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: macos-15
+    timeout-minutes: 40
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.3.app/Contents/Developer
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          path: GaoWenJian
+      - uses: actions/checkout@v4
+        with:
+          repository: UCASerYff/GaoCaoZuo
+          ref: c3ee1ff8b5530c48ca008dbf4ea959dbc4617616
+          persist-credentials: false
+          path: provider
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Compile arm64 host and run full isolated regression and OCR mailbox exchange
+        working-directory: GaoWenJian
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(uname -m)" = arm64
+          xcodebuild -version
+          GAO_OCR_RETURN_PROVIDER_PROJECT="$GITHUB_WORKSPACE/provider" /bin/zsh Scripts/check-macos-candidate.sh
+      - name: Run native editor and note window tests
+        if: always()
+        working-directory: GaoWenJian
+        shell: bash
+        run: /bin/zsh Scripts/test.sh
+      - name: Check organizer storage and action integration
+        if: always()
+        working-directory: GaoWenJian
+        shell: bash
+        run: /bin/zsh Scripts/check-organizer.sh --compile-checks-types
