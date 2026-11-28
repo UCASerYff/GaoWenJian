@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import re
 import subprocess
 import sys
@@ -46,6 +47,7 @@ def smoke(installer: Path, *, native: bool = False, tray: bool = False, provider
     target = re.fullmatch(r"GaoWenJian-Windows-(\d+\.\d+)-build(\d+)-x64-Setup\.exe", installer.name)
     assert target, f"Unexpected setup name: {installer.name}"
     marketing, build = target.groups()
+    expected_version = f"{marketing}+{build}"
     with tempfile.TemporaryDirectory(prefix="gao-wenjian-installed-") as temporary:
         root = Path(temporary)
         program = root / "程序"
@@ -60,8 +62,11 @@ def smoke(installer: Path, *, native: bool = False, tray: bool = False, provider
         if previous:
             verify_checksum(previous)
             run_installer(previous, "/SP-", "/GAOISOLATED=1", f"/DIR={program}", f"/LOG={root / 'setup-old.log'}")
-            previous_marketing, previous_build = subprocess.check_output([str(cli), "--version"], text=True, timeout=15).strip().split("+")
-            assert previous_marketing == marketing and int(previous_build) < int(build)
+            previous_version = subprocess.check_output([str(cli), "--version"], text=True, timeout=15).strip()
+            previous_components = re.fullmatch(r"(\d+)\.(\d+)\+(\d+)", previous_version)
+            assert previous_components, f"Unexpected previous version: {previous_version}"
+            candidate_components = (*map(int, marketing.split(".")), int(build))
+            assert tuple(map(int, previous_components.groups())) < candidate_components
             with running_app(cli, profile) as (child, app):
                 old = app("api/state")
                 assert old["tabs"][0]["text"] == "旧版本恢复稿"
@@ -74,10 +79,11 @@ def smoke(installer: Path, *, native: bool = False, tray: bool = False, provider
                 assert child.wait(timeout=20) == 0
 
         run_installer(installer, "/SP-", "/GAOISOLATED=1", f"/DIR={program}", f"/LOG={root / 'setup.log'}")
-        assert subprocess.check_output([str(cli), "--version"], text=True, timeout=15).strip() == f"{marketing}+{build}"
+        assert subprocess.check_output([str(cli), "--version"], text=True, timeout=15).strip() == expected_version
         for selector_resource in ("_tcl_data/init.tcl", "_tk_data/tk.tcl"):
             assert (program / "_internal" / selector_resource).is_file(), "Browser file picker resources missing"
         with running_app(cli, profile) as (child, app):
+            assert app("api/state")["version"] == expected_version
             _check_app(app, root, profile, note_id)
             app("api/shutdown", {})
             assert child.wait(timeout=20) == 0
@@ -87,7 +93,8 @@ def smoke(installer: Path, *, native: bool = False, tray: bool = False, provider
             subprocess.run(["node", str(scripts / "native_desktop_smoke.mjs"), str(cli), *capture], check=True, timeout=150)
         if tray:
             subprocess.run(["node", str(scripts / "tray_desktop_smoke.mjs"), str(program / "GaoWenJian.exe"),
-                            sys.executable, *capture], check=True, timeout=240)
+                            sys.executable, *capture], check=True, timeout=240,
+                           env={**os.environ, "GAOWENJIAN_EXPECT_MARKETING_VERSION": marketing})
         if provider:
             subprocess.run([sys.executable, str(scripts / "ocr_interop_smoke.py"), "--provider-setup", str(provider),
                             "--client-cli", str(cli)], check=True, timeout=180)
@@ -97,6 +104,7 @@ def smoke(installer: Path, *, native: bool = False, tray: bool = False, provider
         assert (profile / "settings.json").is_file() and (root / "保存后的旧稿.md").is_file()
     print("installed smoke OK: SHA-256, version, old profile, offline TeX/PDF, save, shutdown, uninstall"
           + (", in-place upgrade with notes and attachments" if previous else ""))
+    print(f"installed version {expected_version}" + (f" (upgraded from {previous_version})" if previous else ""))
 
 
 def _connect(child):

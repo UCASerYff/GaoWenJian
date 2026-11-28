@@ -1,6 +1,6 @@
-# 搞文件 1.11 · Windows x64
+# 搞文件 · Windows x64
 
-安装文件为 `GaoWenJian-Windows-1.11-build8-x64-Setup.exe`，旁附同名 `.sha256`。安装器针对 Windows 10/11 x64，默认按当前用户安装。通过开始菜单启动“搞文件”，或在安装目录用 `GaoWenJian.exe --open 文件路径` 打开文档。主窗口、设置和桌面便笺使用 Microsoft Edge WebView2 Runtime。命令行版为 `GaoWenJian-cli.exe`，版本号输出 `1.11+8`。Windows 安装器和程序未做 Authenticode 签名。
+当前公开版本为 1.11（构建 7）。本分支候选为 1.12（构建 8），安装文件为 `GaoWenJian-Windows-1.12-build8-x64-Setup.exe`，旁附同名 `.sha256`。安装器针对 Windows 10/11 x64，默认按当前用户安装。通过开始菜单启动“搞文件”，或在安装目录用 `GaoWenJian.exe --open 文件路径` 打开文档。主窗口、设置和桌面便笺使用 Microsoft Edge WebView2 Runtime。命令行版为 `GaoWenJian-cli.exe`，候选版输出 `1.12+8`。Windows 安装器和程序未做 Authenticode 签名。[公开版安装包](https://github.com/UCASerYff/GaoWenJian/releases/tag/windows-v1.11-build.7)
 
 用户资料仍位于 `%APPDATA%\GaoSeries\GaoWenJian`。卸载移除程序，用户资料和原路径文档继续保留。`--data-dir` 可指定隔离资料目录，`--no-browser` 启动仅监听 `127.0.0.1` 的本机接口。每个资料目录同时只允许一个写入进程。`--self-check` 在自动清理的临时目录运行。工作区、恢复稿、便笺和设置记录在原目录读取，兼容已存在的 Windows 记录。遇到损坏或冲突时保留现有记录。
 
@@ -38,7 +38,7 @@ Windows 桌面需要 x64 Microsoft Edge WebView2 Evergreen Runtime。若运行�
 
 ```powershell
 .\windows\build.ps1 -InnoCompiler 'C:\Program Files (x86)\Inno Setup 6\ISCC.exe'
-python .\windows\tests\install_smoke.py .\Release\GaoWenJian-Windows-1.11-build8-x64-Setup.exe --previous .\Release\GaoWenJian-Windows-1.11-build7-x64-Setup.exe --native --tray
+python .\windows\tests\install_smoke.py .\Release\GaoWenJian-Windows-1.12-build8-x64-Setup.exe --previous .\Release\GaoWenJian-Windows-1.11-build7-x64-Setup.exe --native --tray
 ```
 
 `install_smoke.py` 使用隔离安装和合成资料，核验 SHA-256、版本、离线编译、保存和卸载。提供 `--previous` 可将上一版原地升级并核验恢复稿、设置、便笺和附件。`--native` 通过 Node.js 24 验证隐藏的设置窗口、桌面便笺和 LaTeX PDF 阅读窗口。`--tray` 在非活动的私有桌面上运行已安装的 GUI，用测试通知区接收真实的 `Shell_NotifyIconW` 调用并验证关窗留驻、恢复、取消退出和最终清理。Explorer 的图标显示位置需在日常桌面另行查看。浏览器回归检查浅深色、窄窗、项目恢复与 OCR 审核。`ocr_interop_smoke.py` 可传入搞操作安装包和搞文件命令行程序实测离线 OCR，`--automatic` 检查新版提供方的自动回传。

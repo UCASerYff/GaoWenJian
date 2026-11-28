@@ -190,6 +190,11 @@ try {
     return workspace(observed.windows)?.visible && trays(observed.windows).length === 1 && observed.windows;
   }, "normal launch has a visible main window and one tray callback window");
   const mainWindow = workspace(initial);
+  const marketingVersion = process.env.GAOWENJIAN_EXPECT_MARKETING_VERSION;
+  if (marketingVersion) {
+    assert.equal(mainWindow.title, `搞文件 V${marketingVersion}`);
+    console.log(`native window title OK: ${mainWindow.title}`);
+  }
   const [tray] = trays(initial);
   assert.equal(tray.visible, false);
   const registered = await until(async () => {

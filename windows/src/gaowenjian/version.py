@@ -3,7 +3,7 @@
 Windows 构建号独立递增，不改 Mac 的 CFBundleVersion。
 """
 
-MARKETING_VERSION = "1.11"
+MARKETING_VERSION = "1.12"
 WINDOWS_BUILD = "8"
 VERSION_LABEL = f"{MARKETING_VERSION}+{WINDOWS_BUILD}"
 APP_NAME = "搞文件"

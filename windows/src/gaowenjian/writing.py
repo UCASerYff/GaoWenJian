@@ -80,6 +80,7 @@ def tex_environment(data_dir: Path) -> dict[str, str]:
     if (bundle / "tectonic-format-latex.tex").is_file() and (bundle / "NotoSansSC-Regular.otf").is_file():
         identity = bundle / "SHA256SUM"
         reject_symlink(identity)
+        # Keep this seed identity stable across app releases when the TeX resources are unchanged.
         windows_bundle_id = hashlib.sha256(
             (TEX_BUNDLE_HASH + " / Windows 1.11 / AMSFonts 3.04 / Noto Sans SC 2.004").encode("ascii")
         ).hexdigest()

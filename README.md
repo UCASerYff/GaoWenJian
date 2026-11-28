@@ -1,6 +1,6 @@
-# 搞文件 V1.11
+# 搞文件
 
-以 LaTeX、Markdown 写作与编译为核心的 macOS 本地工作台，适用于 Apple Silicon、macOS 14 及以上。当前公开版本为 **1.11（构建 13）**。账户、联网同步和 AI 功能暂不开发。
+以 LaTeX、Markdown 写作与编译为核心的 macOS 本地工作台，适用于 Apple Silicon、macOS 14 及以上。当前公开版本为 **1.11（构建 13）**，本分支候选版本为 **1.12（构建 14）**。账户、联网同步和 AI 功能暂不开发。
 
 | 文件 | 当前可用能力 |
 | --- | --- |
@@ -90,8 +90,8 @@ Scripts/build.sh
 ```bash
 set -euo pipefail
 test "$(uname -m)" = arm64
-test "$(cat VERSION)" = 1.11
-test "$(cat BUILD)" = 13
+test "$(cat VERSION)" = 1.12
+test "$(cat BUILD)" = 14
 /bin/zsh Scripts/check-macos-candidate.sh --writing-and-ocr-returns-only
 ```
 
