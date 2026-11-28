@@ -62,6 +62,25 @@ import Foundation
         store.checkpoint()
         let unchanged = try recovery.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate
         try require(unchanged == checkpointDate, "unchanged draft does not rewrite its recovery file")
+        let verified = try Data(contentsOf: recovery)
+        try Data().write(to: recovery)
+        try require(try !store.checkpoint() && Data(contentsOf: recovery).isEmpty && otherDraft.dirty,
+                    "a truncated live recovery is rejected and both versions are retained")
+        rejected = false
+        do { try store.restoreWritingProject(firstID, drafts: .preserveDrafts) } catch { rejected = true }
+        try require(rejected && store.activeWritingProjectID == secondID && store.active === otherDraft,
+                    "project switching does not claim to preserve a draft when recovery is blocked")
+        try FileManager.default.removeItem(at: recovery)
+        try FileManager.default.createDirectory(at: recovery, withIntermediateDirectories: false)
+        let marker = recovery.appendingPathComponent("目录原有内容")
+        try verified.write(to: marker)
+        try require(try !store.checkpoint() && Data(contentsOf: marker) == verified,
+                    "a directory substituted for recovery survives unchanged")
+        try FileManager.default.removeItem(at: marker)
+        try FileManager.default.removeItem(at: recovery)
+        try FileManager.default.createSymbolicLink(at: recovery, withDestinationURL: alternate)
+        try require(try !store.checkpoint() && Data(contentsOf: alternate) == Data("\\documentclass{article}\n".utf8),
+                    "a recovery symlink and its original target are protected")
         try FileManager.default.removeItem(at: recovery)
         store.checkpoint()
         try require(FileManager.default.fileExists(atPath: recovery.path), "missing active draft recovery is recreated")
@@ -108,7 +127,47 @@ import Foundation
         let page = CGRect(x: 0, y: 815, width: 400, height: 800)
         try require(abs(ProjectPDFViewport.scrollY(page: page, viewportHeight: 460, flipped: true, offset: 0.25) - 1015) < 0.001, "flipped viewport restores normalized scroll")
         try require(abs(ProjectPDFViewport.scrollY(page: page, viewportHeight: 460, flipped: false, offset: 0.25) - 955) < 0.001, "nonflipped viewport restores normalized scroll")
-        print("写作项目 PASS · 会话切换、缺失与替身保护、冷恢复、PDF 可见页和页内位置")
+        try checkExactDraftBytes(in: directory)
+        print("写作项目 PASS · 会话切换、草稿字节与外部改动保护、冷恢复、PDF 可见页和页内位置")
+    }
+
+    private static func checkExactDraftBytes(in directory: URL) throws {
+        let data = directory.appendingPathComponent("byte-exact-profile", isDirectory: true)
+        let source = directory.appendingPathComponent("source-bytes.md")
+        let original = "# 资料 caf\u{00E9}\n"
+        let decomposed = "# 资料 cafe\u{0301}\n"
+        try require(original == decomposed && !original.utf8.elementsEqual(decomposed.utf8), "fixture is canonically equivalent with different bytes")
+        try Data(original.utf8).write(to: source)
+        let store = WorkspaceStore(dataRoot: data)
+        store.open(source)
+        guard let tab = store.active else { throw FileIssue.message("Writing projects: byte-exact draft did not open") }
+        try require(tab.text.utf8.elementsEqual(original.utf8), "fixture opens using its original scalar representation")
+        tab.encoding = .utf8
+        tab.edited(decomposed)
+        try require(tab.dirty && store.checkpoint(), "Unicode normalization-only edits are dirty and recoverable")
+
+        let recovery = data.appendingPathComponent("recovery.json")
+        let savedRecovery = try Data(contentsOf: recovery)
+        let replaced = Data(repeating: 0x20, count: savedRecovery.count)
+        let date = try recovery.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate!
+        try replaced.write(to: recovery, options: .atomic)
+        try FileManager.default.setAttributes([.modificationDate: date], ofItemAtPath: recovery.path)
+        try require(try !store.checkpoint() && !store.checkpoint() && Data(contentsOf: recovery) == replaced,
+                    "same length and modification date cannot disguise replacement contents")
+        try savedRecovery.write(to: recovery, options: .atomic)
+        try require(store.checkpoint(), "reinstating verified bytes is accepted without rewriting")
+
+        tab.edited(original + "已变动")
+        try require(store.checkpoint(), "checkpoint an edited body before the normalization-only replacement")
+        tab.edited(decomposed + "已变动")
+        try require(store.checkpoint(), "checkpoint detects normalization-only changes on an already-dirty tab")
+        let cold = WorkspaceStore(dataRoot: data)
+        try require(cold.active?.text.utf8.elementsEqual((decomposed + "已变动").utf8) == true,
+                    "a restarted workspace restores the exact last-edited UTF-8 bytes")
+        try require(try store.save(tab) && !tab.dirty && Data(contentsOf: source) == Data((decomposed + "已变动").utf8),
+                    "manual save keeps exact bytes and clears dirty state")
+        let final = WorkspaceStore(dataRoot: data)
+        try require(final.tabs.isEmpty, "manual save removes the obsolete recovery entry")
     }
 
     private static func require(_ condition: @autoclosure () throws -> Bool, _ label: String) throws {

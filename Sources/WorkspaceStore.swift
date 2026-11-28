@@ -47,7 +47,8 @@ enum FileKind: String, CaseIterable {
 @MainActor final class FileSession:ObservableObject,Identifiable {
     let id:UUID
     @Published var url:URL?
-    @Published var text:String
+    @Published var text:String { didSet { textRevision = UUID() } }
+    private(set) var textRevision = UUID()
     @Published var dirty:Bool
     @Published var moduleDirty = false
     var kind:FileKind
@@ -63,11 +64,121 @@ enum FileKind: String, CaseIterable {
     init(id:UUID=UUID(),url:URL?=nil,text:String="",kind:FileKind = .markdown,dirty:Bool=false) {
         self.id=id;self.url=url;self.text=text;self.kind=kind;self.dirty=dirty;self.savedText=text
     }
-    func edited(_ value:String) { text=value;dirty = restoredDraft || value != savedText }
+    func edited(_ value:String) { text=value;dirty = restoredDraft || !value.utf8.elementsEqual(savedText.utf8) }
 }
 struct BrowserEntry:Identifiable { var url:URL;var directory:Bool;var depth:Int;var id:String {url.path} }
 private struct WorkspaceState:Codable { var recent:[String] = [];var folder:String? }
-private struct RecoveryItem:Codable,Equatable { var id:UUID;var path:String?;var kind:String;var text:String;var digest:String?;var encoding:UInt;var suggestedTitle:String?;var incoming:IncomingDocument? }
+private struct RecoveryItem:Codable {
+    var id:UUID;var path:String?;var kind:String;var text:String;var digest:String?;var encoding:UInt;var suggestedTitle:String?;var incoming:IncomingDocument?
+
+    func matches(_ other: RecoveryItem, sameTextRevision: Bool) -> Bool {
+        id == other.id && Self.sameBytes(path, other.path) && kind == other.kind && digest == other.digest
+            && encoding == other.encoding && Self.sameBytes(suggestedTitle, other.suggestedTitle)
+            && incoming == other.incoming && (sameTextRevision || text.utf8.elementsEqual(other.text.utf8))
+    }
+
+    private static func sameBytes(_ lhs: String?, _ rhs: String?) -> Bool {
+        guard let lhs, let rhs else { return lhs == nil && rhs == nil }
+        return lhs.utf8.elementsEqual(rhs.utf8)
+    }
+}
+
+private final class TextRecoveryFile {
+    private static let name = "recovery.json"
+    private static let conflict = FileIssue.message("草稿恢复记录已在磁盘变更，当前编辑与磁盘文件均已保留。")
+    private let root: URL
+    private let rootIdentity: stat
+    private var stamp: stat?
+    private var digest: String?
+    private var conflictingStamp: stat?
+
+    init(root: URL) throws {
+        self.root = root
+        rootIdentity = try GaoPrivateIO.directory(root).statValue()
+    }
+
+    func load() throws -> [RecoveryItem] {
+        let directory = try openDirectory()
+        guard let current = try metadata(in: directory) else { return [] }
+        let bytes = try read(in: directory, matching: current)
+        let items = try JSONDecoder().decode([RecoveryItem].self, from: bytes)
+        stamp = current
+        digest = FileSafety.digest(bytes)
+        return items
+    }
+
+    func persist(_ items: [RecoveryItem], contentsUnchanged: Bool) throws {
+        let directory = try openDirectory()
+        let current = try metadata(in: directory)
+        if let current {
+            try verify(in: directory, current: current)
+            if contentsUnchanged { return }
+        } else if items.isEmpty {
+            stamp = nil
+            digest = nil
+            conflictingStamp = nil
+            return
+        }
+        let bytes = try JSONEncoder().encode(items)
+        let newDigest = FileSafety.digest(bytes)
+        let written = try GaoPrivateIO.atomicJSON(bytes, directory: directory, name: Self.name, replace: current != nil) {
+            _ = try self.openDirectory()
+            let latest = try self.metadata(in: directory)
+            if let current, let latest {
+                guard GaoPrivateIO.unchanged(current, latest) else { throw Self.conflict }
+            } else if current != nil || latest != nil { throw Self.conflict }
+        }
+        _ = try openDirectory()
+        guard let latest = try metadata(in: directory), written.st_dev == latest.st_dev, written.st_ino == latest.st_ino,
+              written.st_size == latest.st_size else { throw Self.conflict }
+        if !GaoPrivateIO.unchanged(written, latest), FileSafety.digest(try read(in: directory, matching: latest)) != newDigest {
+            throw Self.conflict
+        }
+        stamp = latest
+        digest = newDigest
+        conflictingStamp = nil
+    }
+
+    private func openDirectory() throws -> GaoFixedFD {
+        let directory = try GaoPrivateIO.directory(root)
+        let current = try directory.statValue()
+        guard current.st_dev == rootIdentity.st_dev, current.st_ino == rootIdentity.st_ino else { throw Self.conflict }
+        return directory
+    }
+
+    private func metadata(in directory: GaoFixedFD) throws -> stat? {
+        var info = stat()
+        if fstatat(directory.value, Self.name, &info, AT_SYMLINK_NOFOLLOW) != 0 {
+            if errno == ENOENT { return nil }
+            throw FileIssue.message("无法核对磁盘上的草稿恢复记录，已停止覆盖。")
+        }
+        guard info.st_mode & S_IFMT == S_IFREG, info.st_nlink == 1, info.st_uid == geteuid(), info.st_size >= 0 else {
+            throw FileIssue.message("草稿恢复路径已被替换，已保留原有内容。")
+        }
+        return info
+    }
+
+    private func read(in directory: GaoFixedFD, matching current: stat) throws -> Data {
+        let file = try GaoPrivateIO.regular(directory, components: [Self.name])
+        guard GaoPrivateIO.unchanged(current, try file.statValue()) else { throw Self.conflict }
+        let bytes = try GaoPrivateIO.read(file, maximum: Int64(current.st_size))
+        guard let latest = try metadata(in: directory), GaoPrivateIO.unchanged(current, latest) else { throw Self.conflict }
+        return bytes
+    }
+
+    private func verify(in directory: GaoFixedFD, current: stat) throws {
+        guard let stamp, let digest, stamp.st_size == current.st_size else { throw Self.conflict }
+        // A timer tick normally stops at the metadata check. Rehash only a new on-disk version.
+        if GaoPrivateIO.unchanged(stamp, current) { return }
+        if let conflictingStamp, GaoPrivateIO.unchanged(conflictingStamp, current) { throw Self.conflict }
+        guard FileSafety.digest(try read(in: directory, matching: current)) == digest else {
+            conflictingStamp = current
+            throw Self.conflict
+        }
+        self.stamp = current
+        conflictingStamp = nil
+    }
+}
 
 @MainActor final class WorkspaceStore:ObservableObject {
     @Published var tabs:[FileSession] = []
@@ -91,8 +202,10 @@ private struct RecoveryItem:Codable,Equatable { var id:UUID;var path:String?;var
     let organizerHost = OrganizerHostController()
     @Published var handoffBusy = false
     private var stateReadable = true
-    private var recoveryReadable = true
+    private var recoveryFile: TextRecoveryFile?
     private var persistedRecovery: [RecoveryItem] = []
+    private var persistedTextRevisions: [UUID] = []
+    private var lastCheckpointError: String?
     private var timer:Timer?
     private let workspaceRoot: URL
     var active:FileSession? { tabs.first {$0.id == selection} }
@@ -131,36 +244,50 @@ private struct RecoveryItem:Codable,Equatable { var id:UUID;var path:String?;var
                     if let path=state.folder, FileManager.default.fileExists(atPath:path) {folder=URL(fileURLWithPath:path); refreshFolder()}
                 } catch {stateReadable=false;self.error="工作区记录无法读取，已保留原文件：\(error.localizedDescription)"}
             }
-            let recoveryURL=workspaceRoot.appendingPathComponent("recovery.json")
-            if FileManager.default.fileExists(atPath:recoveryURL.path) {
-                do {
-                    let recovered=try JSONDecoder().decode([RecoveryItem].self,from:Data(contentsOf:recoveryURL))
-                    persistedRecovery = recovered
-                    for item in recovered {
-                        let session=FileSession(id:item.id,url:item.path.map{URL(fileURLWithPath:$0)},text:item.text,kind:FileKind(rawValue:item.kind) ?? .text,dirty:true)
-                        session.originalDigest=item.digest;session.encoding=String.Encoding(rawValue:item.encoding);session.savedText="";session.restoredDraft=true;session.suggestedTitle=item.suggestedTitle;session.incoming=item.incoming;tabs.append(session)
-                    }
-                    restoredCount=tabs.count;selection=tabs.first?.id
-                } catch {recoveryReadable=false;self.error="恢复草稿无法读取，已保留原文件：\(error.localizedDescription)"}
-            }
+            do {
+                let file = try TextRecoveryFile(root: workspaceRoot)
+                let recovered = try file.load()
+                for item in recovered {
+                    let session=FileSession(id:item.id,url:item.path.map{URL(fileURLWithPath:$0)},text:item.text,kind:FileKind(rawValue:item.kind) ?? .text,dirty:true)
+                    session.originalDigest=item.digest;session.encoding=String.Encoding(rawValue:item.encoding);session.savedText="";session.restoredDraft=true;session.suggestedTitle=item.suggestedTitle;session.incoming=item.incoming;tabs.append(session)
+                }
+                recoveryFile = file
+                persistedRecovery = recovered
+                persistedTextRevisions = tabs.map(\.textRevision)
+                restoredCount=tabs.count;selection=tabs.first?.id
+            } catch {self.error="恢复草稿无法读取，已保留原文件：\(error.localizedDescription)"}
         } catch {self.error=error.localizedDescription}
         let checkpointTimer = Timer.scheduledTimer(withTimeInterval:4,repeats:true){[weak self] _ in Task{@MainActor in self?.checkpoint()}}
         checkpointTimer.tolerance = 0.5
         timer = checkpointTimer
     }
-    func checkpoint() {
-        guard recoveryReadable else {return}
-        do { try writeCheckpoint() } catch {self.error="草稿恢复文件保存失败：\(error.localizedDescription)"}
+    @discardableResult func checkpoint() -> Bool {
+        guard recoveryFile != nil else { return false }
+        do {
+            try writeCheckpoint()
+            lastCheckpointError = nil
+            return true
+        }
+        catch {
+            let message = "草稿恢复文件保存失败：\(error.localizedDescription)"
+            if lastCheckpointError != message {
+                lastCheckpointError = message
+                self.error = message
+            }
+            return false
+        }
     }
     private func writeCheckpoint() throws {
-        guard recoveryReadable else { throw FileIssue.message("恢复草稿不可读取，已保留原记录。") }
-        let items=tabs.filter{$0.kind.isText && $0.dirty}.map{RecoveryItem(id:$0.id,path:$0.url?.path,kind:$0.kind.rawValue,text:$0.text,digest:$0.originalDigest,encoding:$0.encoding.rawValue,suggestedTitle:$0.suggestedTitle,incoming:$0.incoming)}
-        let recoveryURL = workspaceRoot.appendingPathComponent("recovery.json")
-        if items == persistedRecovery && (items.isEmpty || FileManager.default.fileExists(atPath: recoveryURL.path)) {
-            return
+        guard let recoveryFile else { throw FileIssue.message("恢复草稿不可读取，已保留原记录。") }
+        let dirtyTabs = tabs.filter { $0.kind.isText && $0.dirty }
+        let items = dirtyTabs.map { RecoveryItem(id:$0.id,path:$0.url?.path,kind:$0.kind.rawValue,text:$0.text,digest:$0.originalDigest,encoding:$0.encoding.rawValue,suggestedTitle:$0.suggestedTitle,incoming:$0.incoming) }
+        let revisions = dirtyTabs.map(\.textRevision)
+        let unchanged = items.count == persistedRecovery.count && items.indices.allSatisfy { index in
+            items[index].matches(persistedRecovery[index], sameTextRevision: revisions[index] == persistedTextRevisions[index])
         }
-        try JSONEncoder().encode(items).write(to: recoveryURL, options: .atomic)
+        try recoveryFile.persist(items, contentsUnchanged: unchanged)
         persistedRecovery = items
+        persistedTextRevisions = revisions
     }
     private func persistState() {
         guard stateReadable else {return}
@@ -212,7 +339,7 @@ private struct RecoveryItem:Codable,Equatable { var id:UUID;var path:String?;var
     }
     func newText(_ kind:FileKind,text:String="") {NSApp?.keyWindow?.makeFirstResponder(nil);showingNotes=false;showingOrganizer=false;showingProjects=false;let tab=FileSession(text:text,kind:kind,dirty:!text.isEmpty);tab.savedText="";tabs.append(tab);selection=tab.id;checkpoint()}
     @discardableResult func newHandoffText(_ text:String,markdown:Bool,title:String?,incoming:IncomingDocument) throws -> FileSession {
-        guard recoveryReadable else { throw FileIssue.message("草稿恢复记录无法读取，交接文字尚未导入，请先处理现有恢复记录。") }
+        guard recoveryFile != nil else { throw FileIssue.message("草稿恢复记录无法读取，交接文字尚未导入，请先处理现有恢复记录。") }
         guard text.utf8.count <= DocumentHandoffSafety.maximumTextBytes, !text.contains("\0") else { throw FileIssue.message("交接正文超过限制或含无效字符，未改变当前文档。") }
         NSApp?.keyWindow?.makeFirstResponder(nil)
         let previousSelection=selection, previousNotes=showingNotes, previousOrganizer=showingOrganizer, previousProjects=showingProjects
@@ -277,10 +404,14 @@ private struct RecoveryItem:Codable,Equatable { var id:UUID;var path:String?;var
     func prepareToQuit()->Bool {
         do { for session in tabs { try commitCurrentPDFEdits(for:session) } }
         catch { self.error=error.localizedDescription;return false }
-        checkpoint()
+        let recoverySaved = checkpoint()
         let dirty=tabs.filter{$0.dirty || $0.moduleDirty}
         guard !dirty.isEmpty else{checkpointWritingProjectBeforeClose();return true}
-        let alert=NSAlert();alert.messageText="还有 \(dirty.count) 个文件未保存";alert.informativeText="可以保存后退出，或返回继续编辑。文本草稿已写入本地恢复记录。";alert.addButton(withTitle:"全部保存并退出");alert.addButton(withTitle:"返回编辑")
+        let alert=NSAlert();alert.messageText="还有 \(dirty.count) 个文件未保存"
+        alert.informativeText = !recoverySaved && dirty.contains(where: { $0.kind.isText && $0.dirty })
+            ? "文本草稿未能写入本地恢复记录。请保存文件后退出，或返回继续编辑。"
+            : "可以保存后退出，或返回继续编辑。"
+        alert.addButton(withTitle:"全部保存并退出");alert.addButton(withTitle:"返回编辑")
         guard alert.runModal() == .alertFirstButtonReturn else{return false}
         guard dirty.allSatisfy({save($0)}) else { return false }
         checkpointWritingProjectBeforeClose()

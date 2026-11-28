@@ -106,12 +106,19 @@ enum GaoPrivateIO {
             }
         }
     }
-    static func atomicJSON(_ data: Data, directory: GaoFixedFD, name: String) throws {
+    @discardableResult static func atomicJSON(_ data: Data, directory: GaoFixedFD, name: String,
+                                               replace: Bool = true, validate: () throws -> Void = {}) throws -> stat {
         let temporary = ".pending-" + UUID().uuidString
         let fd = try GaoFixedFD(openat(directory.value,temporary,O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC,mode_t(0o600)))
         do {
             try writeAll(data,to:fd.value)
-            guard fsync(fd.value) == 0, renameat(directory.value,temporary,directory.value,name) == 0, fsync(directory.value) == 0 else { throw GaoActionContract.reject("unwritable","交接清单无法原子写入。") }
+            guard fsync(fd.value) == 0 else { throw GaoActionContract.reject("unwritable","交接清单无法原子写入。") }
+            let staged = try fd.statValue()
+            try validate()
+            let renamed = replace ? renameat(directory.value,temporary,directory.value,name)
+                : renameatx_np(directory.value,temporary,directory.value,name,UInt32(RENAME_EXCL))
+            guard renamed == 0, fsync(directory.value) == 0 else { throw GaoActionContract.reject("unwritable","交接清单无法原子写入。") }
+            return staged
         } catch { _ = unlinkat(directory.value,temporary,0); throw error }
     }
 }
