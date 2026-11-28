@@ -428,7 +428,7 @@ typealias PreparedOCRHandoff = PreparedDocumentHandoff
 @MainActor enum OCRHandoffDispatcher {
     /// Canonical owner for NEW OCR requests after the screenshot integration.
     /// Persisted outgoing sessions retain their original target and digest.
-    static let providerBundleID = "com.gaoseries.GaoCaoZuo"
+    static let providerBundleID = OCRReturnMailbox.provider
     static func isRecognizable(_ url:URL)->Bool {["pdf","png","jpg","jpeg","tiff","tif","heic"].contains(url.pathExtension.lowercased())}
     /// The same operation is called by the menu and by non-GUI integration tests.
     static func prepare(files:[URL],store:WorkspaceStore,registry:CurrentDocumentHandoffRegistry? = nil,outputs:[String] = ["text","searchablePDF"],chooseVersion:(URL)->OCRPDFVersion,now:Date=Date()) throws -> PreparedOCRHandoff {
@@ -483,6 +483,10 @@ typealias PreparedOCRHandoff = PreparedDocumentHandoff
             let panel=NSOpenPanel();panel.title="选择扫描件或图片";panel.allowedContentTypes=[.pdf,.png,.jpeg,.tiff,.heic];panel.allowsMultipleSelection=true
             guard panel.runModal() == .OK else{return};inputs=panel.urls
         }
+        guard inputs.allSatisfy(isRecognizable) else {
+            store.error = "识别支持 PDF、PNG、JPEG、HEIC 和 TIFF，请重新选择文件。"
+            return
+        }
         let choices=[("纯文本（新的未保存标签）","text"),("Markdown（新的未保存标签）","markdown"),("JSON（逐输入与逐页校验）","json"),("可搜索 PDF（校验副本）","searchablePDF")]
         let alert=NSAlert();alert.messageText="选择识别输出";alert.informativeText="\(inputs.count) 个输入将交给搞操作，由你确认识别及发送结果。接收时还需确认，原件与已编辑文档保留。"
         let controls=choices.map{NSButton(checkboxWithTitle:$0.0,target:nil,action:nil)}
@@ -506,20 +510,28 @@ typealias PreparedOCRHandoff = PreparedDocumentHandoff
             } catch {
                 automatic = false
             }
-            guard let provider=try GaoCapabilityDiscovery.installedProvider(bundleID:providerBundleID,action:"ocr.files"),provider.bundleID == prepared.session.targetBundleID,provider.capability.action == "ocr.files",provider.capability.accepts(parameterKeys:["outputs"]) else {
+            let installed: GaoInstalledProvider?
+            do {
+                installed = try GaoCapabilityDiscovery.installedProvider(bundleID: providerBundleID, action: "ocr.files")
+            } catch {
+                fallback(prepared, store: store, title: "无法核验搞操作 OCR 能力", detail: error.localizedDescription)
+                return
+            }
+            guard let provider=installed,provider.bundleID == prepared.session.targetBundleID,provider.capability.action == "ocr.files",provider.capability.accepts(parameterKeys:["outputs"]) else {
                 fallback(prepared,store:store);return
             }
             GaoCapabilityDiscovery.send(packageURL:prepared.packageURL,to:provider){ error in
                 Task { @MainActor in
                     do {try GaoOutgoingJournal(exchangeRoot:GaoHandoffService.exchangeRoot).markDispatched(requestID:prepared.session.requestID,success:error==nil)}catch{store.error=error.localizedDescription;return}
-                    if let error {store.error="发送请求失败："+error.localizedDescription}
+                    if let error {fallback(prepared, store: store, title: "无法将识别请求交给搞操作", detail: error.localizedDescription)}
                     else {store.status=automatic ? "识别请求已交给搞操作；完成后可在 OCR 待审核中查看" : "识别请求已交给搞操作；自动回传不可用，可手工接收结果包"}
                 }
             }
         }catch {store.error=error.localizedDescription}
     }
-    static func fallback(_ prepared:PreparedDocumentHandoff,store:WorkspaceStore,title:String="未找到兼容的搞操作 OCR 能力"){
-        let alert=NSAlert();alert.messageText=title;alert.informativeText="可以导出本次核验的文档副本，或在 Finder 显示交接包；交接包过期后请重新发起。"
+    static func fallback(_ prepared:PreparedDocumentHandoff,store:WorkspaceStore,title:String="未找到兼容的搞操作 OCR 能力",detail:String?=nil){
+        let alert=NSAlert();alert.messageText=title
+        alert.informativeText=(detail.map { $0 + "\n\n" } ?? "") + "可以导出本次核验的文档副本，或在 Finder 显示交接包。交接包过期后请重新发起。"
         alert.addButton(withTitle:"导出文档副本…");alert.addButton(withTitle:"在 Finder 显示交接包");alert.addButton(withTitle:"取消")
         switch alert.runModal(){
         case .alertFirstButtonReturn:
@@ -548,14 +560,6 @@ typealias PreparedOCRHandoff = PreparedDocumentHandoff
         case .alertSecondButtonReturn:NSWorkspace.shared.activateFileViewerSelecting([prepared.packageURL])
         default:break
         }
-    }
-    static func chooseDocuments(store:WorkspaceStore){
-        // File selection is now in-process. Never discover the retired organizer
-        // or send files.choose to this application and recursively re-enter it.
-        let panel=NSOpenPanel();panel.title="从本机选择文档";panel.message="所选文档直接在搞文件打开；现有标签和未保存内容保留。"
-        panel.canChooseFiles=true;panel.canChooseDirectories=false;panel.allowsMultipleSelection=true
-        guard panel.runModal() == .OK else{return}
-        for url in panel.urls {store.open(url)}
     }
 }
 

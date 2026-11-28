@@ -142,7 +142,11 @@ enum OCRReturnMailboxTests {
         try check("explicit review yields checked bytes and does not change the original") {
             try staged.stagedItems.count == 1 && Data(contentsOf: staged.stagedItems[0].url) == output && Data(contentsOf: sourceURL) == input
         }
-        try check("expired ticket is absent from automatic inspection") { try scan(now.addingTimeInterval(120)) == OCRReturnScan() }
+        try check("expiry hides the result without removing received data or the transport files") {
+            try scan(now.addingTimeInterval(120)) == OCRReturnScan() &&
+                Data(contentsOf: staged.stagedItems[0].url) == output && Data(contentsOf: outputPath) == output &&
+                Data(contentsOf: sourceURL) == input
+        }
         _ = try journal.receiveResult(staged, now: now)
         try check("already handled result is not queued again") { try scan().results.isEmpty }
         try check("request bytes were preserved") { try Data(contentsOf: request.appendingPathComponent("manifest.json")) == original }

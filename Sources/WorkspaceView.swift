@@ -487,7 +487,38 @@ struct TabWorkspace:View{
         }
     }
 }
-struct ImageWorkspace:View{let url:URL;@State private var scale=1.0;var body:some View{VStack(spacing:0){HStack{Text(url.lastPathComponent).font(.subheadline);Spacer();Slider(value:$scale,in:0.1...3).frame(width:160);Text("\(Int(scale*100))%").font(.caption.monospacedDigit());Button("识别图片文字 (OCR)"){if let s=AppHub.store{OCRHandoffDispatcher.startOCR(for:url,store:s)}};Button("在 Finder 显示"){NSWorkspace.shared.activateFileViewerSelecting([url])}}.padding(12).background(.bar);ScrollView([.horizontal,.vertical]){if let image=NSImage(contentsOf:url){Image(nsImage:image).resizable().scaledToFit().frame(width:min(image.size.width,1200)*scale).padding(24)}else{Text("无法解码这张图片").padding()}}.frame(maxWidth:.infinity,maxHeight:.infinity)}}}
+struct ImageWorkspace: View {
+    let url: URL
+    @State private var scale = 1.0
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack {
+                Text(url.lastPathComponent).font(.subheadline)
+                Spacer()
+                Slider(value: $scale, in: 0.1...3).frame(width: 160)
+                Text("\(Int(scale * 100))%").font(.caption.monospacedDigit())
+                if OCRHandoffDispatcher.isRecognizable(url) {
+                    Button("识别图片文字 (OCR)") {
+                        if let store = AppHub.store { OCRHandoffDispatcher.startOCR(for: url, store: store) }
+                    }
+                }
+                Button("在 Finder 显示") { NSWorkspace.shared.activateFileViewerSelecting([url]) }
+            }
+            .padding(12)
+            .background(.bar)
+            ScrollView([.horizontal, .vertical]) {
+                if let image = NSImage(contentsOf: url) {
+                    Image(nsImage: image).resizable().scaledToFit()
+                        .frame(width: min(image.size.width, 1200) * scale).padding(24)
+                } else {
+                    Text("无法解码这张图片").padding()
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+    }
+}
 struct UnsupportedWorkspace:View{let url:URL;@ObservedObject var store:WorkspaceStore
     var body:some View{VStack(spacing:16){Image(systemName:"doc").font(.system(size:48,weight:.light)).foregroundStyle(.secondary);Text(url.lastPathComponent).font(.title2);Text("此格式可通过本机其他应用打开。").font(.callout).foregroundStyle(.secondary);Button("使用系统应用打开"){NSWorkspace.shared.open(url)}}.frame(maxWidth:.infinity,maxHeight:.infinity)}
 }

@@ -1,6 +1,6 @@
 # 搞文件 V1.11
 
-以 LaTeX、Markdown 写作与编译为核心的 macOS 本地工作台，适用于 Apple Silicon、macOS 14 及以上。当前版本 **1.11 / build 12**，初始版本为 1.00。账户、联网同步和 AI 功能暂不开发。
+以 LaTeX、Markdown 写作与编译为核心的 macOS 本地工作台，适用于 Apple Silicon、macOS 14 及以上。当前公开版本为 **1.11（构建 13）**。账户、联网同步和 AI 功能暂不开发。
 
 | 文件 | 当前可用能力 |
 | --- | --- |
@@ -10,20 +10,20 @@
 | Word / Excel / PPT 查看器 | 只读版式预览，现代 Office 文档另有内容阅读模式；不提供新建、编辑或覆盖保存；旧版未保存草稿保留并可导出副本 |
 | CSV / TSV | 源码/表格、筛选、排序、增行列、复制为 Markdown 表格，支持引号、换行及前导零 |
 | RTF / 文本 / 图片 | 富文本编辑与字体；文本编辑和查找；图片缩放查看与图片文字识别入口 |
-| 跨应用交接 (GaoAction V1) | 提供 `documents.open` 与 `documents.newText`；匹配 `ocr.files` 原动作结果，文字进入新未保存标签，PDF 打开新副本并核对来源；接收搞整理用户所选文档；把当前文档副本交给搞研究复核导入 |
+| 跨应用交接 (GaoAction V1) | 提供 `documents.open`、`documents.newText` 与内置文件整理动作；通过搞操作识别 PDF 或图片，审阅后打开新文本草稿或 PDF 副本；把当前文档副本交给搞研究复核导入 |
 | 附加便笺 | 富文本和图片/PDF 附件、六色、分组/搜索、自动保存、回收站恢复、TXT/RTF/RTFD 导入导出；独立桌面窗口、置顶、半透明、折叠、排列及位置恢复；支持顶部一键返回首页 |
 
 V1.11 重新设计写作工作台：暖白与深石墨自适应配色、森林绿强调色，LaTeX 与 Markdown 为主要入口。PDF 编辑和 OCR 放在一起，Office 查看合并为紧凑入口，最近文件可直接继续。写作、文件整理与便笺按用途分组，切换入口保留已打开的文件与未保存编辑。
 
 采用原生窗口、标签页、文件夹浏览、最近文件与独立设置窗口。用户文档保留原路径，覆盖前核对原件身份与摘要，并通过原子写入提交；外部修改或删除会阻止覆盖。不创建保存历史快照或自动备份。文本、PDF、RTF 有本地恢复机制，旧 Office 恢复稿继续保留；损坏草稿保留并报错。
 
-macOS 1.11（构建 13）源代码增加「写作项目」，可保存项目目录、主文件、打开的标签和 PDF 阅读位置。切换时可保存、保留未保存草稿或取消。恢复遇到缺失文件会列出原路径。
+macOS 1.11（构建 13）增加「写作项目」，可保存项目目录、主文件、打开的标签和 PDF 阅读位置。切换时可保存、保留未保存草稿或取消。恢复遇到缺失文件会列出原路径。
 
 文本草稿的恢复文件只在草稿有变化，或仍有草稿而恢复文件缺失时写入。后台空闲和内容不变时跳过重复磁盘写入。
 
 兼容版搞操作可通过当前用户的本地交接目录回传 OCR 结果。结果先在原文档和「OCR 与交接」待审核区显示，核对来源和页码后才打开独立副本。窗口隐藏时停止检查，重开时立即检查。逾期或提供方不支持回传时，继续通过 Finder、打开面板或「OCR 与交接」手工审核交接包。
 
-V1.07 增加 OCR 输出格式选择（文字、Markdown、JSON、可搜索 PDF），JSON 正文核对实际输入与逐页关联；图片结果按 EXIF 方向核对 PDF 页面。接收标签可展开来源、输入及逐页状态。PDF 表单变化、撤销、恢复稿与发送前提交边界得到补强。新增“文件 → 导出编辑副本…”，兼容搞研究原条目人工导入新版本；尚不提供自动原附件回写。搞整理缺失时明确提示不可用；文件引用由本端重新授权，并明确选择原件或副本。
+V1.07 增加 OCR 输出格式选择（文字、Markdown、JSON、可搜索 PDF），JSON 正文核对实际输入与逐页关联；图片结果按 EXIF 方向核对 PDF 页面。接收标签可展开来源、输入及逐页状态。PDF 表单变化、撤销、恢复稿与发送前提交边界得到补强。新增“文件 → 导出编辑副本…”，兼容搞研究原条目人工导入新版本；尚不提供自动原附件回写。文件引用由本端重新授权，并明确选择原件或副本。
 
 V1.08 修复文档处理状态回执的兼容性：结果不再沿用请求参数，无错误时省略错误码，避免文档已打开而发送方仍等待结果。
 
@@ -31,14 +31,14 @@ V1.09 修复无扩展名文本标题误触发 TXT 转换确认，并为研究导
 
 文件引用保持原有严格时间核对，生成引用时单独使用小数秒格式；本机授权和文件身份检查保留。未附来源 SHA-256 的引用只核对声明属性和本机读取稳定性，不代表已证明对方选取时的内容快照。
 
-V1.06 修复并补全文档交接的实际处理链：
+文档交接的本地处理流程如下。
 
-- OCR 由“搞截图”在本机执行。发送前复制本次明确选择的文件，记录请求、每份输入摘要和私有来源版本；返回结果保留 `ocr.files` 原动作，通过 `inReplyTo` 与逐项来源摘要匹配。来源 bundleID 只是声明，不是身份认证。
+- OCR 由搞操作在本机执行，支持 PDF、PNG、JPEG、HEIC 和 TIFF。发送前复制本次明确选择的文件，记录请求、每份输入摘要和私有来源版本。返回结果保留 `ocr.files` 原动作，通过 `inReplyTo` 与逐项来源摘要匹配。结果中的来源 bundle ID 为发送方声明。
 - `documents.newText` 与 OCR 文字结果均进入新的未保存标签；保留当前编辑、草稿和便笺。PDF 结果打开新副本，保留原件。有可靠 PDF 来源时核对页数、旋转、MediaBox/CropBox 与文字层；来源不足时明确限制，不宣称已完成完整对照。
 - 发送未保存 PDF 时，明确选择当前编辑副本或磁盘已保存版本。当前副本读取实际编辑器模型并先提交表单输入，避免依赖延迟恢复稿；发送不会保存或覆盖原件。
 - “交给搞研究”发送当前标签的文档副本，文字使用当前编辑内容；PDF 按用户选择导出版本。搞研究需独立复核并导入。LaTeX 源码经明确确认后发送保留 `.tex.txt` 文件名的 UTF-8 文本副本；若需排版结果，请先编译并打开 PDF 后发送。未支持的非文本格式会拒绝发送。打开请求成功只表示交接已发出，对方状态也不表示当前编辑器已保存。
 - 未检测到兼容提供方时，可以导出文档副本或在 Finder 显示交接包。多文件可导出到所选目录；已有目标需要重新确认摘要、核对现有目标后提交，目标与源/受保护原件相同时拒绝导出。失败不先删除目标。
-- 接收搞整理 `files.choose` 结果时，只处理结果列出的文件，仍由本端选择并核对读取权限；不读取对方索引库。能力发现兼容 V1 的动作数组和动作字典表示，并核对实际安装版本及参数声明。
+- 文件查找使用内置的已授权索引。接收历史搞整理 `files.choose` 回执时，只处理已记录请求对应且在回执中列出的文件，由本端重新选择并核对读取权限。能力发现兼容 V1 的动作数组和动作字典表示，并核对实际安装版本及参数声明。
 - `pending`、`partial`、`failed`、`cancelled` 与完成分别记录。重复结果不重复打开，中途执行崩溃后保留中断记录，不自动重放。交接日志或来源副本损坏、丢失、过新或发生冲突时停止处理。
 
 所有交接都使用固定 GaoAction V1 包；项目数、字节数、正文和路径均受限制。正文、图片、原路径不会放入 URL 查询、公共剪贴板或运行日志。敏感应用资料、钥匙串、设置和安全备份不能作为交接输入。缺少提供方时的本地导出可独立使用；实际应用之间的窗口与用户交互往返须另行验收。
@@ -51,7 +51,7 @@ V1.02 在便笺中心顶部加入“返回首页”按钮。返回首页会保�
 
 V1.01 新增便笺中心与桌面便条，参考本机 macOS 便笺的使用方式，并补充集中搜索、分组、回收站和保存冲突保护。正文和附件保存在内部 `StickyNotes` 目录；关闭浮窗仅隐藏，删除移入回收站，不永久清空。支持将文字送入 Markdown 编辑器，原便笺继续保留；附件和完整富文本请导出 RTFD。不会自动读取或迁移系统便笺私人资料；需要迁移时先从系统便笺导出，再手动导入。
 
-Office 版式预览取决于 macOS 对具体格式的支持；内容阅读模式不复刻完整排版。不支持的文件可交给本机办公软件打开。PDF 支持叠加文字和图片，并可调整新增对象；原始页面不栅格化。支持 PNG/JPEG/HEIC/TIFF（单张不超过 64 MB、8000 万像素）。不提供原有正文或内嵌图片直接改写、原文重排、OCR 或安全涂黑。涉及账户或联网的协作与同步暂不包含。不要把现有基础能力理解为完整 Microsoft Office、Typora 或 Overleaf 的等价替代。
+Office 版式预览取决于 macOS 对具体格式的支持；内容阅读模式不复刻完整排版。不支持的文件可交给本机办公软件打开。PDF 支持在保留原始页面的情况下叠加文字和图片，并可调整新增对象。图片叠加支持 PNG、JPEG、HEIC 和 TIFF，单张上限为 64 MB、8000 万像素。PDF 原有正文或内嵌图片改写、原文重排、安全涂黑及联网协作暂未提供。
 
 ## 日常使用
 
@@ -63,7 +63,7 @@ Office 版式预览取决于 macOS 对具体格式的支持；内容阅读模式
 
 ## 安装与运行
 
-安装包是 GitHub Release [v1.11](https://github.com/UCASerYff/GaoWenJian/releases/tag/v1.11) 上的 [GaoWenJian-1.11.dmg](https://github.com/UCASerYff/GaoWenJian/releases/download/v1.11/GaoWenJian-1.11.dmg)，校验文件是 [GaoWenJian-1.11.dmg.sha256](https://github.com/UCASerYff/GaoWenJian/releases/download/v1.11/GaoWenJian-1.11.dmg.sha256)。打开后将“搞文件”拖入 Applications。当前版本采用本地签名，未公证。默认安装位置 `/Applications/搞文件.app`。
+打开磁盘映像后将「搞文件」拖入 Applications。公开版使用 Apple Development 签名，未公证。默认安装位置为 `/Applications/搞文件.app`。[构建 13 发布页](https://github.com/UCASerYff/GaoWenJian/releases/tag/v1.11-build.13) · [下载磁盘映像](https://github.com/UCASerYff/GaoWenJian/releases/download/v1.11-build.13/GaoWenJian-1.11.dmg) · [SHA-256 校验文件](https://github.com/UCASerYff/GaoWenJian/releases/download/v1.11-build.13/GaoWenJian-1.11.dmg.sha256)
 
 快捷键：⌘1 首页、⌘O 打开、⌘N 新 Markdown、⇧⌘N 新桌面便笺、⌘2 便笺中心、⌘S 保存、⇧⌘S 文本另存 UTF-8、⌘F 文本查找、⌘B 当前 LaTeX 编译、⌘W 关闭当前标签或浮窗、⌘, 设置。
 
@@ -83,7 +83,7 @@ Scripts/build.sh
 
 开发默认只按改动执行静态、编译或针对性单元/非 GUI 集成检查，不自动执行冒烟测试，也不为验证启动 App、浏览器或测试窗口。`Scripts/test.sh` 包含原生界面对象测试，需明确选择后使用。
 
-`test-headless.sh` 使用临时资料副本并检查 `NSApp == nil`。可选 `--ocr-provider` 参数用于调用以提供方原始生产方法编译的无 GUI CLI；未提供时不声称运行了真实 OCR 后端往返。
+`test-headless.sh` 使用临时资料副本并检查 `NSApp == nil`。
 
 在 GitHub 托管 `macos-15` ARM64 runner 的 Bash 步骤可执行以下候选验证。它使用正式的 Swift 编译参数和 Info.plist 生成器，并在隔离资料中运行项目与 OCR 回传测试。省略最后的参数会运行完整无界面回归。
 
@@ -96,6 +96,18 @@ test "$(cat BUILD)" = 13
 ```
 
 如果 runner 同时检出了同轮搞操作源码，设置 `GAO_OCR_RETURN_PROVIDER_PROJECT` 为其仓库绝对路径。相同命令会把正式的发送方票据、提供方账本与结果发布、接收方审核放进同一临时邮箱做往返检查。
+
+设定 `GAO_OCR_RETURN_PROVIDER_PROJECT` 后，也可在合成 PDF 和图片上核验实际 Apple Vision 识别及手工结果导入。
+
+```bash
+set -euo pipefail
+verify_dir=$(mktemp -d /private/tmp/gaowenjian-ocr-check.XXXXXX)
+trap 'rm -rf -- "$verify_dir"' EXIT
+python3 Scripts/prepare-real-ocr-provider.py \
+  --provider-project "$GAO_OCR_RETURN_PROVIDER_PROJECT" \
+  --output-dir "$verify_dir/provider"
+/bin/zsh Scripts/check-macos-candidate.sh --ocr-provider "$verify_dir/provider/RealOCRProvider"
+```
 
 构建在 `.noindex` 临时目录中进行，结束后自动清理。先建立 `.noindex` 临时目录，再使用 `Scripts/build.sh --app-only /private/tmp/搞文件测试.noindex/新的测试程序.app` 可导出隔离测试 App；目标须为不存在的绝对 `.app` 路径，并位于实际 `.noindex` 目录中。`--data-dir /private/tmp/搞文件测试.noindex/隔离资料` 指定测试资料位置；`--show-notes` 直接显示便笺中心。
 

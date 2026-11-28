@@ -59,7 +59,6 @@ import UniformTypeIdentifiers
                 Button("打开文件…",action:store.openPanel).keyboardShortcut("o")
                 Button("打开文件夹…",action:store.openFolderPanel).keyboardShortcut("o",modifiers:[.command,.shift])
                 Button("识别扫描件/图片 (OCR)…"){OCRHandoffDispatcher.startOCR(store:store)}
-                Button("选择本机文档…"){OCRHandoffDispatcher.chooseDocuments(store:store)}
                 Button("将当前文档副本交给搞研究…"){CurrentDocumentDispatcher.sendCurrent(store:store)}.disabled(store.active == nil || store.showingOrganizer || store.showingNotes)
                 Button("取消当前文档交接"){GaoHandoffService.cancelCurrent()}.disabled(!store.handoffBusy)
                 Menu("新建其他格式"){
