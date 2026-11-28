@@ -55,7 +55,9 @@ import Foundation
         try require(secondID != firstID && store.writingProjects.projects.count == 2, "two separate project records")
         try require(store.writingProjectMain(for: store.active!) == alternate, "active project resolves its bound TeX main file")
         let otherDraft = store.active!
-        otherDraft.edited("尚未保存的合成课题")
+        let manuscriptDraft = String(repeating: "尚未保存的合成课题与参考笔记。\n", count: 60_000)
+        try require(manuscriptDraft.utf8.count > 2_000_000, "the manuscript fixture exercises a multi-megabyte draft")
+        otherDraft.edited(manuscriptDraft)
         store.checkpoint()
         let checkpointDate = Date(timeIntervalSince1970: 1_700_000_000)
         try FileManager.default.setAttributes([.modificationDate: checkpointDate], ofItemAtPath: recovery.path)
@@ -92,7 +94,7 @@ import Foundation
         try FileManager.default.createSymbolicLink(at: missing, withDestinationURL: alternate)
         try store.restoreWritingProject(firstID, drafts: .preserveDrafts)
         try require(store.active?.url == proof && store.active?.projectReading.capture().document == anchor, "selected PDF and normalized page offset restored")
-        try require(store.tabs.contains { $0 === otherDraft && $0.dirty && $0.text == "尚未保存的合成课题" }, "old project draft remains live")
+        try require(store.tabs.contains { $0 === otherDraft && $0.dirty && $0.text.utf8.elementsEqual(manuscriptDraft.utf8) }, "old project draft remains live")
         try require(store.unavailableProjectFiles.contains { $0.path == missing.path } && !store.tabs.contains { $0.url == missing }, "replaced symlink is reported without opening it")
         try require(try Data(contentsOf: main) == original, "restore leaves original bytes in place")
         try store.checkpointWritingProject()
@@ -103,7 +105,14 @@ import Foundation
         try Data("重新可用".utf8).write(to: missing)
         let cold = WorkspaceStore(dataRoot: data)
         try require(cold.writingProjects.lastOpened == firstID && cold.writingProjects.projects.count == 2, "cold catalog restore")
-        try require(cold.tabs.contains { $0.id == otherDraft.id && $0.dirty && $0.text == otherDraft.text }, "previous draft survives restart")
+        guard let restoredDraft = cold.tabs.first(where: { $0.id == otherDraft.id && $0.dirty }) else {
+            throw FileIssue.message("Writing projects: previous draft lost on restart")
+        }
+        try require(restoredDraft.text.utf8.elementsEqual(manuscriptDraft.utf8), "previous manuscript bytes survive restart")
+        let externalText = Data("外部编辑保留。\n".utf8)
+        try externalText.write(to: alternate, options: .atomic)
+        try require(try !cold.save(restoredDraft) && restoredDraft.dirty && Data(contentsOf: alternate) == externalText,
+                    "save refuses an external edit after restoring the manuscript draft")
         try cold.restoreWritingProject(firstID, drafts: .preserveDrafts)
         try require(cold.unavailableProjectFiles.isEmpty && cold.tabs.contains { $0.url == missing }, "retry picks up the missing file without recreating it")
         try require(cold.active?.projectReading.capture().document == anchor, "persisted PDF position survives cold restore")
