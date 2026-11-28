@@ -172,9 +172,15 @@ import PDFKit
         store.showingNotes = true
         try rejects("Accessory sticky context is not sent as current document") { _ = try CurrentDocumentDispatcher.prepare(store: store, registry: registry, chooseVersion: { _ in .currentEdits }, now: clock) }
         store.showingNotes = false
-        if fm.fileExists(atPath: "/Applications/搞研究.app") {
-            let provider = try GaoCapabilityDiscovery.provider(applicationURL: URL(fileURLWithPath: "/Applications/搞研究.app"), bundleID: CurrentDocumentDispatcher.researchBundleID, action: "research.importDocuments")
-            try check(provider?.capability.accepts(parameterKeys: ["targetRecordID"]) == true && provider?.capability.action == "research.importDocuments", "Actual installed research dictionary capability is readable without NSWorkspace or launching it")
+        let installedResearchPath = "/Applications/搞研究.app"
+        // Handoff validation can supply the exact candidate before it is installed.
+        if let researchPath = ProcessInfo.processInfo.environment["GAO_RESEARCH_CANDIDATE_APP"]
+            ?? (fm.fileExists(atPath: installedResearchPath) ? installedResearchPath : nil) {
+            let provider = try GaoCapabilityDiscovery.provider(applicationURL: URL(fileURLWithPath: researchPath),
+                bundleID: CurrentDocumentDispatcher.researchBundleID, action: "research.importDocuments")
+            try check(provider?.capability.accepts(parameterKeys: Set(researchRequest.parameters.keys)) == true &&
+                provider?.capability.action == researchRequest.action,
+                "The selected Research bundle accepts the production request without launch")
         }
         let disk = try OCRHandoffDispatcher.prepare(files: [source], store: store, registry: registry, chooseVersion: { _ in .diskOriginal }, now: clock)
         try check(disk.session.sources[0].binding.versionKind == "original" && disk.session.sources[0].item.sha256 == FileSafety.digest(originalBytes), "Original choice sends exact disk version")
