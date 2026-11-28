@@ -330,9 +330,12 @@ import PDFKit
         for url in scans { try scanPDF().write(to: url) }
         let original = try scans.map { try Data(contentsOf: $0) }
         let prepared = try OCRHandoffDispatcher.prepare(files: scans, store: store, registry: CurrentDocumentHandoffRegistry(), chooseVersion: { _ in .diskOriginal })
+        let before = store.tabs.map(\.id)
+        try publishRealOCRTicket(prepared)
         let process = Process(), output = Pipe(), errors = Pipe()
         process.executableURL = executable
-        process.arguments = [prepared.packageURL.path, root.appendingPathComponent("ProviderExchange").path]
+        process.arguments = [prepared.packageURL.path, root.appendingPathComponent("ProviderExchange").path,
+                             GaoHandoffService.ocrMailboxRoot.path]
         process.standardOutput = output; process.standardError = errors
         try process.run()
         let bytes = output.fileHandleForReading.readDataToEndOfFile(), errorBytes = errors.fileHandleForReading.readDataToEndOfFile()
@@ -342,8 +345,12 @@ import PDFKit
               object["nsApplicationInitialized"] as? Bool == false else {
             throw GaoActionContract.reject("realProviderTest", "Actual provider production OCR failed: " + (String(data: errorBytes, encoding: .utf8) ?? "non-UTF8 provider error").prefix(1024))
         }
-        let manifest = try readManifest(URL(fileURLWithPath: resultPath))
-        let outcome = try GaoHandoffService.receive(url: URL(fileURLWithPath: resultPath), store: store, interaction: interaction)
+        let manualPackage = URL(fileURLWithPath: resultPath)
+        let manifest = try readManifest(manualPackage)
+        try checkRealAutomaticReturn(prepared, record: object, manualPackage: manualPackage,
+                                     pageCounts: [2, 2], store: store, before: before, interaction: interaction)
+        let outcome = try GaoHandoffService.receive(url: manualPackage, store: store, interaction: interaction)
+        try checkRealAutomaticReturnHandled(prepared)
         let tabs = store.tabs.filter { outcome.openedTabIDs.contains($0.id) }
         guard manifest.action == "ocr.files", manifest.status == "completed", outcome.status == "completed", tabs.count == 4,
               tabs.filter({ $0.url == nil && $0.dirty && $0.text.uppercased().contains("OCR") }).count == 2,
@@ -358,6 +365,9 @@ import PDFKit
                 "test": "actual-provider-production-methods-to-consumer-dispatcher",
                 "nonGUI": true, "smokeTestRun": false, "installedAppUIEndToEndRun": false,
                 "providerMethodSHA256": object["originalPerformOCRSHA256"] ?? NSNull(),
+                "providerCommit": object["providerCommit"] ?? NSNull(),
+                "automaticReturn": object["automaticReturn"] ?? NSNull(),
+                "automaticResultValidatedBeforeManualAcceptance": true,
                 "providerNSApplicationInitialized": object["nsApplicationInitialized"] ?? NSNull(),
                 "status": manifest.status ?? "missing", "action": manifest.action,
                 "inReplyToMatches": manifest.inReplyTo == prepared.session.requestID,
@@ -380,7 +390,66 @@ import PDFKit
             try bytes.write(to: destination.appendingPathComponent("RealOCRProductionChain.json"), options: .atomic)
         }
         print("PASS: real producer performOCR → Vision → Exporter → GaoAction result → consumer dispatcher, 2 inputs / 4 scanned pages / 4 result tabs; no app/window start")
-        return 8
+        return 14
+    }
+
+    static func publishRealOCRTicket(_ prepared: PreparedOCRHandoff) throws {
+        let root = GaoHandoffService.exchangeRoot, mailbox = GaoHandoffService.ocrMailboxRoot
+        let ticket = try OCRReturnMailbox.publishTicket(for: prepared.session,
+            packageURL: prepared.packageURL, exchangeRoot: root, mailboxRoot: mailbox)
+        let initial = try OCRReturnMailbox.scan(exchangeRoot: root, mailboxRoot: mailbox)
+        guard initial.pending, !initial.results.contains(where: { $0.requestID == prepared.session.requestID }),
+              ticket.deletingLastPathComponent().lastPathComponent == prepared.session.requestID.lowercased() else {
+            throw GaoActionContract.reject("realProviderTest", "The isolated OCR request did not wait in the canonical mailbox slot.")
+        }
+    }
+
+    static func checkRealAutomaticReturn(_ prepared: PreparedOCRHandoff, record: [String: Any],
+            manualPackage: URL, pageCounts: [Int], store: WorkspaceStore, before: [UUID],
+            interaction: GaoHandoffInteraction) throws {
+        let root = GaoHandoffService.exchangeRoot, mailbox = GaoHandoffService.ocrMailboxRoot
+        let package = mailbox.appendingPathComponent(prepared.session.requestID.lowercased(), isDirectory: true)
+            .appendingPathComponent("result.gaoaction", isDirectory: true)
+        let manualManifest = try Data(contentsOf: manualPackage.appendingPathComponent("manifest.json"))
+        let digest = FileSafety.digest(manualManifest)
+        let cache = OCRReturnMailbox.Cache()
+        let requestID = prepared.session.requestID
+        let first = try OCRReturnMailbox.scan(exchangeRoot: root, mailboxRoot: mailbox, cache: cache)
+        let repeated = try OCRReturnMailbox.scan(exchangeRoot: root, mailboxRoot: mailbox, cache: cache)
+        guard record["automaticReturn"] as? String == "published",
+              let published = record["automaticReturnPackage"] as? String,
+              URL(fileURLWithPath: published).resolvingSymlinksInPath().path == package.resolvingSymlinksInPath().path,
+              let candidate = first.results.first(where: { $0.requestID == requestID }),
+              repeated.results.first(where: { $0.requestID == requestID }) == candidate,
+              candidate.manifestSHA256 == digest, candidate.sources.count == pageCounts.count,
+              !first.issues.contains(where: { $0.requestID == requestID }),
+              store.tabs.map(\.id) == before else {
+            throw GaoActionContract.reject("realProviderTest", "The provider result was not offered exactly once for review, or changed existing tabs.")
+        }
+        for (source, count) in zip(prepared.session.sources, pageCounts) {
+            guard let matched = candidate.sources.first(where: { $0.itemID == source.item.id }),
+                  matched.sha256 == source.item.sha256, matched.pages.map(\.pageNumber) == Array(1...count) else {
+                throw GaoActionContract.reject("realProviderTest", "The OCR review did not preserve the exact source digest and page mapping.")
+            }
+        }
+        do {
+            _ = try GaoHandoffService.receive(url: package, store: store, interaction: interaction)
+            throw GaoActionContract.reject("realProviderTest", "The automatic result incorrectly entered the ordinary open route.")
+        } catch let issue as GaoActionIssue where issue.code == "ocrReviewRequired" {}
+        let reviewed = try OCRReturnMailbox.review(requestID: requestID, expectedDigest: digest,
+            exchangeRoot: root, mailboxRoot: mailbox)
+        guard reviewed.manifestSHA256 == digest, !reviewed.stagedItems.isEmpty, store.tabs.map(\.id) == before else {
+            throw GaoActionContract.reject("realProviderTest", "Review did not verify the displayed OCR manifest without changing tabs.")
+        }
+    }
+
+    static func checkRealAutomaticReturnHandled(_ prepared: PreparedOCRHandoff) throws {
+        let state = try OCRReturnMailbox.scan(exchangeRoot: GaoHandoffService.exchangeRoot,
+                                             mailboxRoot: GaoHandoffService.ocrMailboxRoot)
+        guard !state.results.contains(where: { $0.requestID == prepared.session.requestID }),
+              !state.issues.contains(where: { $0.requestID == prepared.session.requestID }) else {
+            throw GaoActionContract.reject("realProviderTest", "The same OCR result was delivered again after accepting the reviewed copy.")
+        }
     }
 
     private static func result(for request: GaoActionManifest, status: String, files: [GaoOutgoingFile], references: [GaoActionReference] = [], root: URL, clock: Date, pageStatuses: [String] = ["completed", "completed"], alter: ((inout GaoActionManifest) -> Void)? = nil) throws -> URL {

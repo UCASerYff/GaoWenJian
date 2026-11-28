@@ -135,8 +135,12 @@ enum PDFImageHandoffTests {
             registry: CurrentDocumentHandoffRegistry(), outputs: ["text", "json", "searchablePDF"], chooseVersion: { _ in .diskOriginal })
         let requestURL = prepared.packageURL
         let request = try JSONDecoder().decode(GaoActionManifest.self, from: Data(contentsOf: requestURL.appendingPathComponent("manifest.json")))
+        let before = store.tabs.map(\.id)
+        try HandoffProductionTests.publishRealOCRTicket(prepared)
         let process = Process(), output = Pipe(), errors = Pipe()
-        process.executableURL = executable; process.arguments = [requestURL.path, directory.appendingPathComponent("ProviderExchange").path]
+        process.executableURL = executable
+        process.arguments = [requestURL.path, directory.appendingPathComponent("ProviderExchange").path,
+                             GaoHandoffService.ocrMailboxRoot.path]
         process.standardOutput = output; process.standardError = errors; try process.run()
         let resultBytes = output.fileHandleForReading.readDataToEndOfFile(), errorBytes = errors.fileHandleForReading.readDataToEndOfFile(); process.waitUntilExit()
         guard process.terminationStatus == 0,
@@ -167,13 +171,16 @@ enum PDFImageHandoffTests {
             } else { throw issue("Real image JSON association missing") }
         }
         let interaction = GaoHandoffInteraction(confirm: { _ in true }, selectReference: { _ in nil }, offerResult: { _, _ in })
+        try HandoffProductionTests.checkRealAutomaticReturn(prepared, record: record, manualPackage: resultURL,
+            pageCounts: inputs.map { _ in 1 }, store: store, before: before, interaction: interaction)
         let outcome = try GaoHandoffService.receive(url: resultURL, store: store, interaction: interaction)
+        try HandoffProductionTests.checkRealAutomaticReturnHandled(prepared)
         let tabs = store.tabs.filter { outcome.openedTabIDs.contains($0.id) }
         guard outcome.status == "completed", tabs.count == 6,
               tabs.filter({ $0.url == nil && $0.dirty && $0.kind == .text }).count == 4,
               tabs.filter({ $0.kind == .pdf && $0.incoming?.pdfReport?.isVerifiedSearchable == true }).count == 2,
               tabs.filter({ $0.incoming?.originalName.hasSuffix(".json") == true }).count == 2 else { throw issue("Real provider images did not enter the consumer's correct new text/JSON/PDF tabs") }
-        checks += 1
+        checks += 7
         print("PASS: actual provider OCR/export methods → consumer dispatcher produced source-matched PNG + EXIF6 JPEG text/JSON/searchable PDFs (no app or UI exchange)")
         return checks
     }

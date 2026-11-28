@@ -1,0 +1,48 @@
+name: macOS PDFKit and real offline OCR
+on:
+  push:
+    branches: ['codex/macos-native-regressions-20261128']
+permissions:
+  contents: read
+jobs:
+  pdf-and-ocr:
+    runs-on: macos-15
+    timeout-minutes: 35
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.3.app/Contents/Developer
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          path: GaoWenJian
+      - uses: actions/checkout@v4
+        with:
+          repository: UCASerYff/GaoCaoZuo
+          ref: c3ee1ff8b5530c48ca008dbf4ea959dbc4617616
+          persist-credentials: false
+          path: provider
+      - name: Measure real PDFKit viewport in isolated AppKit windows
+        working-directory: GaoWenJian
+        shell: bash
+        run: |
+          set -euo pipefail
+          /bin/zsh Scripts/test-native-pdf-viewport.sh | tee "$RUNNER_TEMP/gaowenjian-pdf-viewport.log"
+      - name: Exercise provider Vision with synthetic documents and the actual receiver
+        if: always()
+        working-directory: GaoWenJian
+        shell: bash
+        run: |
+          set -euo pipefail
+          staging=$(mktemp -d /private/tmp/gaowenjian-real-ocr.XXXXXX)
+          trap 'rm -rf -- "$staging"' EXIT
+          python3 Scripts/prepare-current-ocr-provider-fixture.py --provider-project "$GITHUB_WORKSPACE/provider" --output-dir "$staging/provider"
+          cp "$staging/provider/compile-evidence.json" "$RUNNER_TEMP/gaowenjian-vision-compile.json"
+          GAO_OCR_RETURN_PROVIDER_PROJECT="$GITHUB_WORKSPACE/provider" /bin/zsh Scripts/test-headless.sh --ocr-provider "$staging/provider/RealOCRProvider" | tee "$RUNNER_TEMP/gaowenjian-real-ocr.log"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: GaoWenJian-macOS-isolated-native-evidence
+          path: |
+            ${{ runner.temp }}/gaowenjian-pdf-viewport.log
+            ${{ runner.temp }}/gaowenjian-real-ocr.log
+            ${{ runner.temp }}/gaowenjian-vision-compile.json
