@@ -35,6 +35,9 @@ import Foundation
         } catch { rejected = true }
         try require(rejected, "an intermediate user symlink is rejected")
         let store = WorkspaceStore(dataRoot: data)
+        let recovery = data.appendingPathComponent("recovery.json")
+        store.checkpoint()
+        try require(!FileManager.default.fileExists(atPath: recovery.path), "idle workspace does not create an empty recovery file")
         store.open(main)
         store.open(missing)
         store.open(proof)
@@ -53,6 +56,15 @@ import Foundation
         try require(store.writingProjectMain(for: store.active!) == alternate, "active project resolves its bound TeX main file")
         let otherDraft = store.active!
         otherDraft.edited("尚未保存的合成课题")
+        store.checkpoint()
+        let checkpointDate = Date(timeIntervalSince1970: 1_700_000_000)
+        try FileManager.default.setAttributes([.modificationDate: checkpointDate], ofItemAtPath: recovery.path)
+        store.checkpoint()
+        let unchanged = try recovery.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate
+        try require(unchanged == checkpointDate, "unchanged draft does not rewrite its recovery file")
+        try FileManager.default.removeItem(at: recovery)
+        store.checkpoint()
+        try require(FileManager.default.fileExists(atPath: recovery.path), "missing active draft recovery is recreated")
         rejected = false
         do { try store.restoreWritingProject(firstID, drafts: .requireSaved) } catch { rejected = true }
         try require(rejected && store.activeWritingProjectID == secondID && store.active === otherDraft, "restore requires explicit draft decision and leaves workspace untouched")

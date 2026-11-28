@@ -67,7 +67,7 @@ enum FileKind: String, CaseIterable {
 }
 struct BrowserEntry:Identifiable { var url:URL;var directory:Bool;var depth:Int;var id:String {url.path} }
 private struct WorkspaceState:Codable { var recent:[String] = [];var folder:String? }
-private struct RecoveryItem:Codable { var id:UUID;var path:String?;var kind:String;var text:String;var digest:String?;var encoding:UInt;var suggestedTitle:String?;var incoming:IncomingDocument? }
+private struct RecoveryItem:Codable,Equatable { var id:UUID;var path:String?;var kind:String;var text:String;var digest:String?;var encoding:UInt;var suggestedTitle:String?;var incoming:IncomingDocument? }
 
 @MainActor final class WorkspaceStore:ObservableObject {
     @Published var tabs:[FileSession] = []
@@ -92,6 +92,7 @@ private struct RecoveryItem:Codable { var id:UUID;var path:String?;var kind:Stri
     @Published var handoffBusy = false
     private var stateReadable = true
     private var recoveryReadable = true
+    private var persistedRecovery: [RecoveryItem] = []
     private var timer:Timer?
     private let workspaceRoot: URL
     var active:FileSession? { tabs.first {$0.id == selection} }
@@ -134,6 +135,7 @@ private struct RecoveryItem:Codable { var id:UUID;var path:String?;var kind:Stri
             if FileManager.default.fileExists(atPath:recoveryURL.path) {
                 do {
                     let recovered=try JSONDecoder().decode([RecoveryItem].self,from:Data(contentsOf:recoveryURL))
+                    persistedRecovery = recovered
                     for item in recovered {
                         let session=FileSession(id:item.id,url:item.path.map{URL(fileURLWithPath:$0)},text:item.text,kind:FileKind(rawValue:item.kind) ?? .text,dirty:true)
                         session.originalDigest=item.digest;session.encoding=String.Encoding(rawValue:item.encoding);session.savedText="";session.restoredDraft=true;session.suggestedTitle=item.suggestedTitle;session.incoming=item.incoming;tabs.append(session)
@@ -142,7 +144,9 @@ private struct RecoveryItem:Codable { var id:UUID;var path:String?;var kind:Stri
                 } catch {recoveryReadable=false;self.error="恢复草稿无法读取，已保留原文件：\(error.localizedDescription)"}
             }
         } catch {self.error=error.localizedDescription}
-        timer=Timer.scheduledTimer(withTimeInterval:4,repeats:true){[weak self] _ in Task{@MainActor in self?.checkpoint()}}
+        let checkpointTimer = Timer.scheduledTimer(withTimeInterval:4,repeats:true){[weak self] _ in Task{@MainActor in self?.checkpoint()}}
+        checkpointTimer.tolerance = 0.5
+        timer = checkpointTimer
     }
     func checkpoint() {
         guard recoveryReadable else {return}
@@ -151,7 +155,12 @@ private struct RecoveryItem:Codable { var id:UUID;var path:String?;var kind:Stri
     private func writeCheckpoint() throws {
         guard recoveryReadable else { throw FileIssue.message("恢复草稿不可读取，已保留原记录。") }
         let items=tabs.filter{$0.kind.isText && $0.dirty}.map{RecoveryItem(id:$0.id,path:$0.url?.path,kind:$0.kind.rawValue,text:$0.text,digest:$0.originalDigest,encoding:$0.encoding.rawValue,suggestedTitle:$0.suggestedTitle,incoming:$0.incoming)}
-        try JSONEncoder().encode(items).write(to:workspaceRoot.appendingPathComponent("recovery.json"),options:.atomic)
+        let recoveryURL = workspaceRoot.appendingPathComponent("recovery.json")
+        if items == persistedRecovery && (items.isEmpty || FileManager.default.fileExists(atPath: recoveryURL.path)) {
+            return
+        }
+        try JSONEncoder().encode(items).write(to: recoveryURL, options: .atomic)
+        persistedRecovery = items
     }
     private func persistState() {
         guard stateReadable else {return}
