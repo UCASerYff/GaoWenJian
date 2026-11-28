@@ -32,7 +32,8 @@ assert source.count(marker) == 1 and "enum ScreenshotFileSafety" in source.split
 pathlib.Path(sys.argv[2]).write_text(source.split(marker, 1)[0] + "\n", encoding="utf-8")
 PY
   PROVIDER_FILES=("$STAGING/Provider/ScreenshotFileSafety.swift" "$PROVIDER/ScreenshotGaoActionModel.swift"
-    "$PROVIDER/ScreenshotGaoActionTransport.swift" "$PROVIDER/ScreenshotGaoActionState.swift" "$PROVIDER/ScreenshotOCRReturn.swift")
+    "$PROVIDER/ScreenshotGaoActionTransport.swift" "$PROVIDER/ScreenshotGaoActionState.swift"
+    "$PROVIDER/ScreenshotGaoOCRStaging.swift" "$PROVIDER/ScreenshotOCRReturn.swift")
   TEST_SOURCES+=(OCRReturnCrossImplementationTests)
   SWIFT_DEFINES=(-D GAO_OCR_RETURN_CROSSCHECK)
 fi

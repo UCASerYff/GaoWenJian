@@ -72,7 +72,7 @@ final class OfficePackage {
     init(url: URL) throws {
         source = url.standardizedFileURL
         sourceDigest = try Self.digest(url)
-        directory = Self.fm.temporaryDirectory.appendingPathComponent("GaoWenJian-Office-\(UUID().uuidString)", isDirectory: true)
+        directory = Self.fm.temporaryDirectory.appendingPathComponent("GaoWenJian-Office-\(UUID().uuidString)", isDirectory: true).standardizedFileURL
         try Self.fm.createDirectory(at: directory, withIntermediateDirectories: true)
         do {
             let listing = try Self.run("/usr/bin/unzip", ["-Z1", url.path])
@@ -97,7 +97,7 @@ final class OfficePackage {
         } catch { try? Self.fm.removeItem(at: directory); throw error }
     }
     init(files: [String: String]) throws {
-        directory = Self.fm.temporaryDirectory.appendingPathComponent("GaoWenJian-Office-\(UUID().uuidString)", isDirectory: true)
+        directory = Self.fm.temporaryDirectory.appendingPathComponent("GaoWenJian-Office-\(UUID().uuidString)", isDirectory: true).standardizedFileURL
         try Self.fm.createDirectory(at: directory, withIntermediateDirectories: true)
         for (path, text) in files {
             let file = try location(path)
@@ -109,8 +109,14 @@ final class OfficePackage {
     func location(_ path: String) throws -> URL {
         let normalized = path.hasPrefix("/") ? String(path.dropFirst()) : path
         let file = directory.appendingPathComponent(normalized).standardizedFileURL
-        guard file.path.hasPrefix(directory.path + "/") else { throw OfficeFailure.message("文档部件路径超出文档范围。") }
+        guard relativePartPath(of: file) != nil else { throw OfficeFailure.message("文档部件路径超出文档范围。") }
         return file
+    }
+    private func relativePartPath(of file: URL) -> String? {
+        let root = directory.pathComponents
+        let components = file.pathComponents
+        guard components.count > root.count, components.starts(with: root) else { return nil }
+        return components.dropFirst(root.count).joined(separator: "/")
     }
     func exists(_ path: String) -> Bool { (try? location(path)).map { Self.fm.fileExists(atPath: $0.path) } ?? false }
     func xml(_ path: String) throws -> XMLDocument {
@@ -126,8 +132,8 @@ final class OfficePackage {
         let url: URL
         if target.hasPrefix("/") { url = try location(target) }
         else { url = try location(part).deletingLastPathComponent().appendingPathComponent(target).standardizedFileURL }
-        guard url.path.hasPrefix(directory.path + "/") else { throw OfficeFailure.message("文档关系指向了文档外部。") }
-        return String(url.path.dropFirst(directory.path.count + 1))
+        guard let relative = relativePartPath(of: url) else { throw OfficeFailure.message("文档关系指向了文档外部。") }
+        return relative
     }
     func bindOriginal(_ url: URL, expectedDigest: String) throws {
         guard try Self.digest(url) == expectedDigest else { throw OfficeFailure.message("原件在草稿生成后发生了变化。请保留草稿，避免覆盖新版原件。") }
