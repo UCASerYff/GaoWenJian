@@ -36,8 +36,17 @@ def _set_window_icons(window):
         set_window_icons(native.Handle.ToInt64())
 
     native = window.native
-    native.HandleCreated += apply
-    apply(native, None)
+
+    def attach():
+        native.HandleCreated += apply
+        apply(native, None)
+
+    if native.InvokeRequired:
+        from System import Action
+
+        native.Invoke(Action(attach))
+    else:
+        attach()
 
 
 class WindowActions:
@@ -125,7 +134,11 @@ class Desktop:
         actions = WindowActions(self, note_id)
         window = self.webview.create_window(title, self.server.url + endpoint, js_api=actions, hidden=self.hidden, text_select=True, **options)
         actions._window = window
-        window.events.before_show += _set_window_icons
+        # pywebview creates secondary WinForms windows synchronously once the GUI is running.
+        if window.native is not None:
+            _set_window_icons(window)
+        else:
+            window.events.before_show += _set_window_icons
         return window
 
     def start(self, activate):
